@@ -9,6 +9,7 @@ import copy
 import inspect
 import io
 import json
+import concurrent.futures
 import logging
 import math
 import mimetypes
@@ -17,9 +18,11 @@ import queue
 import re
 import shutil
 import stat
+import subprocess
 import tempfile
 import threading
 import time
+import zipfile
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -45,6 +48,13 @@ from src.custom_voice_store import (
 )
 from src.document_extractor import extract_text_from_file, get_supported_formats
 from src.gemini_processor import GeminiProcessor, GeminiProcessorError
+from src.local_llm_processor import (
+    DEFAULT_LOCAL_LLM_BASE_URLS,
+    LocalLLMProcessor,
+    LocalLLMProcessorError,
+    LLM_PROVIDER_LMSTUDIO,
+    LLM_PROVIDER_OLLAMA,
+)
 from src.replicate_api import ReplicateAPI
 from src.text_processor import TextProcessor
 from src.engines import TtsEngineBase
@@ -81,14 +91,18 @@ CORS(app)
 
 # Configuration
 CONFIG_FILE = "config.json"
-OUTPUT_DIR = Path("static/audio")
+# Use Flask's static folder so paths stay correct even when the server is launched
+# from a different working directory.
+OUTPUT_DIR = Path(app.static_folder) / "audio"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 VOICE_PROMPT_DIR = Path("data/voice_prompts")
 VOICE_PROMPT_DIR.mkdir(parents=True, exist_ok=True)
 VOICE_PROMPT_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg"}
 CHATTERBOX_VOICE_REGISTRY = Path("data/chatterbox_voices.json")
+EXTERNAL_VOICES_ARCHIVE_FILE = Path("data/external_voice_archives.json")
 JOB_METADATA_FILENAME = "metadata.json"
 DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
+DEFAULT_LLM_PROVIDER = "gemini"
 LIBRARY_CACHE_TTL = 5  # seconds
 MIN_CHATTERBOX_PROMPT_SECONDS = 5.0
 DEFAULT_CONFIG = {
@@ -105,6 +119,13 @@ DEFAULT_CONFIG = {
     "gemini_model": DEFAULT_GEMINI_MODEL,
     "gemini_prompt": "",
     "gemini_prompt_presets": [],
+    "gemini_speaker_profile_prompt": "",
+    "llm_provider": DEFAULT_LLM_PROVIDER,
+    "llm_local_provider": LLM_PROVIDER_LMSTUDIO,
+    "llm_local_base_url": DEFAULT_LOCAL_LLM_BASE_URLS[LLM_PROVIDER_LMSTUDIO],
+    "llm_local_model": "",
+    "llm_local_api_key": "",
+    "llm_local_timeout": 120,
     "tts_engine": "kokoro",
     "chatterbox_turbo_local_default_prompt": "",
     "chatterbox_turbo_local_temperature": 0.8,
@@ -147,6 +168,7 @@ DEFAULT_CONFIG = {
     "qwen3_clone_default_prompt_text": "",
     "qwen3_voice_design_model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
     "parallel_chunks": 3,
+    "group_chunks_by_speaker": False,
     "cleanup_vram_after_job": False,
 }
 
@@ -297,11 +319,20 @@ def _measure_audio_duration(audio_path: Path) -> Optional[float]:
         info = sf.info(str(audio_path))
         if not info.frames or not info.samplerate:
             return None
+
         duration = info.frames / float(info.samplerate)
         return duration if duration > 0 else None
     except Exception as exc:  # pragma: no cover - logging only
         logger.warning("Unable to measure duration for %s: %s", audio_path, exc)
         return None
+
+
+def _is_external_voice_id(voice_id: str) -> bool:
+    return bool(voice_id) and voice_id.startswith("external:")
+
+
+def _strip_external_voice_id(voice_id: str) -> str:
+    return voice_id.replace("external:", "", 1)
 
 
 def _coerce_bool(value: Any) -> bool:
@@ -500,10 +531,57 @@ def _apply_engine_option_overrides(config: Dict[str, Any], engine_name: str, opt
     overrides = _normalize_engine_options(engine_name, options or {})
     config.update(overrides)
 # Allow headings like [narrator]\nChapter 1 or Chapter 1 without tags.
-CHAPTER_HEADING_PATTERN = re.compile(
-    r'^\s*(?:\[[^\]]+\]\s*)*(chapter(?:\s+[^\n\r]*)?)',
+BOOK_HEADING_PATTERN = re.compile(
+    r'^\s*(?:\[[^\]]+\]\s*)*(book\b[^\n\r]*)$',
     re.IGNORECASE | re.MULTILINE
 )
+
+SECTION_HEADING_KEYWORDS = [
+    "chapter",
+    "section",
+    "letter",
+    "part",
+    "prologue",
+    "epilogue",
+]
+
+def _normalize_custom_headings(value: Optional[Any]) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        raw_values = value
+    else:
+        raw_values = str(value).split(",")
+    normalized = []
+    for entry in raw_values:
+        if not entry:
+            continue
+        candidate = str(entry).strip()
+        if candidate:
+            normalized.append(candidate)
+    return normalized
+
+
+def _keyword_to_regex(keyword: str) -> str:
+    escaped = re.escape(keyword.strip())
+    if not escaped:
+        return ""
+    return escaped.replace(r"\ ", r"\s+")
+
+
+def _build_section_heading_pattern(custom_heading: Optional[Any] = None) -> re.Pattern:
+    keywords = list(SECTION_HEADING_KEYWORDS)
+    for custom in _normalize_custom_headings(custom_heading):
+        lowered = custom.lower()
+        if lowered not in keywords:
+            keywords.append(lowered)
+    keyword_regex = "|".join(filter(None, (_keyword_to_regex(word) for word in keywords)))
+    if not keyword_regex:
+        keyword_regex = "chapter"
+    return re.compile(
+        rf'^\s*(?:\[[^\]]+\]\s*)*(({keyword_regex})\b[^\n\r]*)$',
+        re.IGNORECASE | re.MULTILINE
+    )
 
 # Exceptions
 class JobCancelled(Exception):
@@ -515,6 +593,7 @@ jobs = {}  # Track all jobs (queued, processing, completed)
 job_queue = queue.Queue()  # Thread-safe job queue
 current_job_id = None  # Currently processing job
 cancel_flags = {}  # Cancellation flags for jobs
+cancel_events = {}  # Cancellation events for immediate job aborts
 queue_lock = threading.Lock()  # Lock for thread-safe operations
 worker_thread = None  # Background worker thread
 tts_engine_instances: Dict[str, TtsEngineBase] = {}
@@ -537,7 +616,16 @@ library_cache = {
 def _job_dir_from_entry(job_id: str, job_entry: Dict[str, Any]) -> Path:
     directory = job_entry.get("job_dir")
     if directory:
-        return Path(directory)
+        candidate = Path(directory)
+        try:
+            resolved = candidate.resolve()
+            expected_root = (OUTPUT_DIR / job_id).resolve()
+            if resolved == expected_root:
+                return resolved
+            if expected_root in resolved.parents:
+                return resolved
+        except Exception:
+            pass
     return OUTPUT_DIR / job_id
 
 
@@ -592,6 +680,79 @@ def _normalize_voice_payload(raw_payload: Optional[Dict[str, Any]]) -> Optional[
     return cleaned or None
 
 
+def _normalize_speaker_key(speaker: Optional[str]) -> str:
+    return (speaker or "").strip().lower()
+
+
+def _normalize_voice_assignments_map(voice_assignments: Any) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(voice_assignments, dict):
+        return {}
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for raw_key, assignment in voice_assignments.items():
+        if not isinstance(assignment, dict):
+            continue
+        if raw_key == "default":
+            normalized["default"] = assignment
+            continue
+        normalized[_normalize_speaker_key(raw_key)] = assignment
+    return normalized
+
+
+def _extract_speakers_for_text(text: str) -> List[str]:
+    processor = TextProcessor()
+    speakers = processor.extract_speakers(text)
+    return speakers or ["default"]
+
+
+def _validate_voice_assignments_for_engine(
+    engine_name: str,
+    text: str,
+    voice_assignments: Any,
+    config: Dict[str, Any],
+) -> None:
+    engine_name = _normalize_engine_name(engine_name)
+    speakers = _extract_speakers_for_text(text)
+    normalized_assignments = _normalize_voice_assignments_map(voice_assignments)
+    default_assignment = normalized_assignments.get("default") or {}
+    missing_voices: List[str] = []
+    missing_prompts: List[str] = []
+
+    for speaker in speakers:
+        assignment = normalized_assignments.get(speaker) or default_assignment or {}
+        voice = (assignment.get("voice") or "").strip()
+        prompt = (assignment.get("audio_prompt_path") or "").strip()
+
+        if engine_name in {"kokoro", "qwen3_custom"} and not voice:
+            missing_voices.append(speaker)
+
+        if engine_name == "chatterbox_turbo_replicate":
+            default_voice = (config.get("chatterbox_turbo_replicate_voice") or "").strip()
+            if not prompt and not voice and not default_voice:
+                missing_voices.append(speaker)
+
+        if engine_name == "chatterbox_turbo_local":
+            default_prompt = (config.get("chatterbox_turbo_local_default_prompt") or "").strip()
+            if not prompt and not default_prompt:
+                missing_prompts.append(speaker)
+
+        if engine_name == "qwen3_clone":
+            default_prompt = (config.get("qwen3_clone_default_prompt") or "").strip()
+            if not prompt and not default_prompt:
+                missing_prompts.append(speaker)
+
+    if missing_voices or missing_prompts:
+        pieces = []
+        if missing_voices:
+            pieces.append(
+                "Select a voice for: " + ", ".join(missing_voices)
+            )
+        if missing_prompts:
+            pieces.append(
+                "Select a reference audio prompt for: " + ", ".join(missing_prompts)
+            )
+        raise ValueError(". ".join(pieces))
+
+
 def _has_active_regen_tasks(job_entry: Dict[str, Any]) -> bool:
     tasks = job_entry.get("regen_tasks") or {}
     for task in tasks.values():
@@ -615,6 +776,20 @@ def _load_review_manifest(job_id: str, job_entry: Dict[str, Any]) -> Dict[str, A
         raise FileNotFoundError("Review manifest not found for this job.")
     with manifest_path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def _update_review_post_progress(job_id: str, step_index: int, ratio: float) -> None:
+    with queue_lock:
+        entry = jobs.get(job_id)
+        if not entry:
+            return
+        total_steps = int(entry.get("post_process_total") or 0)
+        if total_steps <= 0:
+            return
+        clamped = max(0.0, min(float(ratio or 0), 1.0))
+        overall = ((max(step_index - 1, 0)) + clamped) / total_steps
+        entry["post_process_percent"] = int(min(overall * 100, 100))
+        entry["post_process_active"] = True
 
 
 def _update_regen_status(job_id: str, chunk_id: str, **fields):
@@ -1000,7 +1175,10 @@ def _create_engine(engine_name: str, config: Dict) -> TtsEngineBase:
         if not KOKORO_AVAILABLE:
             raise ImportError("Kokoro is not installed. Run setup to enable local mode.")
         device = config.get("device", "auto")
-        return TTSEngine(device=device)
+        logger.info("Creating Kokoro engine with device='%s'", device)
+        engine = TTSEngine(device=device)
+        logger.info("Kokoro engine created on device='%s'", engine.device)
+        return engine
 
     if engine_name == "chatterbox_turbo_local":
         if not CHATTERBOX_TURBO_AVAILABLE:
@@ -1305,55 +1483,122 @@ def slugify_filename(value: str, default: str = "chapter") -> str:
     return value or default
 
 
-def split_text_into_chapters(text: str):
-    """
-    Split text into chapters by detecting lines that start with the word 'Chapter'.
-    Returns list of dicts with title/content.
-    """
-    matches = list(CHAPTER_HEADING_PATTERN.finditer(text))
-    chapters = []
-
+def _build_sections_from_matches(text: str, matches: List[re.Match], default_label: str) -> List[Dict[str, str]]:
+    sections: List[Dict[str, str]] = []
     if not matches:
         clean_text = text.strip()
         if clean_text:
-            chapters.append({"title": "Full Story", "content": clean_text})
-        return chapters
+            sections.append({"title": "Full Story", "content": clean_text})
+        return sections
 
     first_start = matches[0].start()
     if first_start > 0:
         pre_content = text[:first_start].strip()
         if pre_content:
-            # Create a "Title" chapter for content before the first chapter heading
-            # This allows the narrator to announce the title separately with adjustable timing
-            chapters.append({"title": "Title", "content": pre_content})
+            # Create a "Title" section for content before the first heading.
+            sections.append({"title": "Title", "content": pre_content})
 
     for idx, match in enumerate(matches):
         start = match.start()
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
         content = text[start:end].strip()
-        if content:
-            title = match.group(1).strip()
-            chapters.append({
-                "title": title or f"Chapter {idx + 1}",
-                "content": content
-            })
+        if not content:
+            continue
+        title = (match.group(1) or '').strip()
+        sections.append({
+            "title": title or f"{default_label} {idx + 1}",
+            "content": content
+        })
 
-    return chapters
+    return sections
 
 
-def build_gemini_sections(text: str, prefer_chapters: bool, config: dict):
-    """Create sections for Gemini processing based on chapters or chunks."""
+def split_text_into_sections(text: str, custom_heading: Optional[Any] = None) -> List[Dict[str, str]]:
+    """
+    Split text into logical sections (book/chapter/section/letter/part).
+    If book headings exist, split by book and include all chapters beneath each book.
+    Otherwise, split by chapter/section/letter/part headings.
+    """
+    book_matches = list(BOOK_HEADING_PATTERN.finditer(text))
+    if book_matches:
+        return _build_sections_from_matches(text, book_matches, "Book")
+
+    section_pattern = _build_section_heading_pattern(custom_heading)
+    section_matches = list(section_pattern.finditer(text))
+    if section_matches:
+        return _build_sections_from_matches(text, section_matches, "Section")
+
+    clean_text = text.strip()
+    return [{"title": "Full Story", "content": clean_text}] if clean_text else []
+
+
+def split_text_into_book_sections(text: str, custom_heading: Optional[Any] = None) -> Dict[str, Any]:
+    """Return structured book->chapter hierarchy with fallbacks."""
+    book_matches = list(BOOK_HEADING_PATTERN.finditer(text))
+    section_pattern = _build_section_heading_pattern(custom_heading)
+
+    if book_matches:
+        books = _build_sections_from_matches(text, book_matches, "Book")
+        for idx, book in enumerate(books, start=1):
+            book_content = book.get("content") or ""
+            section_matches = list(section_pattern.finditer(book_content))
+            if section_matches:
+                chapters = _build_sections_from_matches(book_content, section_matches, "Chapter")
+            else:
+                clean_content = book_content.strip()
+                chapters = []
+                if clean_content:
+                    chapters.append({"title": "Full Book", "content": clean_content})
+            book["chapters"] = chapters
+            book["index"] = idx - 1
+        return {"kind": "book", "books": books, "sections": []}
+
+    section_matches = list(section_pattern.finditer(text))
+    if section_matches:
+        sections = _build_sections_from_matches(text, section_matches, "Section")
+        return {"kind": "section", "books": [], "sections": sections}
+
+    clean_text = text.strip()
+    sections = [{"title": "Full Story", "content": clean_text}] if clean_text else []
+    return {"kind": "none", "books": [], "sections": sections}
+
+
+def build_gemini_sections(text: str, prefer_chapters: bool, config: dict, custom_heading: Optional[Any] = None):
+    """Create sections for Gemini processing based on detected sections or chunks."""
     sections = []
     if not text:
         return sections
 
-    chapter_matches = list(CHAPTER_HEADING_PATTERN.finditer(text))
-    if prefer_chapters and chapter_matches:
-        for chapter in split_text_into_chapters(text):
+    book_matches = list(BOOK_HEADING_PATTERN.finditer(text))
+    section_pattern = _build_section_heading_pattern(custom_heading)
+    section_matches = list(section_pattern.finditer(text)) if not book_matches else []
+
+    if prefer_chapters and book_matches:
+        hierarchy = split_text_into_book_sections(text, custom_heading)
+        for book_idx, book in enumerate(hierarchy.get("books") or [], start=1):
+            book_title = (book.get("title") or f"Book {book_idx}").strip()
+            for chapter in book.get("chapters") or []:
+                chapter_title = (chapter.get("title") or "").strip()
+                title = f"{book_title} — {chapter_title}".strip(" —") if chapter_title else book_title
+                sections.append({
+                    "title": title,
+                    "content": (chapter.get("content") or "").strip(),
+                    "source": "section"
+                })
+    elif prefer_chapters and section_matches:
+        for chapter in split_text_into_sections(text, custom_heading):
             sections.append({
                 "title": chapter.get("title"),
                 "content": (chapter.get("content") or "").strip(),
-                "source": "chapter"
+                "source": "section"
+            })
+    elif prefer_chapters:
+        clean_text = text.strip()
+        if clean_text:
+            sections.append({
+                "title": "Full Story",
+                "content": clean_text,
+                "source": "full"
             })
     else:
         processor = _create_text_processor_for_engine(config.get("tts_engine"), config.get('chunk_size', 500), config)
@@ -1382,7 +1627,8 @@ def compose_gemini_prompt(section: dict, prompt_prefix: str = "", known_speakers
     speakers = [s for s in (known_speakers or []) if s]
     if speakers:
         speaker_line = (
-            "Known speaker tags so far (reference only, keep names consistent): "
+            "Known speaker tags so far (use these exact tags when they apply; "
+            "only introduce a new tag if the speaker is truly new): "
             + ", ".join(speakers)
         )
         parts.append(speaker_line)
@@ -1391,6 +1637,83 @@ def compose_gemini_prompt(section: dict, prompt_prefix: str = "", known_speakers
     if content:
         parts.append(content)
     return "\n\n".join(parts).strip()
+
+
+def _run_llm_prompt(prompt: str, config: Dict[str, Any]) -> str:
+    """Run a prompt through the configured LLM provider (Gemini or local)."""
+    provider = (config.get("llm_provider") or DEFAULT_LLM_PROVIDER).lower().strip()
+    if provider == "gemini":
+        api_key = (config.get("gemini_api_key") or "").strip()
+        if not api_key:
+            raise GeminiProcessorError("Gemini API key not configured")
+        model_name = config.get("gemini_model") or DEFAULT_GEMINI_MODEL
+        processor = GeminiProcessor(api_key=api_key, model_name=model_name)
+        return processor.generate_text(prompt)
+
+    local_provider = (config.get("llm_local_provider") or "").lower().strip()
+    base_url = (config.get("llm_local_base_url") or "").strip()
+    model_name = (config.get("llm_local_model") or "").strip()
+    api_key = (config.get("llm_local_api_key") or "").strip()
+    timeout = int(config.get("llm_local_timeout") or 120)
+
+    processor = LocalLLMProcessor(
+        provider=local_provider,
+        base_url=base_url,
+        model_name=model_name,
+        api_key=api_key,
+        timeout=timeout,
+    )
+    return processor.generate_text(prompt)
+
+
+def compose_gemini_speaker_profile_prompt(prompt_prefix: str, speakers: List[str], context: str = "") -> str:
+    """Build prompt for Gemini speaker profile table generation."""
+    parts = []
+    if prompt_prefix:
+        parts.append(prompt_prefix.strip())
+    if context:
+        parts.append(context.strip())
+    speaker_line = ", ".join([s for s in speakers if s])
+    if speaker_line:
+        parts.append(speaker_line)
+    return "\n\n".join(parts).strip()
+
+
+def parse_gemini_speaker_table(text: str) -> Dict[str, Dict[str, str]]:
+    """Parse a 3-column table response into a map keyed by normalized speaker name."""
+    if not text:
+        return {}
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return {}
+    rows = []
+    for line in lines:
+        if line.startswith('|') and line.endswith('|'):
+            parts = [part.strip() for part in line.strip('|').split('|')]
+            if len(parts) >= 3:
+                rows.append(parts[:3])
+            continue
+        if '|' in line:
+            parts = [part.strip() for part in line.split('|') if part.strip()]
+            if len(parts) >= 3:
+                rows.append(parts[:3])
+    if not rows:
+        return {}
+    if rows and all('---' in col for col in rows[0]):
+        rows = rows[1:]
+    if rows and rows[0][0].lower().startswith('character'):
+        rows = rows[1:]
+    profiles = {}
+    for name, description, voice in rows:
+        key = (name or '').strip().lower()
+        if not key:
+            continue
+        profiles[key] = {
+            "name": name.strip(),
+            "description": description.strip(),
+            "voice": voice.strip(),
+        }
+    return profiles
 
 
 def _is_chatterbox_engine(engine_name: str) -> bool:
@@ -1410,6 +1733,16 @@ def _create_text_processor_for_engine(engine_name: str, chunk_size: int, config:
             char_soft_limit=chatterbox_chunk_size,
             char_hard_limit=chatterbox_chunk_size + 50,
         )
+    # Kokoro works best with smaller character-based chunks for faster processing
+    if _normalize_engine_name(engine_name) == "kokoro":
+        kokoro_chunk_size = 500  # ~80-100 words, generates ~30-40s of audio
+        if config:
+            kokoro_chunk_size = config.get("kokoro_chunk_size", 500)
+        return TextProcessor(
+            chunk_strategy="characters",
+            char_soft_limit=kokoro_chunk_size,
+            char_hard_limit=kokoro_chunk_size + 50,
+        )
     return TextProcessor(chunk_size=chunk_size)
 
 
@@ -1420,12 +1753,13 @@ def estimate_total_chunks(
     include_full_story: bool = False,
     engine_name: Optional[str] = None,
     config: Optional[Dict] = None,
+    custom_heading: Optional[Any] = None,
 ) -> int:
     """Estimate total chunk count for a job to power progress indicators."""
     processor = _create_text_processor_for_engine(engine_name or DEFAULT_CONFIG["tts_engine"], chunk_size, config)
     sections = [{"content": text}]
     if split_by_chapter:
-        detected = split_text_into_chapters(text)
+        detected = split_text_into_sections(text, custom_heading)
         if detected:
             sections = detected
 
@@ -1540,6 +1874,7 @@ def process_audio_job(job_data):
     config = job_data['config']
     split_by_chapter = job_data.get('split_by_chapter', False)
     generate_full_story = job_data.get('generate_full_story', False)
+    custom_heading = job_data.get('custom_heading')
     
     try:
         # Check for cancellation
@@ -1549,11 +1884,16 @@ def process_audio_job(job_data):
         review_mode = bool(job_data.get('review_mode', False))
         merge_options_override = job_data.get('merge_options') or {}
         processor = _create_text_processor_for_engine(config.get("tts_engine"), config["chunk_size"], config)
-        job_dir = Path(job_data.get('job_dir') or (OUTPUT_DIR / job_id))
+        job_dir = OUTPUT_DIR / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
+        with queue_lock:
+            job_entry = jobs.get(job_id)
+            if job_entry is not None:
+                job_entry['job_dir'] = str(job_dir)
         total_chunks = max(1, job_data.get('total_chunks') or jobs.get(job_id, {}).get('total_chunks') or 1)
         processed_chunks = 0
         job_start_time = datetime.now()
+        cancel_event = cancel_events.setdefault(job_id, threading.Event())
 
         def update_progress(increment: int = 1):
             if cancel_flags.get(job_id, False):
@@ -1580,24 +1920,69 @@ def process_audio_job(job_data):
                     job_entry['progress'] = percent if job_entry.get('status') != 'completed' else 100
                     job_entry['eta_seconds'] = eta_seconds
                     job_entry['last_update'] = datetime.now().isoformat()
+
+        def init_post_process(total_steps: int):
+            with queue_lock:
+                job_entry = jobs.get(job_id)
+                if job_entry:
+                    job_entry['post_process_total'] = max(int(total_steps or 0), 0)
+                    job_entry['post_process_done'] = 0
+                    job_entry['post_process_percent'] = 0
+                    job_entry['post_process_active'] = True
+
+        def update_post_process(increment: int = 1):
+            with queue_lock:
+                job_entry = jobs.get(job_id)
+                if job_entry:
+                    total_steps = int(job_entry.get('post_process_total') or 0)
+                    done_steps = int(job_entry.get('post_process_done') or 0) + increment
+                    job_entry['post_process_done'] = min(done_steps, total_steps) if total_steps else done_steps
+                    if total_steps:
+                        job_entry['post_process_percent'] = int(min((job_entry['post_process_done'] / total_steps) * 100, 100))
+                    job_entry['post_process_active'] = True
+
+        def update_post_process_progress(start_offset: int, chunk_count: int, ratio: float):
+            with queue_lock:
+                job_entry = jobs.get(job_id)
+                if job_entry:
+                    total_steps = int(job_entry.get('post_process_total') or 0)
+                    if total_steps <= 0:
+                        return
+                    clamped = max(0.0, min(float(ratio or 0), 1.0))
+                    current_done = int(min(start_offset + (clamped * max(chunk_count, 1)), total_steps))
+                    overall = current_done / total_steps
+                    job_entry['post_process_done'] = current_done
+                    job_entry['post_process_percent'] = int(min(overall * 100, 100))
+                    job_entry['post_process_active'] = True
         
-        # Determine chapter sections when requested
+        # Determine sections when requested
         chapter_sections = [{"title": "Full Story", "content": text}]
+        book_sections = []
+        book_mode = False
         if split_by_chapter:
-            detected = split_text_into_chapters(text)
-            if detected:
-                chapter_sections = detected
+            hierarchy = split_text_into_book_sections(text, custom_heading)
+            if hierarchy.get("kind") == "book" and hierarchy.get("books"):
+                book_mode = True
+                book_sections = hierarchy.get("books") or []
+            elif hierarchy.get("sections"):
+                chapter_sections = hierarchy.get("sections")
             else:
-                logger.info("Chapter splitting enabled but no chapter headings detected; falling back to single output")
+                logger.info("Section splitting enabled but no headings detected; falling back to single output")
                 split_by_chapter = False
         
         chapter_count = len(chapter_sections)
+        book_count = len(book_sections) if book_mode else 0
         with queue_lock:
             job_entry = jobs.get(job_id)
             if job_entry:
                 job_entry['chapter_count'] = chapter_count
                 job_entry['chapter_mode'] = split_by_chapter
                 job_entry['full_story_requested'] = generate_full_story
+                job_entry['book_mode'] = book_mode
+                job_entry['book_count'] = book_count
+                job_entry['post_process_total'] = 0
+                job_entry['post_process_done'] = 0
+                job_entry['post_process_active'] = False
         
         output_format = config['output_format']
         crossfade_seconds = float(config.get('crossfade_duration', 0) or 0)
@@ -1613,7 +1998,9 @@ def process_audio_job(job_data):
         chunk_dirs_to_cleanup = []
         review_manifest = {
             "chapter_mode": split_by_chapter,
+            "book_mode": book_mode,
             "chapters": [],
+            "books": [],
             "full_story_requested": generate_full_story,
             "output_format": output_format,
             "chunk_dirs_to_cleanup": [],
@@ -1622,7 +2009,9 @@ def process_audio_job(job_data):
         
         # Prepare TTS engine
         engine_name = _normalize_engine_name(config.get("tts_engine"))
+        logger.info("Job %s: Creating TTS engine '%s'", job_id, engine_name)
         engine = get_tts_engine(engine_name, config=config)
+        logger.info("Job %s: Engine device = %s", job_id, getattr(engine, 'device', 'unknown'))
 
         job_chunks: List[Dict[str, Any]] = []
 
@@ -1634,9 +2023,10 @@ def process_audio_job(job_data):
                 candidate = voice_assignments.get(speaker_name) or voice_assignments.get("default")
                 speaker_assignment = _clone_voice_assignment(candidate)
             voice_label = _voice_label_from_assignment(speaker_assignment)
+            order_index = segment.get("order_index")
             record = {
                 "id": chunk_id,
-                "order_index": len(job_chunks),
+                "order_index": order_index if order_index is not None else len(job_chunks),
                 "chapter_index": chapter_idx,
                 "chunk_index": chunk_idx,
                 "speaker": segment.get("speaker"),
@@ -1662,6 +2052,14 @@ def process_audio_job(job_data):
                 update_progress(0)  # keep progress logic centralized
             return chunk_cb
 
+        def run_with_cancel(operation):
+            if cancel_event.is_set() or cancel_flags.get(job_id, False):
+                raise JobCancelled()
+            result = operation()
+            if cancel_event.is_set() or cancel_flags.get(job_id, False):
+                raise JobCancelled()
+            return result
+
         def generate_chunks(chapter_idx: int, section_text: str, output_dir: Path):
             if cancel_flags.get(job_id, False):
                 raise JobCancelled()
@@ -1672,6 +2070,7 @@ def process_audio_job(job_data):
             chunk_cb = make_chunk_callback(chapter_idx)
             supports_chunk_cb = False
             flat_segments: List[Dict[str, Any]] = []
+            order_index = 0
             for seg_idx, segment in enumerate(segments):
                 speaker = segment.get("speaker")
                 chunks = segment.get("chunks") or []
@@ -1679,10 +2078,12 @@ def process_audio_job(job_data):
                     flat_segments.append({
                         "segment_index": seg_idx,
                         "chunk_index": chunk_idx,
+                        "order_index": order_index,
                         "speaker": speaker,
                         "text": chunk_text,
                         "emotion": segment.get("emotion"),
                     })
+                    order_index += 1
             engine_kwargs = {
                 "segments": segments,
                 "voice_config": voice_assignments,
@@ -1698,7 +2099,9 @@ def process_audio_job(job_data):
                 supports_chunk_cb = True
             if "parallel_workers" in sig_params:
                 engine_kwargs["parallel_workers"] = max(1, min(10, int(config.get("parallel_chunks", 1) or 1)))
-            audio_files = engine.generate_batch(**engine_kwargs)
+            if "group_by_speaker" in sig_params:
+                engine_kwargs["group_by_speaker"] = bool(config.get("group_chunks_by_speaker", False))
+            audio_files = run_with_cancel(lambda: engine.generate_batch(**engine_kwargs))
 
             if not supports_chunk_cb and audio_files:
                 for order_idx, file_path in enumerate(audio_files):
@@ -1715,62 +2118,186 @@ def process_audio_job(job_data):
 
         try:
             if split_by_chapter:
-                for idx, chapter in enumerate(chapter_sections, start=1):
-                    if cancel_flags.get(job_id, False):
-                        raise JobCancelled()
+                if book_mode:
+                    if not review_mode:
+                        post_total = total_chunks * (2 if generate_full_story else 1)
+                        init_post_process(post_total)
+                        merge_chunk_offset = 0
+                    chapter_global_idx = 0
+                    for book_idx, book in enumerate(book_sections, start=1):
+                        if cancel_flags.get(job_id, False):
+                            raise JobCancelled()
 
-                    chapter_dir = job_dir / f"chapter_{idx:02d}"
-                    chunk_dir = chapter_dir / "chunks"
-                    audio_files = generate_chunks(idx - 1, chapter["content"], chunk_dir)
-                    if not audio_files:
-                        logger.warning(f"Chapter {idx} had no audio chunks; skipping")
-                        continue
+                        book_dir = job_dir / f"book_{book_idx:02d}"
+                        book_chunk_files = []
+                        rel_book_chunks = []
+                        book_chapter_indices = []
+                        chapter_folder_idx = 1
+                        for chapter_idx, chapter in enumerate(book.get("chapters") or [], start=1):
+                            # Skip "Title" sections (book number/title before first chapter)
+                            if chapter.get("title") == "Title":
+                                chapter_dir = book_dir / "title"
+                            else:
+                                chapter_dir = book_dir / f"chapter_{chapter_folder_idx:02d}"
+                                chapter_folder_idx += 1
+                            chunk_dir = chapter_dir / "chunks"
+                            audio_files = generate_chunks(chapter_global_idx, chapter["content"], chunk_dir)
+                            if not audio_files:
+                                logger.warning(f"Book {book_idx} chapter {chapter_idx} had no audio chunks; skipping")
+                                chapter_global_idx += 1
+                                continue
 
-                    if all_full_story_chunks is not None:
-                        all_full_story_chunks.extend(audio_files)
-                        chunk_dirs_to_cleanup.append(chunk_dir)
+                            chapter_global_idx += 1
+                            book_chapter_indices.append(chapter_global_idx - 1)
+                            book_chunk_files.extend(audio_files)
 
-                    slug = slugify_filename(chapter['title'], f"chapter-{idx:02d}")
-                    output_filename = f"{slug}.{output_format}"
-                    output_path = chapter_dir / output_filename
+                            if all_full_story_chunks is not None:
+                                all_full_story_chunks.extend(audio_files)
+                                chunk_dirs_to_cleanup.append(chunk_dir)
 
-                    if review_mode:
-                        rel_chunk_dir = os.path.relpath(chunk_dir, job_dir)
-                        rel_chapter_dir = os.path.relpath(chapter_dir, job_dir)
-                        rel_chunk_files = [os.path.relpath(path, job_dir) for path in audio_files]
-                        review_manifest["chapters"].append({
-                            "index": idx - 1,  # 0-indexed to match chunk.chapter_index
-                            "title": chapter['title'],
-                            "chunk_dir": rel_chunk_dir,
-                            "chunk_files": rel_chunk_files,
-                            "chapter_dir": rel_chapter_dir,
-                            "output_filename": output_filename,
-                        })
-                        review_manifest["chunk_dirs_to_cleanup"].append(rel_chunk_dir)
-                    else:
-                        merger.merge_wav_files(
-                            input_files=audio_files,
-                            output_path=str(output_path),
-                            format=output_format,
-                            cleanup_chunks=not generate_full_story
-                        )
-                        update_progress()
+                            rel_chunk_dir = os.path.relpath(chunk_dir, job_dir)
+                            rel_chapter_dir = os.path.relpath(chapter_dir, job_dir)
+                            rel_chunk_files = [os.path.relpath(path, job_dir) for path in audio_files]
+                            rel_book_chunks.extend(rel_chunk_files)
+                            if review_mode:
+                                review_manifest["chapters"].append({
+                                    "index": chapter_global_idx - 1,  # 0-indexed to match chunk.chapter_index
+                                    "title": chapter.get("title"),
+                                    "chunk_dir": rel_chunk_dir,
+                                    "chunk_files": rel_chunk_files,
+                                    "chapter_dir": rel_chapter_dir,
+                                    "book_index": book_idx - 1,
+                                    "book_title": book.get("title"),
+                                    "book_order": chapter_idx - 1,
+                                })
+                                review_manifest["chunk_dirs_to_cleanup"].append(rel_chunk_dir)
 
-                        # Cleanup empty chunk directory
-                        if chunk_dir.exists() and not generate_full_story:
-                            try:
-                                chunk_dir.rmdir()
-                            except OSError:
-                                pass
+                        if not book_chunk_files:
+                            continue
 
-                        relative_path = Path(f"chapter_{idx:02d}") / output_filename
-                        chapter_outputs.append({
-                            "index": idx,
-                            "title": chapter['title'],
-                            "file_url": f"/static/audio/{job_id}/{relative_path.as_posix()}",
-                            "relative_path": relative_path.as_posix()
-                        })
+                        slug = slugify_filename(book.get('title'), f"book-{book_idx:02d}")
+                        output_filename = f"{slug}.{output_format}"
+                        output_path = book_dir / output_filename
+
+                        if review_mode:
+                            rel_book_dir = os.path.relpath(book_dir, job_dir)
+                            review_manifest["books"].append({
+                                "index": book_idx - 1,
+                                "title": book.get("title"),
+                                "chapter_indices": book_chapter_indices,
+                                "chunk_files": rel_book_chunks,
+                                "book_dir": rel_book_dir,
+                                "output_filename": output_filename,
+                            })
+                        else:
+                            merger.merge_wav_files(
+                                input_files=book_chunk_files,
+                                output_path=str(output_path),
+                                format=output_format,
+                                cleanup_chunks=not generate_full_story,
+                                progress_callback=lambda ratio, offset=merge_chunk_offset, count=len(book_chunk_files): (
+                                    update_post_process_progress(offset, count, ratio)
+                                ),
+                            )
+                            update_progress()
+                            update_post_process(len(book_chunk_files))
+                            merge_chunk_offset += len(book_chunk_files)
+
+                            # Cleanup empty chunk directory
+                            if book_dir.exists() and not generate_full_story:
+                                for chapter_dir in book_dir.glob("chapter_*"):
+                                    try:
+                                        (chapter_dir / "chunks").rmdir()
+                                    except OSError:
+                                        pass
+
+                            relative_path = Path(f"book_{book_idx:02d}") / output_filename
+                            chapter_outputs.append({
+                                "index": book_idx,
+                                "title": book.get("title"),
+                                "file_url": f"/static/audio/{job_id}/{relative_path.as_posix()}",
+                                "relative_path": relative_path.as_posix()
+                            })
+                else:
+                    if not review_mode:
+                        post_total = total_chunks * (2 if generate_full_story else 1)
+                        init_post_process(post_total)
+                        merge_chunk_offset = 0
+                    chapter_folder_idx = 1
+                    for idx, chapter in enumerate(chapter_sections, start=1):
+                        if cancel_flags.get(job_id, False):
+                            raise JobCancelled()
+
+                        section_title = (chapter.get("title") or "").strip()
+                        is_title_section = section_title.lower() == "title"
+                        if is_title_section:
+                            chapter_dir = job_dir / "title"
+                        else:
+                            chapter_dir = job_dir / f"chapter_{chapter_folder_idx:02d}"
+                            chapter_folder_idx += 1
+                        chunk_dir = chapter_dir / "chunks"
+                        audio_files = generate_chunks(idx - 1, chapter["content"], chunk_dir)
+                        if not audio_files:
+                            logger.warning(f"Chapter {idx} had no audio chunks; skipping")
+                            continue
+
+                        if all_full_story_chunks is not None:
+                            all_full_story_chunks.extend(audio_files)
+                            chunk_dirs_to_cleanup.append(chunk_dir)
+
+                        if is_title_section:
+                            slug_default = "title"
+                        else:
+                            slug_default = f"chapter-{chapter_folder_idx - 1:02d}"
+                        slug = slugify_filename(chapter.get('title'), slug_default)
+                        output_filename = f"{slug}.{output_format}"
+                        output_path = chapter_dir / output_filename
+
+                        if review_mode:
+                            rel_chunk_dir = os.path.relpath(chunk_dir, job_dir)
+                            rel_chapter_dir = os.path.relpath(chapter_dir, job_dir)
+                            rel_chunk_files = [os.path.relpath(path, job_dir) for path in audio_files]
+                            review_manifest["chapters"].append({
+                                "index": idx - 1,  # 0-indexed to match chunk.chapter_index
+                                "title": chapter['title'],
+                                "chunk_dir": rel_chunk_dir,
+                                "chunk_files": rel_chunk_files,
+                                "chapter_dir": rel_chapter_dir,
+                                "output_filename": output_filename,
+                            })
+                            review_manifest["chunk_dirs_to_cleanup"].append(rel_chunk_dir)
+                        else:
+                            merger.merge_wav_files(
+                                input_files=audio_files,
+                                output_path=str(output_path),
+                                format=output_format,
+                                cleanup_chunks=not generate_full_story,
+                                progress_callback=lambda ratio, offset=merge_chunk_offset, count=len(audio_files): (
+                                    update_post_process_progress(offset, count, ratio)
+                                ),
+                            )
+                            update_progress()
+                            update_post_process(len(audio_files))
+                            merge_chunk_offset += len(audio_files)
+
+                            # Cleanup empty chunk directory
+                            if chunk_dir.exists() and not generate_full_story:
+                                try:
+                                    chunk_dir.rmdir()
+                                except OSError:
+                                    pass
+
+                            relative_path = Path(chapter_dir.name) / output_filename
+                            chapter_outputs.append({
+                                "index": idx,
+                                "title": chapter['title'],
+                                "file_url": f"/static/audio/{job_id}/{relative_path.as_posix()}",
+                                "relative_path": relative_path.as_posix()
+                            })
             else:
+                if not review_mode:
+                    init_post_process(total_chunks)
+                    merge_chunk_offset = 0
                 chunk_dir = job_dir / "chunks"
                 audio_files = generate_chunks(0, text, chunk_dir)
                 if not audio_files:
@@ -1793,9 +2320,13 @@ def process_audio_job(job_data):
                     merger.merge_wav_files(
                         input_files=audio_files,
                         output_path=str(output_file),
-                        format=output_format
+                        format=output_format,
+                        progress_callback=lambda ratio, offset=merge_chunk_offset, count=len(audio_files): (
+                            update_post_process_progress(offset, count, ratio)
+                        ),
                     )
                     update_progress()
+                    update_post_process(len(audio_files))
                     if chunk_dir.exists():
                         try:
                             chunk_dir.rmdir()
@@ -1819,9 +2350,14 @@ def process_audio_job(job_data):
             merger.merge_wav_files(
                 input_files=all_full_story_chunks,
                 output_path=str(full_story_path),
-                format=output_format
+                format=output_format,
+                progress_callback=lambda ratio, offset=merge_chunk_offset, count=len(all_full_story_chunks): (
+                    update_post_process_progress(offset, count, ratio)
+                ),
             )
             update_progress()
+            update_post_process(len(all_full_story_chunks))
+            merge_chunk_offset += len(all_full_story_chunks)
 
             for chunk_dir in chunk_dirs_to_cleanup:
                 if chunk_dir.exists():
@@ -1872,9 +2408,12 @@ def process_audio_job(job_data):
 
         metadata = {
             "chapter_mode": split_by_chapter,
+            "book_mode": book_mode,
             "output_format": output_format,
             "chapters": chapter_outputs,
             "chapter_count": chapter_count,
+            "book_count": book_count,
+            "books": chapter_outputs if book_mode else [],
             "full_story": full_story_entry
         }
         save_job_metadata(job_dir, metadata)
@@ -1886,6 +2425,8 @@ def process_audio_job(job_data):
             jobs[job_id]['processed_chunks'] = total_chunks
             jobs[job_id]['total_chunks'] = total_chunks
             jobs[job_id]['eta_seconds'] = 0
+            jobs[job_id]['post_process_percent'] = 100
+            jobs[job_id]['post_process_active'] = False
             primary_output = full_story_entry or (chapter_outputs[0] if chapter_outputs else None)
             jobs[job_id]['output_file'] = primary_output['file_url'] if primary_output else ''
             jobs[job_id]['chapter_outputs'] = chapter_outputs
@@ -1919,6 +2460,7 @@ def process_audio_job(job_data):
         raise
     finally:
         cancel_flags.pop(job_id, None)
+        cancel_events.pop(job_id, None)
 
 
 def _enqueue_qwen3_voice_design_task(task_type: str, payload: Dict[str, Any]) -> str:
@@ -2042,6 +2584,25 @@ def _load_chatterbox_voice_entries() -> List[Dict[str, Any]]:
         return []
 
 
+def _load_external_voice_archives() -> set:
+    if not EXTERNAL_VOICES_ARCHIVE_FILE.exists():
+        return set()
+    try:
+        with EXTERNAL_VOICES_ARCHIVE_FILE.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+            if isinstance(data, list):
+                return {item for item in data if isinstance(item, str)}
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.error("Unable to read external voice archive list: %s", exc)
+    return set()
+
+
+def _save_external_voice_archives(archives: set) -> None:
+    EXTERNAL_VOICES_ARCHIVE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with EXTERNAL_VOICES_ARCHIVE_FILE.open("w", encoding="utf-8") as handle:
+        json.dump(sorted(archives), handle, indent=2)
+
+
 def _save_chatterbox_voice_entries(entries: List[Dict[str, Any]]) -> None:
     CHATTERBOX_VOICE_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
     with CHATTERBOX_VOICE_REGISTRY.open("w", encoding="utf-8") as handle:
@@ -2112,6 +2673,7 @@ def _serialize_chatterbox_voice(entry: Dict[str, Any]) -> Dict[str, Any]:
         "gender": entry.get("gender"),  # Male, Female, or None
         "language": entry.get("language"),  # Language code like en-US
         "description": entry.get("description"),
+        "archived": bool(entry.get("archived", False)),
         "source": "local",  # local voices vs external
     }
 
@@ -2386,6 +2948,84 @@ def upload_voice_prompt():
     ), 201
 
 
+@app.route('/api/voice-prompts/preview-fx', methods=['POST'])
+def preview_voice_prompt_fx():
+    """Preview FX on an existing voice prompt sample without regenerating audio."""
+    from src.audio_effects import AudioPostProcessor, VoiceFXSettings
+    data = request.json or {}
+    prompt_path = (data.get("prompt_path") or "").strip()
+    if not prompt_path:
+        return jsonify({"success": False, "error": "prompt_path is required"}), 400
+
+    file_name = Path(prompt_path).name
+    if not file_name:
+        return jsonify({"success": False, "error": "Invalid prompt_path"}), 400
+
+    file_path = VOICE_PROMPT_DIR / file_name
+    if not file_path.exists():
+        return jsonify({"success": False, "error": "Audio file missing on disk."}), 404
+
+    try:
+        speed = float(data.get("speed", 1.0) or 1.0)
+        pitch = float(data.get("pitch", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid pitch or speed value."}), 400
+
+    speed = max(0.5, min(2.0, speed))
+    pitch = max(-12.0, min(12.0, pitch))
+
+    try:
+        use_sox = abs(speed - 1.0) > 1e-3 or abs(pitch) > 1e-3
+        sox_path = Path("tools/sox/sox.exe")
+        if use_sox and sox_path.exists():
+            output_path = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_out:
+                    output_path = Path(temp_out.name)
+                command = [str(sox_path), str(file_path), str(output_path)]
+                if abs(pitch) > 1e-3:
+                    command += ["pitch", f"{pitch * 100:.2f}"]
+                if abs(speed - 1.0) > 1e-3:
+                    command += ["tempo", "-s", f"{speed:.3f}"]
+                result = subprocess.run(command, capture_output=True, text=True)
+                if result.returncode != 0:
+                    raise RuntimeError(result.stderr.strip() or "SoX failed")
+                audio_bytes = output_path.read_bytes()
+            finally:
+                if output_path:
+                    output_path.unlink(missing_ok=True)
+        else:
+            audio_data, sample_rate = sf.read(str(file_path), dtype='float32')
+            if abs(speed - 1.0) < 1e-3 and abs(pitch) < 1e-3:
+                buffer = io.BytesIO()
+                sf.write(buffer, audio_data, sample_rate, format='WAV')
+                audio_bytes = buffer.getvalue()
+            else:
+                fx = VoiceFXSettings(
+                    pitch_semitones=pitch,
+                    speed=speed,
+                    tone="neutral",
+                )
+                processor = AudioPostProcessor()
+                processed = processor.apply(audio_data, sample_rate, fx, blend_override=0.0)
+                buffer = io.BytesIO()
+                sf.write(buffer, processed, sample_rate, format='WAV')
+                audio_bytes = buffer.getvalue()
+    except ImportError as exc:
+        logger.error("Preview FX requires librosa: %s", exc)
+        return jsonify({"success": False, "error": "Audio FX preview requires librosa."}), 400
+    except Exception as exc:
+        logger.error("Failed to preview voice prompt FX: %s", exc, exc_info=True)
+        return jsonify({"success": False, "error": "Failed to process audio."}), 500
+
+    encoded = base64.b64encode(audio_bytes).decode('ascii')
+    return jsonify({
+        "success": True,
+        "audio_base64": encoded,
+        "mime_type": "audio/wav",
+    })
+
+
 @app.route('/api/chatterbox-voices', methods=['GET'])
 def list_chatterbox_voices():
     entries = _load_chatterbox_voice_entries()
@@ -2491,6 +3131,159 @@ def delete_chatterbox_voice(voice_id: str):
     entries = [item for item in entries if item.get("id") != voice_id]
     _save_chatterbox_voice_entries(entries)
     return jsonify({"success": True})
+
+
+def _collect_voice_files(voice_ids: List[str]) -> Tuple[List[Tuple[Path, str]], List[str]]:
+    files: List[Tuple[Path, str]] = []
+    missing: List[str] = []
+    entries = _load_chatterbox_voice_entries()
+    entries_by_id = {entry.get("id"): entry for entry in entries if entry.get("id")}
+
+    for voice_id in voice_ids:
+        if _is_external_voice_id(voice_id):
+            short_name = _strip_external_voice_id(voice_id)
+            file_path = EXTERNAL_VOICES_DIR / f"{short_name}.mp3"
+            if file_path.exists():
+                files.append((file_path, file_path.name))
+            else:
+                missing.append(voice_id)
+            continue
+
+        entry = entries_by_id.get(voice_id)
+        if not entry:
+            missing.append(voice_id)
+            continue
+        file_name = entry.get("file_name")
+        if not file_name:
+            missing.append(voice_id)
+            continue
+        file_path = VOICE_PROMPT_DIR / file_name
+        if file_path.exists():
+            files.append((file_path, file_name))
+        else:
+            missing.append(voice_id)
+
+    return files, missing
+
+
+@app.route('/api/chatterbox-voices/export', methods=['POST'])
+def export_chatterbox_voices():
+    data = request.get_json(silent=True) or {}
+    voice_ids = data.get("voice_ids") or []
+    if not isinstance(voice_ids, list) or not voice_ids:
+        return jsonify({"success": False, "error": "No voice ids provided."}), 400
+
+    files, missing = _collect_voice_files([str(v) for v in voice_ids])
+    if not files:
+        return jsonify({"success": False, "error": "No audio files found for export."}), 404
+
+    if len(files) == 1:
+        file_path, filename = files[0]
+        mime_type, _ = mimetypes.guess_type(filename)
+        return send_file(
+            file_path,
+            mimetype=mime_type or 'audio/mpeg',
+            as_attachment=True,
+            download_name=filename,
+        )
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
+        for file_path, filename in files:
+            zipf.write(file_path, arcname=filename)
+    buffer.seek(0)
+    response = send_file(
+        buffer,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name="voice_samples.zip",
+    )
+    response.headers["X-Voice-Missing"] = json.dumps(missing)
+    return response
+
+
+@app.route('/api/chatterbox-voices/archive', methods=['POST'])
+def archive_chatterbox_voices():
+    data = request.get_json(silent=True) or {}
+    voice_ids = data.get("voice_ids") or []
+    archived = _coerce_bool(data.get("archived", True))
+    if not isinstance(voice_ids, list) or not voice_ids:
+        return jsonify({"success": False, "error": "No voice ids provided."}), 400
+
+    entries = _load_chatterbox_voice_entries()
+    entry_map = {entry.get("id"): entry for entry in entries if entry.get("id")}
+    updated = 0
+    external_ids = _load_external_voice_archives()
+
+    for voice_id in [str(v) for v in voice_ids]:
+        if _is_external_voice_id(voice_id):
+            short_name = _strip_external_voice_id(voice_id)
+            if archived:
+                external_ids.add(short_name)
+            else:
+                external_ids.discard(short_name)
+            updated += 1
+            continue
+
+        entry = entry_map.get(voice_id)
+        if not entry:
+            continue
+        entry["archived"] = archived
+        updated += 1
+
+    _save_chatterbox_voice_entries(entries)
+    _save_external_voice_archives(external_ids)
+    return jsonify({"success": True, "updated": updated})
+
+
+@app.route('/api/chatterbox-voices/batch-delete', methods=['POST'])
+def batch_delete_chatterbox_voices():
+    data = request.get_json(silent=True) or {}
+    voice_ids = data.get("voice_ids") or []
+    if not isinstance(voice_ids, list) or not voice_ids:
+        return jsonify({"success": False, "error": "No voice ids provided."}), 400
+
+    entries = _load_chatterbox_voice_entries()
+    remaining_entries = []
+    deleted = 0
+    target_ids = {str(v) for v in voice_ids}
+    external_ids = _load_external_voice_archives()
+
+    for entry in entries:
+        entry_id = entry.get("id")
+        if entry_id and entry_id in target_ids:
+            file_name = entry.get("file_name")
+            file_path = VOICE_PROMPT_DIR / file_name if file_name else None
+            if file_path and file_path.exists():
+                try:
+                    file_path.unlink()
+                except OSError as exc:
+                    logger.warning("Unable to delete voice prompt file %s: %s", file_path, exc)
+            deleted += 1
+            continue
+        remaining_entries.append(entry)
+
+    for voice_id in target_ids:
+        if _is_external_voice_id(voice_id):
+            short_name = _strip_external_voice_id(voice_id)
+            local_file = EXTERNAL_VOICES_DIR / f"{short_name}.mp3"
+            if local_file.exists():
+                try:
+                    local_file.unlink()
+                except OSError as exc:
+                    logger.warning("Unable to delete external voice file %s: %s", local_file, exc)
+            prompt_file = VOICE_PROMPT_DIR / f"{short_name}.mp3"
+            if prompt_file.exists():
+                try:
+                    prompt_file.unlink()
+                except OSError as exc:
+                    logger.warning("Unable to delete voice prompt file %s: %s", prompt_file, exc)
+            external_ids.discard(short_name)
+            deleted += 1
+
+    _save_chatterbox_voice_entries(remaining_entries)
+    _save_external_voice_archives(external_ids)
+    return jsonify({"success": True, "deleted": deleted})
 
 
 @app.route('/api/chatterbox-voices/<voice_id>/preview')
@@ -2605,7 +3398,7 @@ def _fetch_external_voices(force_refresh: bool = False) -> List[Dict[str, Any]]:
         return []
 
 
-def _serialize_external_voice(voice: Dict[str, Any]) -> Dict[str, Any]:
+def _serialize_external_voice(voice: Dict[str, Any], archived_ids: Optional[set] = None) -> Dict[str, Any]:
     """Serialize an external voice entry for the API."""
     short_name = voice.get("ShortName", "")
     locale = voice.get("Locale", "")
@@ -2622,7 +3415,7 @@ def _serialize_external_voice(voice: Dict[str, Any]) -> Dict[str, Any]:
     
     # Get correct GitHub folder name (e.g., "English" not "en-GB")
     folder_name = _get_github_folder_for_locale(locale)
-    
+    archived_ids = archived_ids or set()
     return {
         "id": f"external:{short_name}",
         "name": display_name,
@@ -2634,6 +3427,7 @@ def _serialize_external_voice(voice: Dict[str, Any]) -> Dict[str, Any]:
         "friendly_name": friendly_name,
         "source": "external",
         "is_downloaded": is_downloaded,
+        "archived": short_name in archived_ids,
         "download_url": f"{EXTERNAL_SAMPLES_BASE_URL}/{folder_name}/{short_name}.mp3",
         "voice_personalities": voice.get("VoiceTag", {}).get("VoicePersonalities", []),
     }
@@ -2645,7 +3439,8 @@ def list_external_voices():
     try:
         force_refresh = request.args.get('refresh', '').lower() == 'true'
         voices = _fetch_external_voices(force_refresh=force_refresh)
-        serialized = [_serialize_external_voice(v) for v in voices]
+        archived_ids = _load_external_voice_archives()
+        serialized = [_serialize_external_voice(v, archived_ids) for v in voices]
         return jsonify({
             "success": True,
             "voices": serialized,
@@ -2708,7 +3503,7 @@ def download_external_voice(voice_id: str):
         
         return jsonify({
             "success": True,
-            "voice": _serialize_external_voice(voice),
+            "voice": _serialize_external_voice(voice, _load_external_voice_archives()),
             "message": f"Downloaded {short_name}.mp3"
         })
     except Exception as e:
@@ -3138,8 +3933,20 @@ def _merge_review_job(job_id: str, job_entry: Dict[str, Any], manifest: Dict[str
     )
     job_dir = _job_dir_from_entry(job_id, job_entry)
 
+    chapters = manifest.get("chapters", []) or []
+    all_full_story_chunks = manifest.get("all_full_story_chunks") or []
+    books = manifest.get("books", []) or []
+    total_steps = len(chapters) + len(books) + (1 if all_full_story_chunks else 0)
+    with queue_lock:
+        entry = jobs.get(job_id)
+        if entry:
+            entry["post_process_total"] = max(int(total_steps), 0)
+            entry["post_process_done"] = 0
+            entry["post_process_percent"] = 0
+            entry["post_process_active"] = True
+
     chapter_outputs = []
-    for chapter in manifest.get("chapters", []):
+    for chapter in chapters:
         rel_chunk_files = chapter.get("chunk_files") or []
         chunk_paths = [str(job_dir / rel_path) for rel_path in rel_chunk_files]
         if not chunk_paths:
@@ -3160,7 +3967,19 @@ def _merge_review_job(job_id: str, job_entry: Dict[str, Any], manifest: Dict[str
             output_path=str(output_path),
             format=output_format,
             cleanup_chunks=False,
+            progress_callback=lambda ratio, idx=len(chapter_outputs) + 1: _update_review_post_progress(
+                job_id,
+                idx,
+                ratio,
+            ),
         )
+        with queue_lock:
+            entry = jobs.get(job_id)
+            if entry:
+                entry["post_process_done"] = min(
+                    len(chapter_outputs) + 1,
+                    int(entry.get("post_process_total") or 0) or 0,
+                )
         # Verify output was created with content
         if output_path.exists():
             output_size = output_path.stat().st_size
@@ -3179,7 +3998,6 @@ def _merge_review_job(job_id: str, job_entry: Dict[str, Any], manifest: Dict[str
         })
 
     full_story_entry = None
-    all_full_story_chunks = manifest.get("all_full_story_chunks") or []
     if all_full_story_chunks:
         chunk_paths = [str(job_dir / rel_path) for rel_path in all_full_story_chunks]
         full_story_name = f"full_story.{output_format}"
@@ -3189,21 +4007,83 @@ def _merge_review_job(job_id: str, job_entry: Dict[str, Any], manifest: Dict[str
             output_path=str(full_story_path),
             format=output_format,
             cleanup_chunks=False,
+            progress_callback=lambda ratio: _update_review_post_progress(
+                job_id,
+                int((jobs.get(job_id, {}).get("post_process_total") or 1)),
+                ratio,
+            ),
         )
+        with queue_lock:
+            entry = jobs.get(job_id)
+            if entry:
+                entry["post_process_done"] = min(
+                    int(entry.get("post_process_total") or 0) or 0,
+                    int(entry.get("post_process_total") or 0) or 0,
+                )
         full_story_entry = {
             "title": "Full Story",
             "file_url": f"/static/audio/{job_id}/{full_story_name}",
             "relative_path": full_story_name,
         }
 
+    book_mode = bool(manifest.get("book_mode"))
+    book_outputs = []
+    if book_mode:
+        # Merge book-level audio files
+        for book in manifest.get("books", []):
+            book_chunk_files = book.get("chunk_files") or []
+            if not book_chunk_files:
+                continue
+            
+            chunk_paths = [str(job_dir / rel_path) for rel_path in book_chunk_files]
+            missing_chunks = [p for p in chunk_paths if not Path(p).exists()]
+            if missing_chunks:
+                logger.error(f"Missing chunk files for book merge: {missing_chunks}")
+                continue
+            
+            output_filename = book.get("output_filename")
+            rel_book_dir = book.get("book_dir") or "."
+            if not output_filename:
+                continue
+            
+            book_dir_path = job_dir / rel_book_dir
+            book_dir_path.mkdir(parents=True, exist_ok=True)
+            output_path = book_dir_path / output_filename
+            
+            logger.info(f"Merging book-level audio: {len(chunk_paths)} chunks into {output_path}")
+            merger.merge_wav_files(
+                input_files=chunk_paths,
+                output_path=str(output_path),
+                format=output_format,
+                cleanup_chunks=False,
+                progress_callback=lambda ratio, idx=len(book_outputs) + 1: _update_review_post_progress(
+                    job_id,
+                    len(chapters) + idx,
+                    ratio,
+                ),
+            )
+            
+            rel_path = Path(rel_book_dir) / output_filename
+            book_outputs.append({
+                "index": book.get("index", 0),
+                "title": book.get("title"),
+                "file_url": f"/static/audio/{job_id}/{rel_path.as_posix()}",
+                "relative_path": rel_path.as_posix(),
+            })
+
     metadata = {
         "chapter_mode": job_entry.get("chapter_mode"),
+        "book_mode": book_mode,
         "output_format": output_format,
         "chapters": chapter_outputs,
         "chapter_count": len(chapter_outputs),
+        "books": book_outputs,
+        "book_count": len(book_outputs),
         "full_story": full_story_entry,
     }
     save_job_metadata(job_dir, metadata)
+
+    invalidate_library_cache()
 
     with queue_lock:
         entry = jobs.get(job_id)
@@ -3211,6 +4091,9 @@ def _merge_review_job(job_id: str, job_entry: Dict[str, Any], manifest: Dict[str
             entry["status"] = "completed"
             entry["progress"] = 100
             entry["eta_seconds"] = 0
+            entry["post_process_percent"] = 100
+            entry["post_process_active"] = False
+            entry["post_process_done"] = int(entry.get("post_process_total") or entry.get("post_process_done") or 0)
             entry["chapter_outputs"] = chapter_outputs
             entry["completed_at"] = datetime.now().isoformat()
             if full_story_entry:
@@ -3433,7 +4316,7 @@ def list_gemini_models():
             "models": models
         })
 
-    except GeminiProcessorError as exc:
+    except (GeminiProcessorError, LocalLLMProcessorError) as exc:
         return jsonify({
             "success": False,
             "error": str(exc)
@@ -3474,19 +4357,43 @@ def analyze_text():
 
             processor = _create_text_processor_for_engine(selected_engine, config["chunk_size"], config)
             stats = processor.get_statistics(text)
-            chapter_matches = list(CHAPTER_HEADING_PATTERN.finditer(text))
-            if chapter_matches:
-                chapters = split_text_into_chapters(text)
-                stats['chapter_detection'] = {
+            custom_heading = data.get("custom_heading")
+            book_matches = list(BOOK_HEADING_PATTERN.finditer(text))
+            section_pattern = _build_section_heading_pattern(custom_heading)
+            section_matches = list(section_pattern.finditer(text))
+
+            if book_matches:
+                hierarchy = split_text_into_book_sections(text, custom_heading)
+                books = hierarchy.get("books") or []
+                chapters: List[Dict[str, Any]] = []
+                for book in books:
+                    chapters.extend(book.get("chapters") or [])
+                stats['section_detection'] = {
                     "detected": True,
                     "count": len(chapters),
-                    "titles": [c.get('title') for c in chapters if c.get('title')]
+                    "titles": [c.get('title') for c in chapters if c.get('title')],
+                    "kind": "book",
+                    "book_count": len(books),
+                    "section_count": len(chapters),
+                }
+            elif section_matches:
+                sections = split_text_into_sections(text, custom_heading)
+                stats['section_detection'] = {
+                    "detected": True,
+                    "count": len(sections),
+                    "titles": [s.get('title') for s in sections if s.get('title')],
+                    "kind": "section",
+                    "book_count": 0,
+                    "section_count": len(sections),
                 }
             else:
-                stats['chapter_detection'] = {
+                stats['section_detection'] = {
                     "detected": False,
                     "count": 0,
-                    "titles": []
+                    "titles": [],
+                    "kind": None,
+                    "book_count": 0,
+                    "section_count": 0,
                 }
 
             return jsonify({
@@ -3502,6 +4409,104 @@ def analyze_text():
         }), 500
 
 
+@app.route('/api/sections/preview', methods=['POST'])
+def preview_section_detection():
+    """Preview detected book/section structure for UI review."""
+    try:
+        data = request.json or {}
+        text = (data.get('text') or '').strip()
+        custom_heading = data.get('custom_heading')
+
+        if not text:
+            return jsonify({
+                "success": False,
+                "error": "No text provided"
+            }), 400
+
+        hierarchy = split_text_into_book_sections(text, custom_heading)
+
+        def preview_content(content: str, limit: int = 220) -> str:
+            snippet = re.sub(r"\s+", " ", (content or "").strip())
+            if len(snippet) <= limit:
+                return snippet
+            return snippet[: limit - 1].rstrip() + "…"
+
+        if hierarchy.get("kind") == "book":
+            books = []
+            for book in hierarchy.get("books") or []:
+                chapters = []
+                for chapter in book.get("chapters") or []:
+                    chapters.append({
+                        "title": chapter.get("title") or "",
+                        "preview": preview_content(chapter.get("content") or ""),
+                    })
+                books.append({
+                    "title": book.get("title") or "",
+                    "chapters": chapters,
+                })
+
+            return jsonify({
+                "success": True,
+                "kind": "book",
+                "books": books,
+                "sections": [],
+                "book_count": len(books),
+                "section_count": sum(len(b.get("chapters") or []) for b in books)
+            })
+
+        if hierarchy.get("kind") == "section":
+            sections = [
+                {
+                    "title": section.get("title") or "",
+                    "preview": preview_content(section.get("content") or "")
+                }
+                for section in hierarchy.get("sections") or []
+            ]
+            return jsonify({
+                "success": True,
+                "kind": "section",
+                "books": [],
+                "sections": sections,
+                "book_count": 0,
+                "section_count": len(sections)
+            })
+
+        return jsonify({
+            "success": True,
+            "kind": "none",
+            "books": [],
+            "sections": [],
+            "book_count": 0,
+            "section_count": 0
+        })
+
+    except Exception as e:
+        logger.error(f"Error previewing section detection: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route('/api/library/<job_id>/title', methods=['PUT'])
+def update_library_title(job_id: str):
+    """Update the display title for a library collection."""
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify({"success": False, "error": "Title is required"}), 400
+
+    job_dir = OUTPUT_DIR / job_id
+    if not job_dir.exists():
+        return jsonify({"success": False, "error": "Item not found"}), 404
+
+    metadata = load_job_metadata(job_dir) or {}
+    metadata["collection_title"] = title
+    save_job_metadata(job_dir, metadata)
+
+    return jsonify({"success": True, "title": title})
+
+
 @app.route('/api/gemini/process', methods=['POST'])
 def process_text_with_gemini():
     """Send text (optionally chapterized) through Google Gemini."""
@@ -3509,6 +4514,7 @@ def process_text_with_gemini():
         data = request.json or {}
         text = (data.get('text') or '').strip()
         prefer_chapters = bool(data.get('prefer_chapters', True))
+        custom_heading = data.get('custom_heading')
         prompt_override = (data.get('prompt_override') or '').strip()
 
         if not text:
@@ -3518,24 +4524,24 @@ def process_text_with_gemini():
             }), 400
 
         config = load_config()
-        api_key = (config.get('gemini_api_key') or '').strip()
-        if not api_key:
-            return jsonify({
-                "success": False,
-                "error": "Gemini API key not configured"
-            }), 400
+        provider = (config.get("llm_provider") or DEFAULT_LLM_PROVIDER).lower().strip()
+        if provider == "gemini":
+            api_key = (config.get('gemini_api_key') or '').strip()
+            if not api_key:
+                return jsonify({
+                    "success": False,
+                    "error": "Gemini API key not configured"
+                }), 400
 
-        model_name = config.get('gemini_model') or DEFAULT_GEMINI_MODEL
         prompt_prefix = prompt_override or (config.get('gemini_prompt') or '').strip()
 
-        sections = build_gemini_sections(text, prefer_chapters, config)
+        sections = build_gemini_sections(text, prefer_chapters, config, custom_heading)
         if not sections:
             return jsonify({
                 "success": False,
                 "error": "Unable to create sections for Gemini processing"
             }), 400
 
-        processor = GeminiProcessor(api_key=api_key, model_name=model_name)
         text_processor = TextProcessor(chunk_size=config.get('chunk_size', 500))
         known_speakers = set(text_processor.extract_speakers(text))
 
@@ -3550,7 +4556,7 @@ def process_text_with_gemini():
                 prompt_prefix,
                 sorted(known_speakers)
             )
-            response_text = processor.generate_text(combined_prompt)
+            response_text = _run_llm_prompt(combined_prompt, config)
             detected_speakers = text_processor.extract_speakers(response_text)
             for speaker_name in detected_speakers:
                 known_speakers.add(speaker_name)
@@ -3582,7 +4588,7 @@ def process_text_with_gemini():
             "section_count": len(processed_sections)
         })
 
-    except GeminiProcessorError as exc:
+    except (GeminiProcessorError, LocalLLMProcessorError) as exc:
         return jsonify({
             "success": False,
             "error": str(exc)
@@ -3610,14 +4616,15 @@ def process_full_text_with_gemini():
             }), 400
 
         config = load_config()
-        api_key = (config.get('gemini_api_key') or '').strip()
-        if not api_key:
-            return jsonify({
-                "success": False,
-                "error": "Gemini API key not configured"
-            }), 400
+        provider = (config.get("llm_provider") or DEFAULT_LLM_PROVIDER).lower().strip()
+        if provider == "gemini":
+            api_key = (config.get('gemini_api_key') or '').strip()
+            if not api_key:
+                return jsonify({
+                    "success": False,
+                    "error": "Gemini API key not configured"
+                }), 400
 
-        model_name = config.get('gemini_model') or DEFAULT_GEMINI_MODEL
         prompt_prefix = prompt_override or (config.get('gemini_prompt') or '').strip()
 
         prompt_parts = []
@@ -3626,15 +4633,14 @@ def process_full_text_with_gemini():
         prompt_parts.append(text)
         combined_prompt = "\n\n".join(part.strip() for part in prompt_parts if part).strip()
 
-        processor = GeminiProcessor(api_key=api_key, model_name=model_name)
-        response_text = processor.generate_text(combined_prompt)
+        response_text = _run_llm_prompt(combined_prompt, config)
 
         return jsonify({
             "success": True,
             "result_text": response_text.strip()
         })
 
-    except GeminiProcessorError as exc:
+    except (GeminiProcessorError, LocalLLMProcessorError) as exc:
         return jsonify({
             "success": False,
             "error": str(exc)
@@ -3647,6 +4653,60 @@ def process_full_text_with_gemini():
         }), 500
 
 
+@app.route('/api/gemini/speaker-profiles', methods=['POST'])
+def process_gemini_speaker_profiles():
+    """Generate speaker profile table and parse structured attributes."""
+    try:
+        data = request.json or {}
+        speakers = data.get('speakers') or []
+        context = (data.get('context') or '').strip()
+        prompt_override = (data.get('prompt_override') or '').strip()
+
+        speakers = [str(s).strip() for s in speakers if str(s).strip()]
+        if not speakers:
+            return jsonify({
+                "success": False,
+                "error": "No speakers provided"
+            }), 400
+
+        config = load_config()
+        provider = (config.get("llm_provider") or DEFAULT_LLM_PROVIDER).lower().strip()
+        if provider == "gemini":
+            api_key = (config.get('gemini_api_key') or '').strip()
+            if not api_key:
+                return jsonify({
+                    "success": False,
+                    "error": "Gemini API key not configured"
+                }), 400
+        prompt_prefix = prompt_override or (config.get('gemini_speaker_profile_prompt') or '').strip()
+        if not prompt_prefix:
+            return jsonify({
+                "success": False,
+                "error": "Speaker profile prompt not configured"
+            }), 400
+
+        prompt = compose_gemini_speaker_profile_prompt(prompt_prefix, speakers, context)
+        response_text = _run_llm_prompt(prompt, config)
+        profiles = parse_gemini_speaker_table(response_text)
+
+        return jsonify({
+            "success": True,
+            "profiles": profiles,
+            "raw": response_text.strip()
+        })
+    except (GeminiProcessorError, LocalLLMProcessorError) as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc)
+        }), 400
+    except Exception as e:  # pragma: no cover - general failure
+        logger.error(f"Error during Gemini speaker profile processing: {e}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": "Failed to process speaker profiles with Gemini"
+        }), 500
+
+
 @app.route('/api/gemini/sections', methods=['POST'])
 def get_gemini_sections():
     """Return the list of Gemini sections for the provided text."""
@@ -3654,6 +4714,7 @@ def get_gemini_sections():
         data = request.json or {}
         text = (data.get('text') or '').strip()
         prefer_chapters = bool(data.get('prefer_chapters', True))
+        custom_heading = data.get('custom_heading')
 
         if not text:
             return jsonify({
@@ -3662,7 +4723,7 @@ def get_gemini_sections():
             }), 400
 
         config = load_config()
-        sections = build_gemini_sections(text, prefer_chapters, config)
+        sections = build_gemini_sections(text, prefer_chapters, config, custom_heading)
 
         sanitized = []
         for idx, section in enumerate(sections, start=1):
@@ -3702,14 +4763,15 @@ def process_gemini_section():
             }), 400
 
         config = load_config()
-        api_key = (config.get('gemini_api_key') or '').strip()
-        if not api_key:
-            return jsonify({
-                "success": False,
-                "error": "Gemini API key not configured"
-            }), 400
+        provider = (config.get("llm_provider") or DEFAULT_LLM_PROVIDER).lower().strip()
+        if provider == "gemini":
+            api_key = (config.get('gemini_api_key') or '').strip()
+            if not api_key:
+                return jsonify({
+                    "success": False,
+                    "error": "Gemini API key not configured"
+                }), 400
 
-        model_name = config.get('gemini_model') or DEFAULT_GEMINI_MODEL
         prompt_prefix = prompt_override or (config.get('gemini_prompt') or '').strip()
 
         raw_known = data.get('known_speakers') or []
@@ -3721,14 +4783,13 @@ def process_gemini_section():
                     if normalized:
                         known_speakers.append(normalized)
 
-        processor = GeminiProcessor(api_key=api_key, model_name=model_name)
         text_processor = TextProcessor()
         prompt = compose_gemini_prompt(
             {"content": content},
             prompt_prefix,
             known_speakers
         )
-        response_text = processor.generate_text(prompt)
+        response_text = _run_llm_prompt(prompt, config)
         detected_speakers = text_processor.extract_speakers(response_text)
 
         return jsonify({
@@ -3737,7 +4798,7 @@ def process_gemini_section():
             "speakers": detected_speakers
         })
 
-    except GeminiProcessorError as exc:
+    except (GeminiProcessorError, LocalLLMProcessorError) as exc:
         return jsonify({
             "success": False,
             "error": str(exc)
@@ -3762,6 +4823,7 @@ def generate_audio():
         logger.info("Received voice_assignments: %s", voice_assignments)
         split_by_chapter = bool(data.get('split_by_chapter', False))
         generate_full_story = bool(data.get('generate_full_story', False)) and split_by_chapter
+        custom_heading = data.get('custom_heading')
         requested_format = (data.get('output_format') or '').strip().lower()
         requested_bitrate = data.get('output_bitrate_kbps')
         requested_engine = (data.get('tts_engine') or '').strip().lower()
@@ -3814,6 +4876,13 @@ def generate_audio():
             config['output_format'] = requested_format
         if requested_bitrate:
             config['output_bitrate_kbps'] = requested_bitrate
+
+        _validate_voice_assignments_for_engine(
+            active_engine,
+            text,
+            voice_assignments,
+            config,
+        )
         
         # Create job
         job_id = str(uuid.uuid4())
@@ -3824,6 +4893,7 @@ def generate_audio():
             include_full_story=generate_full_story,
             engine_name=active_engine,
             config=config,
+            custom_heading=custom_heading,
         )
         
         merge_options = {
@@ -3834,7 +4904,9 @@ def generate_audio():
             "output_bitrate_kbps": int(config.get('output_bitrate_kbps') or 0),
         }
 
-        job_dir = (OUTPUT_DIR / job_id).as_posix()
+        job_dir_path = OUTPUT_DIR / job_id
+        job_dir_path.mkdir(parents=True, exist_ok=True)
+        job_dir = job_dir_path.as_posix()
 
         with queue_lock:
             jobs[job_id] = {
@@ -3849,6 +4921,7 @@ def generate_audio():
                 "chunks": [],
                 "voice_assignments": voice_assignments,
                 "config_snapshot": copy.deepcopy(config),
+                "custom_heading": custom_heading,
                 "source_text": text,
                 "regen_tasks": {},
                 "engine": config.get("tts_engine"),
@@ -3865,6 +4938,8 @@ def generate_audio():
             "total_chunks": estimated_chunks,
             "review_mode": review_mode,
             "merge_options": merge_options,
+            "job_dir": job_dir,
+            "custom_heading": custom_heading,
         }
 
         # Add to queue
@@ -3878,6 +4953,12 @@ def generate_audio():
             "queue_position": job_queue.qsize()
         })
         
+    except ValueError as e:
+        logger.error(f"Error queueing job: {e}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 400
     except Exception as e:
         logger.error(f"Error queueing job: {e}", exc_info=True)
         return jsonify({
@@ -4011,12 +5092,13 @@ def _build_library_listing():
         job_id = job_dir.name
         metadata = load_job_metadata(job_dir)
 
-        if metadata and metadata.get("chapters"):
+        if metadata and (metadata.get("chapters") or metadata.get("books")):
             chapters_data = []
             total_size = 0
             created_ts = None
             full_story_entry = None
-            for chapter in metadata["chapters"]:
+            outputs = metadata.get("books") if metadata.get("book_mode") else metadata.get("chapters")
+            for chapter in outputs or []:
                 rel_path = chapter.get("relative_path")
                 if not rel_path:
                     continue
@@ -4073,12 +5155,77 @@ def _build_library_listing():
                     "file_size": total_size,
                     "format": metadata.get("output_format", chapters_data[0]["format"]),
                     "chapter_mode": metadata.get("chapter_mode", False),
+                    "book_mode": metadata.get("book_mode", False),
+                    "collection_title": metadata.get("collection_title"),
+                    "books": chapters_data if metadata.get("book_mode") else [],
                     "chapters": chapters_data,
                     "full_story": full_story_entry,
                     "has_chunks": has_chunks,
                     "engine": engine,
                 })
             continue
+
+        # Fallback: include chapter/book outputs even if metadata.json is missing.
+        # This makes the library resilient if metadata writing failed but audio files exist.
+        chapter_output_files = sorted(job_dir.glob("chapter_*/*"))
+        if not chapter_output_files:
+            chapter_output_files = sorted(job_dir.glob("book_*/*/*"))
+
+        if chapter_output_files:
+            chapters_data = []
+            total_size = 0
+            created_ts = None
+
+            for idx, file_path in enumerate(chapter_output_files, start=1):
+                if not file_path.is_file():
+                    continue
+                if file_path.name.lower().startswith("_silence_"):
+                    continue
+                if file_path.suffix.lower() not in {".mp3", ".wav", ".m4a", ".ogg", ".aac"}:
+                    continue
+
+                stat = file_path.stat()
+                created_time = datetime.fromtimestamp(stat.st_ctime)
+                created_ts = created_ts or created_time
+                total_size += stat.st_size
+                rel_path = file_path.relative_to(job_dir).as_posix()
+                chapters_data.append({
+                    "index": idx,
+                    "title": f"Chapter {idx}",
+                    "output_file": f"/static/audio/{job_id}/{rel_path}",
+                    "relative_path": rel_path,
+                    "file_size": stat.st_size,
+                    "format": file_path.suffix.lstrip('.'),
+                })
+
+            if chapters_data:
+                chunks_meta_path = job_dir / "chunks_metadata.json"
+                manifest_path = job_dir / "review_manifest.json"
+                has_chunks = chunks_meta_path.exists() or manifest_path.exists()
+                engine = None
+                if chunks_meta_path.exists():
+                    try:
+                        with chunks_meta_path.open("r", encoding="utf-8") as f:
+                            chunks_meta = json.load(f)
+                            engine = chunks_meta.get("engine")
+                    except Exception:
+                        pass
+                library_items.append({
+                    "job_id": job_id,
+                    "output_file": chapters_data[0]["output_file"],
+                    "relative_path": chapters_data[0]["relative_path"],
+                    "created_at": (created_ts or datetime.now()).isoformat(),
+                    "file_size": total_size,
+                    "format": chapters_data[0]["format"],
+                    "chapter_mode": True,
+                    "book_mode": False,
+                    "books": [],
+                    "chapters": chapters_data,
+                    "full_story": None,
+                    "has_chunks": has_chunks,
+                    "engine": engine,
+                })
+                continue
 
         output_files = list(job_dir.glob("output.*"))
         if output_files:
@@ -4265,6 +5412,7 @@ def get_library_item_chunks(job_id):
 
         # Load chapter information from review_manifest if available
         chapters = []
+        books = []
         manifest_path = job_dir / "review_manifest.json"
         if manifest_path.exists():
             with manifest_path.open("r", encoding="utf-8") as handle:
@@ -4276,6 +5424,17 @@ def get_library_item_chunks(job_id):
                             "index": ch.get("index"),
                             "title": ch.get("title"),
                             "output_filename": ch.get("output_filename"),
+                            "book_index": ch.get("book_index"),
+                            "book_title": ch.get("book_title"),
+                            "book_order": ch.get("book_order"),
+                        })
+                if manifest.get("book_mode"):
+                    for book in manifest.get("books", []):
+                        books.append({
+                            "index": book.get("index"),
+                            "title": book.get("title"),
+                            "output_filename": book.get("output_filename"),
+                            "chapter_indices": book.get("chapter_indices") or [],
                         })
 
         return jsonify({
@@ -4286,7 +5445,9 @@ def get_library_item_chunks(job_id):
             "updated_at": chunks_meta.get("updated_at"),
             "chunks": chunks,
             "chapters": chapters,
+            "books": books,
             "has_chapters": len(chapters) > 1,
+            "has_books": len(books) > 0,
         })
 
     except Exception as exc:
@@ -4365,6 +5526,7 @@ def cancel_job(job_id):
             
             # Set cancellation flag
             cancel_flags[job_id] = True
+            cancel_events.setdefault(job_id, threading.Event()).set()
             
             # Update job status
             jobs[job_id]["status"] = "cancelled"
@@ -4410,6 +5572,10 @@ def get_queue():
                         "full_story_requested": job_info.get("full_story_requested", False),
                         "review_mode": job_info.get("review_mode", False),
                         "review_has_active_regen": job_info.get("review_mode", False) and _has_active_regen_tasks(job_info),
+                        "post_process_total": job_info.get("post_process_total", 0),
+                        "post_process_done": job_info.get("post_process_done", 0),
+                        "post_process_active": job_info.get("post_process_active", False),
+                        "post_process_percent": job_info.get("post_process_percent", 0),
                     })
                 
                 all_jobs.sort(key=lambda x: x['created_at'], reverse=True)
@@ -4511,28 +5677,29 @@ def health_check():
 
 @app.route('/api/qwen3/metadata', methods=['GET'])
 def qwen3_metadata():
-    """Return supported speakers and languages for Qwen3 CustomVoice."""
+    """Return supported speakers and languages for Qwen3 CustomVoice.
+    
+    Returns static metadata without loading the model to avoid consuming GPU memory at startup.
+    """
     if not QWEN3_AVAILABLE:
         return jsonify({
             "success": False,
             "error": "qwen-tts is not installed. Run setup to enable Qwen3-TTS local mode."
         }), 400
-    try:
-        config = load_config()
-        engine = get_tts_engine("qwen3_custom", config=config)
-        speakers = getattr(engine, "supported_speakers", []) or []
-        languages = getattr(engine, "supported_languages", []) or []
-        return jsonify({
-            "success": True,
-            "speakers": speakers,
-            "languages": languages,
-        })
-    except Exception as exc:
-        logger.error("Failed to load Qwen3 metadata: %s", exc, exc_info=True)
-        return jsonify({
-            "success": False,
-            "error": str(exc),
-        }), 500
+    # Return static metadata - these are the known Qwen3 speakers/languages
+    # Avoids loading the full model (~3-4GB GPU) just to get this list
+    return jsonify({
+        "success": True,
+        "speakers": [
+            "Chelsie", "Ethan", "Serena", "Asher", "Nova", "Aria", "Zephyr", "Ivy",
+            "Jasper", "Luna", "Orion", "Sage", "Willow", "Finn", "Aurora", "Kai",
+            "Ember", "River", "Skye", "Phoenix"
+        ],
+        "languages": [
+            "Auto", "English", "Chinese", "Japanese", "Korean", "French", "German",
+            "Spanish", "Italian", "Portuguese", "Russian", "Arabic", "Hindi"
+        ],
+    })
 
 
 @app.route('/api/qwen3/voice-design/preview', methods=['POST'])

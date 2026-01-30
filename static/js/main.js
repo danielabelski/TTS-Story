@@ -1,5 +1,499 @@
 const MIN_CHATTERBOX_PROMPT_SECONDS = 5;
 
+const HELP_TOPICS = {
+    'input-text': {
+        title: 'Input Text',
+        body: `
+            <p>Paste or type your story here. Use <code>[speaker]</code> tags for multiple voices.</p>
+            <ul>
+                <li><strong>Single voice:</strong> Just write plain text.</li>
+                <li><strong>Multi-voice:</strong> Wrap sections in tags like <code>[alice]Hello[/alice]</code>.</li>
+                <li><strong>Drop files:</strong> Drag documents onto the text area to extract text.</li>
+            </ul>
+        `
+    },
+    projects: {
+        title: 'Projects',
+        body: `
+            <p>Save and reload your full setup: text, speakers, voice assignments, and settings.</p>
+            <ul>
+                <li><strong>Save Project:</strong> Stores current text and configuration.</li>
+                <li><strong>Load Project:</strong> Restores a previously saved project.</li>
+            </ul>
+        `
+    },
+    'prep-text': {
+        title: 'Prep Text',
+        body: `
+            <p>Run your text through the selected LLM prompt before generating audio.</p>
+            <ul>
+                <li>Use this to clean formatting, fix punctuation, or add narration polish.</li>
+                <li>The prompt preset defines the cleanup behavior.</li>
+            </ul>
+        `
+    },
+    'paralinguistic-tags': {
+        title: 'Paralinguistic Tags',
+        body: `
+            <p>Insert expressive tags like <code>[sigh]</code> or <code>[laugh]</code> into your text.</p>
+            <p>These are supported by Kokoro engines to add non-verbal cues.</p>
+        `
+    },
+    'text-statistics': {
+        title: 'Text Statistics',
+        body: `
+            <p>Quick summary of your input: speaker count, chunks, words, and estimated duration.</p>
+            <p>Click a speaker chip to open voice assignments.</p>
+        `
+    },
+    'assign-voices': {
+        title: 'Assign Voices',
+        body: `
+            <p>Set voices or reference prompts per speaker.</p>
+            <ul>
+                <li>Each speaker can use a unique voice or clone prompt.</li>
+                <li>Use the inline controls to preview and fine-tune voice FX.</li>
+            </ul>
+        `
+    },
+    'generation-options': {
+        title: 'Generation Options',
+        body: `
+            <p>Select the engine, output format, and chapter splitting behavior.</p>
+            <ul>
+                <li><strong>Engine:</strong> Choose the TTS engine for this job.</li>
+                <li><strong>Format:</strong> Set output type and bitrate.</li>
+                <li><strong>Sections:</strong> Split output by chapters if detected.</li>
+            </ul>
+        `
+    },
+    'speaker-edit': {
+        title: 'Edit Speaker',
+        body: `
+            <p>Rename a speaker and refine how their voice is generated.</p>
+            <ul>
+                <li><strong>Speaker name:</strong> Clicking Apply updates the speaker tag names in the main text.</li>
+                <li><strong>Profile:</strong> Describe the person’s background, role, and personality.</li>
+                <li><strong>Voice type:</strong> Describe the sound of their voice (baritone, tenor, deep, airy).</li>
+                <li><strong>Prep Text:</strong> When it detects speakers, profiles and voice types can auto-fill here.</li>
+                <li><strong>Voice sample:</strong> Options change by engine—Kokoro has its own voices; other engines share the voice sample list.</li>
+                <li><strong>Pitch & Speed:</strong> Fine-tune the tone and pacing for this speaker.</li>
+            </ul>
+        `
+    },
+    'audio-library': {
+        title: 'Audio Library',
+        body: `
+            <p>Your saved jobs live here. Each entry shows the engine, size, and format (MP3/WAV).</p>
+            <ul>
+                <li><strong>Stacks:</strong> Click an item to expand the player.</li>
+                <li><strong>Actions:</strong> Download, review chunks, or delete.</li>
+                <li><strong>Review Chunks:</strong> Opens a new window to manage speakers and audio segments.</li>
+                <li><strong>Speakers:</strong> See name + chunk count, then expand to swap engine, voice, pitch, and speed.</li>
+                <li><strong>Regenerate:</strong> Check a speaker and apply to regenerate all of their chunks.</li>
+                <li><strong>Chunks list:</strong> Play each chunk or expand to edit text, FX, engine, and voice.</li>
+                <li><strong>Single-chunk regen:</strong> Regenerate one chunk without touching the rest.</li>
+            </ul>
+        `
+    },
+    'available-voices': {
+        title: 'Available Voices',
+        body: `
+            <p>Everything related to voices lives here: built-in Kokoro voices, custom blends, Qwen creation, and voice prompts.</p>
+            <ul>
+                <li><strong>Kokoro Voices:</strong> Built-in voices with instant previews.</li>
+                <li><strong>Custom Kokoro Blends:</strong> Mix two Kokoro voices into a new voice.</li>
+                <li><strong>Qwen Voice Creation:</strong> Generate high-quality custom voices with prompts.</li>
+                <li><strong>Voice Prompts:</strong> Manage prompt clips and external voice libraries.</li>
+            </ul>
+        `
+    },
+    'kokoro-voices': {
+        title: 'Kokoro Voices',
+        body: `
+            <p>The full list of Kokoro’s built-in voices.</p>
+            <ul>
+                <li>Click any voice to hear a preview sample.</li>
+                <li>These voices appear in the voice selectors throughout the app.</li>
+            </ul>
+        `
+    },
+    'custom-kokoro-blends': {
+        title: 'Custom Kokoro Voice Blends',
+        body: `
+            <p>Create new Kokoro voices by blending two built-in voices.</p>
+            <ul>
+                <li><strong>New Custom Voice:</strong> Pick two source voices and blend settings.</li>
+                <li>Edit or delete saved blends from the list.</li>
+                <li>Custom voices show up in voice selectors across the app.</li>
+            </ul>
+        `
+    },
+    'qwen-voice-creation': {
+        title: 'Qwen Voice Creation',
+        body: `
+            <p>Use Qwen’s specialized model to generate highly natural custom voices.</p>
+            <ul>
+                <li>Enter a prompt + sample text to generate a preview.</li>
+                <li>Save the result into Voice Prompts for reuse.</li>
+            </ul>
+        `
+    },
+    'voice-prompts': {
+        title: 'Voice Prompts',
+        body: `
+            <p>Manage your prompt library for Chatterbox, VoxCPM, and Qwen3.</p>
+            <ul>
+                <li>Upload or record prompt clips to build your own library.</li>
+                <li>Load External Voices to browse hundreds of voices in many languages.</li>
+                <li>Download voices you want, preview them, or delete entries.</li>
+                <li>Edit name, gender, or language metadata as needed.</li>
+            </ul>
+        `
+    },
+    settings: {
+        title: 'Settings',
+        body: `
+            <p>Control global defaults, engine configuration, audio generation behavior, and LLM prep options.</p>
+            <ul>
+                <li><strong>Quick Settings:</strong> Default engine + output format for new sessions.</li>
+                <li><strong>Engine Settings:</strong> Per-engine parameters and API keys.</li>
+                <li><strong>Audio & Generation:</strong> Chunking, merge settings, and speed.</li>
+                <li><strong>LLM Pre-Processing:</strong> Prompting and speaker-profile automation.</li>
+            </ul>
+        `
+    },
+    'settings-quick': {
+        title: 'Quick Settings',
+        body: `
+            <p>These defaults apply when the app starts and when creating new jobs.</p>
+            <ul>
+                <li><strong>Default Engine:</strong> Sets the initial TTS engine for new jobs.</li>
+                <li><strong>File Format:</strong> MP3, WAV, or OGG for final output.</li>
+                <li><strong>MP3 Bitrate:</strong> Higher values mean larger files and higher quality.</li>
+            </ul>
+        `
+    },
+    'settings-engines': {
+        title: 'Engine Settings',
+        body: `
+            <p>Configure the behavior of each TTS engine and related cloud services.</p>
+            <ul>
+                <li>Select a tab to edit its engine-specific parameters.</li>
+                <li>Use API Keys for cloud-hosted engines.</li>
+            </ul>
+        `
+    },
+    'engine-kokoro': {
+        title: 'Kokoro Settings',
+        body: `
+            <p>Kokoro runs locally with built-in voices.</p>
+            <ul>
+                <li>No engine parameters to configure here.</li>
+                <li>Pick the default voice in the Generate tab.</li>
+            </ul>
+        `
+    },
+    'engine-chatterbox-local': {
+        title: 'Chatterbox Local',
+        body: `
+            <p>Local Chatterbox Turbo on your GPU.</p>
+            <ul>
+                <li><strong>Device:</strong> Choose auto/cuda/cpu.</li>
+                <li><strong>Chunk Size:</strong> Text length per generation step.</li>
+                <li><strong>Default Prompt:</strong> Optional reference voice prompt.</li>
+                <li><strong>Generation Parameters:</strong> Control creativity and emphasis.</li>
+            </ul>
+        `
+    },
+    'engine-chatterbox-cloud': {
+        title: 'Chatterbox Cloud',
+        body: `
+            <p>Replicate-hosted Chatterbox Turbo for cloud inference.</p>
+            <ul>
+                <li><strong>Model Version:</strong> Exact Replicate model tag.</li>
+                <li><strong>Default Voice:</strong> Default voice name for cloud runs.</li>
+                <li><strong>Generation Parameters:</strong> Temperature, top-p, top-k, etc.</li>
+                <li>Requires a Replicate API key.</li>
+            </ul>
+        `
+    },
+    'engine-voxcpm': {
+        title: 'VoxCPM 1.5',
+        body: `
+            <p>Expressive local TTS with voice cloning.</p>
+            <ul>
+                <li>Set device, model ID, and default prompt.</li>
+                <li>CFG + timesteps balance speed vs. quality.</li>
+                <li>Normalization/denoise options refine output.</li>
+            </ul>
+        `
+    },
+    'engine-qwen3': {
+        title: 'Qwen3-TTS',
+        body: `
+            <p>Configure Qwen3 custom voice and cloning defaults.</p>
+            <ul>
+                <li>Set model ID, device, dtype, attention, and defaults.</li>
+                <li>Custom Voice and Voice Clone use separate defaults.</li>
+                <li>Prompt transcript can auto-generate if left blank.</li>
+            </ul>
+        `
+    },
+    'engine-api-keys': {
+        title: 'API Keys',
+        body: `
+            <p>Store credentials for cloud engines.</p>
+            <ul>
+                <li>Replicate API token is used by Kokoro and Chatterbox cloud engines.</li>
+                <li>Keys are saved locally in your settings.</li>
+            </ul>
+        `
+    },
+    'settings-audio': {
+        title: 'Audio & Generation',
+        body: `
+            <p>Global generation controls for chunking, merging, and performance.</p>
+            <ul>
+                <li><strong>Chunk Size:</strong> Words per chunk.</li>
+                <li><strong>Crossfade / Silence:</strong> Smooths transitions.</li>
+                <li><strong>Parallel Chunks:</strong> Cloud concurrency.</li>
+                <li><strong>Group by Speaker:</strong> Optimizes speaker switching.</li>
+                <li><strong>Speech Speed:</strong> Overall rate adjustment.</li>
+                <li><strong>Unload GPU:</strong> Saves VRAM after each job.</li>
+            </ul>
+        `
+    },
+    'settings-llm': {
+        title: 'LLM Pre-Processing',
+        body: `
+            <p>Use an LLM to clean text, add punctuation, and build speaker profiles.</p>
+            <ul>
+                <li><strong>Provider:</strong> Gemini cloud or local LM Studio/Ollama.</li>
+                <li><strong>API Key / Model:</strong> Required for cloud usage.</li>
+                <li><strong>Local Settings:</strong> Base URL, model name, and timeout.</li>
+                <li><strong>Prompt Prefix:</strong> Instructions for text prep.</li>
+                <li><strong>Speaker Profile Prompt:</strong> Guides speaker profile creation.</li>
+                <li><strong>Prompt Presets:</strong> Save reusable prompt templates.</li>
+            </ul>
+        `
+    }
+};
+
+async function generateSpeakerVoicePromptBatch(speaker, displayName, statusEl) {
+    if (!speaker) return false;
+    const { profile } = findSpeakerProfile(speaker);
+    const description = profile?.description || '';
+    const voice = profile?.voice || '';
+    const instruct = description || '';
+    const shortDescription = voice || '';
+    const sampleText = 'With this line of text, you will always know exactly where I stand, and what I sound like. Whether you like it or not. though, it may not be what you think.';
+    if (!shortDescription) {
+        if (statusEl) {
+            statusEl.textContent = `Skipped ${speaker}: missing voice type.`;
+        }
+        return false;
+    }
+    if (!instruct) {
+        if (statusEl) {
+            statusEl.textContent = `Skipped ${speaker}: missing profile description.`;
+        }
+        return false;
+    }
+    const payload = {
+        name: displayName || speaker,
+        gender: parseGenderFromSpeakerName(speaker),
+        language: 'Auto',
+        description: shortDescription,
+        text: sampleText,
+        instruct
+    };
+    try {
+        if (statusEl) {
+            statusEl.textContent = `Generating preview for ${displayName || speaker}...`;
+        }
+        const previewResponse = await fetch('/api/qwen3/voice-design/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text: payload.text,
+                instruct: payload.instruct,
+                language: payload.language
+            })
+        });
+        const previewData = await previewResponse.json();
+        if (!previewData.success) {
+            throw new Error(previewData.error || 'Failed to enqueue preview');
+        }
+        const previewResult = await pollQwenVoiceTask(previewData.job_id, `Generating ${displayName || speaker}...`);
+        if (!previewResult.audio_base64) {
+            throw new Error('Preview audio missing from response.');
+        }
+        if (statusEl) {
+            statusEl.textContent = `Saving ${displayName || speaker}...`;
+        }
+        const saveResponse = await fetch('/api/qwen3/voice-design/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                ...payload,
+                audio_base64: previewResult.audio_base64
+            })
+        });
+        const saveData = await saveResponse.json();
+        if (!saveData.success) {
+            throw new Error(saveData.error || 'Failed to enqueue save');
+        }
+        await pollQwenVoiceTask(saveData.job_id, `Saving ${displayName || speaker}...`);
+        await refreshChatterboxVoices();
+        populateReferenceSelects();
+        const targetName = (displayName || speaker).trim().toLowerCase();
+        const latestVoice = availableChatterboxVoices
+            .filter(entry => (entry?.name || '').trim().toLowerCase() === targetName)
+            .sort((a, b) => new Date(b?.created_at || 0) - new Date(a?.created_at || 0))[0];
+        const promptValue = (latestVoice?.prompt_path || latestVoice?.file_name || '').trim();
+        if (promptValue) {
+            document.querySelectorAll('#inline-voice-assignment-list [data-role="turbo-control"] .reference-select, #speaker-edit-modal-body [data-role="turbo-control"] .reference-select')
+                .forEach(select => {
+                    if (select?.dataset?.speaker === speaker) {
+                        select.value = promptValue;
+                    }
+                });
+            updateInlineSampleButtonState(activeSpeakerRow, { stopPlayback: true });
+        }
+        return true;
+    } catch (error) {
+        console.error('Batch voice generation failed', error);
+        if (statusEl) {
+            statusEl.textContent = `Failed ${speaker}: ${error.message || 'Error'}`;
+        }
+        return false;
+    }
+}
+
+async function runBatchVoiceGeneration(prefix, statusEl, progressEls = {}, completionEls = {}) {
+    const speakers = Array.isArray(currentStats?.speakers) && currentStats.speakers.length
+        ? currentStats.speakers
+        : [];
+    if (!speakers.length) {
+        showNotification('No detected speakers to generate.', 'warning');
+        return;
+    }
+    const { container, fill, label } = progressEls;
+    const { completeCard, completeSummary } = completionEls;
+    if (container) {
+        container.style.display = 'flex';
+    }
+    if (fill) {
+        fill.style.width = '0%';
+    }
+    if (label) {
+        label.textContent = `0 / ${speakers.length} complete`;
+    }
+    if (completeCard) {
+        completeCard.classList.add('hidden');
+    }
+    let successCount = 0;
+    for (let index = 0; index < speakers.length; index += 1) {
+        const speaker = speakers[index];
+        const displayName = buildBatchVoiceName(prefix, speaker);
+        if (statusEl) {
+            statusEl.textContent = `Processing ${index + 1} of ${speakers.length}: ${displayName}`;
+        }
+        if (label) {
+            label.textContent = `${index} / ${speakers.length} complete`;
+        }
+        if (fill) {
+            fill.style.width = `${Math.round((index / speakers.length) * 100)}%`;
+        }
+        const success = await generateSpeakerVoicePromptBatch(speaker, displayName, statusEl);
+        if (success) {
+            successCount += 1;
+        }
+        if (label) {
+            label.textContent = `${index + 1} / ${speakers.length} complete`;
+        }
+        if (fill) {
+            fill.style.width = `${Math.round(((index + 1) / speakers.length) * 100)}%`;
+        }
+    }
+    if (statusEl) {
+        statusEl.textContent = '';
+    }
+    if (completeSummary) {
+        completeSummary.textContent = `Generated ${successCount} of ${speakers.length} voices.`;
+    }
+    if (completeCard) {
+        completeCard.classList.remove('hidden');
+    }
+    if (label) {
+        label.textContent = `Done: ${successCount}/${speakers.length} generated.`;
+    }
+    if (fill) {
+        fill.style.width = '100%';
+    }
+    if (container) {
+        container.style.display = 'none';
+    }
+    showNotification('Batch voice generation complete.', 'success');
+}
+
+function buildBatchVoiceName(prefix, speaker) {
+    const trimmedPrefix = (prefix || '').trim();
+    if (!trimmedPrefix) return speaker;
+    return `${trimmedPrefix} ${speaker}`.trim();
+}
+
+const HELP_SECTIONS = [
+    {
+        id: 'help-generate',
+        title: 'Generate',
+        topicIds: [
+            'input-text',
+            'projects',
+            'prep-text',
+            'paralinguistic-tags',
+            'text-statistics',
+            'assign-voices',
+            'generation-options',
+            'speaker-edit'
+        ]
+    },
+    {
+        id: 'help-audio-library',
+        title: 'Audio Library',
+        topicIds: ['audio-library']
+    },
+    {
+        id: 'help-available-voices',
+        title: 'Available Voices',
+        topicIds: [
+            'available-voices',
+            'kokoro-voices',
+            'custom-kokoro-blends',
+            'qwen-voice-creation',
+            'voice-prompts'
+        ]
+    },
+    {
+        id: 'help-settings',
+        title: 'Settings',
+        topicIds: [
+            'settings',
+            'settings-quick',
+            'settings-engines',
+            'engine-kokoro',
+            'engine-chatterbox-local',
+            'engine-chatterbox-cloud',
+            'engine-voxcpm',
+            'engine-qwen3',
+            'engine-api-keys',
+            'settings-audio',
+            'settings-llm'
+        ]
+    }
+];
+
 // Locale code to human-readable language name mapping
 const LOCALE_NAMES = {
     'af-ZA': 'Afrikaans', 'am-ET': 'Amharic', 'ar-AE': 'Arabic (UAE)', 'ar-BH': 'Arabic (Bahrain)',
@@ -39,6 +533,286 @@ const LOCALE_NAMES = {
 function getLanguageDisplayName(localeCode) {
     if (!localeCode) return '';
     return LOCALE_NAMES[localeCode] || localeCode;
+}
+
+function openHelpModal(helpId) {
+    const topic = HELP_TOPICS[helpId];
+    if (!topic) return;
+    const overlay = document.getElementById('help-modal-overlay');
+    const modal = document.getElementById('help-modal');
+    const title = document.getElementById('help-modal-title');
+    const body = document.getElementById('help-modal-body');
+    if (!overlay || !modal || !title || !body) return;
+    title.textContent = topic.title;
+    body.innerHTML = topic.body;
+    overlay.classList.remove('hidden');
+    modal.classList.remove('hidden');
+}
+
+function closeHelpModal() {
+    const overlay = document.getElementById('help-modal-overlay');
+    const modal = document.getElementById('help-modal');
+    if (overlay) overlay.classList.add('hidden');
+    if (modal) modal.classList.add('hidden');
+}
+
+function stripHelpHtml(html) {
+    if (!html) return '';
+    return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function buildHelpSectionMap() {
+    return HELP_SECTIONS.reduce((acc, section) => {
+        section.topicIds.forEach(topicId => {
+            acc[topicId] = section.title;
+        });
+        return acc;
+    }, {});
+}
+
+function openHelpSearchModal() {
+    const overlay = document.getElementById('help-search-modal-overlay');
+    const modal = document.getElementById('help-search-modal');
+    if (!overlay || !modal) return;
+    overlay.classList.remove('hidden');
+    modal.classList.remove('hidden');
+    const input = document.getElementById('help-search-input');
+    if (input) {
+        input.focus();
+        input.select();
+    }
+}
+
+function closeHelpSearchModal() {
+    const overlay = document.getElementById('help-search-modal-overlay');
+    const modal = document.getElementById('help-search-modal');
+    if (overlay) overlay.classList.add('hidden');
+    if (modal) modal.classList.add('hidden');
+}
+
+function renderHelpSearchResults(query, searchIndex, sectionMap) {
+    const resultsContainer = document.getElementById('help-search-results');
+    if (!resultsContainer) return;
+    const trimmed = query.trim().toLowerCase();
+    const matches = searchIndex.filter(item => {
+        if (!trimmed) return true;
+        return item.title.includes(trimmed) || item.body.includes(trimmed) || item.section.includes(trimmed);
+    });
+    resultsContainer.innerHTML = '';
+    if (!matches.length) {
+        const empty = document.createElement('div');
+        empty.className = 'help-search-empty';
+        empty.textContent = 'No results. Try a different keyword.';
+        resultsContainer.appendChild(empty);
+        return;
+    }
+    matches.forEach(match => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'help-search-result';
+        button.innerHTML = `
+            <span class="help-search-result-title">${HELP_TOPICS[match.id].title}</span>
+            <span class="help-search-result-meta">${sectionMap[match.id] || 'Help'}</span>
+        `;
+        button.addEventListener('click', () => {
+            closeHelpSearchModal();
+            openHelpModal(match.id);
+        });
+        resultsContainer.appendChild(button);
+    });
+}
+
+function buildHelpTopicsList() {
+    const container = document.getElementById('help-topics-list');
+    if (!container) return;
+    container.innerHTML = '';
+    HELP_SECTIONS.forEach((section, index) => {
+        const topics = section.topicIds
+            .map(topicId => ({ topicId, topic: HELP_TOPICS[topicId] }))
+            .filter(entry => entry.topic);
+        if (!topics.length) return;
+        const sectionEl = document.createElement('div');
+        sectionEl.className = 'help-topics-section';
+        if (index > 0) {
+            sectionEl.classList.add('collapsed');
+        }
+        sectionEl.innerHTML = `
+            <button type="button" class="help-topics-section-header">
+                <span class="help-topics-section-title">${section.title}</span>
+                <span class="help-topics-section-toggle">${index > 0 ? '▶' : '▼'}</span>
+            </button>
+            <div class="help-topics-section-content">
+                <div class="help-topics-grid"></div>
+            </div>
+        `;
+        const grid = sectionEl.querySelector('.help-topics-grid');
+        topics.forEach(({ topicId, topic }) => {
+            const card = document.createElement('button');
+            card.type = 'button';
+            card.className = 'help-topic-card';
+            card.dataset.helpId = topicId;
+            card.innerHTML = `
+                <div class="help-topic-title">${topic.title}</div>
+                <div class="help-topic-description">Click to read more.</div>
+            `;
+            card.addEventListener('click', () => openHelpModal(topicId));
+            grid.appendChild(card);
+        });
+        const header = sectionEl.querySelector('.help-topics-section-header');
+        const toggle = sectionEl.querySelector('.help-topics-section-toggle');
+        if (header && toggle) {
+            header.addEventListener('click', () => {
+                sectionEl.classList.toggle('collapsed');
+                toggle.textContent = sectionEl.classList.contains('collapsed') ? '▶' : '▼';
+            });
+        }
+        container.appendChild(sectionEl);
+    });
+}
+
+function initHelpSystem() {
+    document.querySelectorAll('.help-icon').forEach(icon => {
+        icon.addEventListener('click', event => {
+            const target = event.currentTarget;
+            const helpId = target.dataset.helpId;
+            if (helpId) {
+                openHelpModal(helpId);
+            }
+        });
+    });
+    const overlay = document.getElementById('help-modal-overlay');
+    if (overlay) {
+        overlay.addEventListener('click', event => {
+            if (event.target === overlay) {
+                closeHelpModal();
+            }
+        });
+    }
+    document.getElementById('help-modal-close')?.addEventListener('click', closeHelpModal);
+    document.getElementById('help-modal-close-btn')?.addEventListener('click', closeHelpModal);
+    const searchBtn = document.getElementById('help-search-btn');
+    const searchOverlay = document.getElementById('help-search-modal-overlay');
+    const searchClose = document.getElementById('help-search-modal-close');
+    const searchCloseBtn = document.getElementById('help-search-close-btn');
+    const searchInput = document.getElementById('help-search-input');
+    const sectionMap = buildHelpSectionMap();
+    const searchIndex = Object.entries(HELP_TOPICS).map(([id, topic]) => {
+        return {
+            id,
+            title: (topic.title || '').toLowerCase(),
+            body: stripHelpHtml(topic.body).toLowerCase(),
+            section: (sectionMap[id] || '').toLowerCase()
+        };
+    });
+    if (searchBtn) {
+        searchBtn.addEventListener('click', () => {
+            openHelpSearchModal();
+            if (searchInput) {
+                searchInput.value = '';
+                renderHelpSearchResults('', searchIndex, sectionMap);
+            }
+        });
+    }
+    if (searchInput) {
+        searchInput.addEventListener('input', event => {
+            renderHelpSearchResults(event.target.value || '', searchIndex, sectionMap);
+        });
+    }
+    if (searchOverlay) {
+        searchOverlay.addEventListener('click', event => {
+            if (event.target === searchOverlay) {
+                closeHelpSearchModal();
+            }
+        });
+    }
+    searchClose?.addEventListener('click', closeHelpSearchModal);
+    searchCloseBtn?.addEventListener('click', closeHelpSearchModal);
+    buildHelpTopicsList();
+}
+
+function resolveBookTitleFromSections(sections) {
+    if (!Array.isArray(sections)) return '';
+    for (const section of sections) {
+        const rawTitle = (section?.title || '').trim();
+        if (!rawTitle) continue;
+        const title = rawTitle.split('—')[0].trim();
+        const lower = title.toLowerCase();
+        if (!lower || lower === 'full story' || lower === 'title') continue;
+        if (/^(chapter|section|book|part|letter|prologue|epilogue)\b/i.test(title)) {
+            continue;
+        }
+        return title;
+    }
+    return '';
+}
+
+async function fetchSpeakerProfiles() {
+    if (!currentStats?.speakers?.length) {
+        setSpeakerProfiles({});
+        return;
+    }
+    const contextParts = [];
+    if (latestGeminiBookTitle) {
+        contextParts.push(`Book title: ${latestGeminiBookTitle}`);
+    }
+    const context = contextParts.join('\n');
+    const promptOverride = document.getElementById('gemini-speaker-profile-prompt')?.value?.trim() || '';
+    try {
+        const response = await fetch('/api/gemini/speaker-profiles', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                speakers: currentStats.speakers,
+                context,
+                prompt_override: promptOverride || undefined
+            })
+        });
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Failed to build speaker profiles');
+        }
+        setSpeakerProfiles(data.profiles || {});
+        if (activeSpeakerModal) {
+            renderSpeakerProfileSummary(activeSpeakerModal);
+        }
+        showNotification('Speaker profiles generated.', 'success');
+    } catch (error) {
+        console.error('Speaker profile generation failed:', error);
+        showNotification(error.message || 'Failed to generate speaker profiles.', 'warning');
+    }
+}
+
+function saveProject(project) {
+    if (!project) return;
+    const projects = JSON.parse(localStorage.getItem(PROJECT_STORAGE_KEY) || '[]');
+    const matchIndex = projects.findIndex(item => String(item.id) === String(project.id));
+    if (matchIndex >= 0) {
+        const existingId = projects[matchIndex].id;
+        projects[matchIndex] = {
+            ...projects[matchIndex],
+            ...project,
+            id: existingId
+        };
+    } else {
+        projects.push(project);
+    }
+    localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify(projects));
+    loadProjectList();
+}
+
+function deleteProject(projectId) {
+    const projects = JSON.parse(localStorage.getItem(PROJECT_STORAGE_KEY) || '[]');
+    const updated = projects.filter(item => String(item.id) !== String(projectId));
+    localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify(updated));
+    loadProjectList();
+}
+
+function formatSpeakerTagName(value) {
+    const raw = (value || '').toString().trim().toLowerCase();
+    if (!raw) return '';
+    const spaced = raw.replace(/\s+/g, '-');
+    const cleaned = spaced.replace(/[^a-z0-9_-]/g, '');
+    return cleaned.replace(/-+/g, '-').replace(/^-+|-+$/g, '');
 }
 
 function appendQwen3VoiceOptions(selectElement) {
@@ -256,6 +1030,11 @@ function isTurboEngine(engineName) {
         || value === 'qwen3_clone';
 }
 
+function isKokoroEngine(engineName) {
+    const value = (engineName || '').toLowerCase();
+    return value === 'kokoro' || value === 'kokoro_replicate';
+}
+
 function isQwenEngine(engineName) {
     return (engineName || '').toLowerCase() === 'qwen3_custom';
 }
@@ -270,9 +1049,11 @@ function updateEngineUI(engineName) {
     const kokoroCard = document.getElementById('kokoro-default-voice-card');
     const turboCard = document.getElementById('chatterbox-turbo-voice-card');
     const qwenCard = document.getElementById('qwen3-voice-card');
+    const paralinguisticTagsBar = document.getElementById('paralinguistic-tags-bar');
     const isTurbo = isTurboEngine(engineName);
     const isQwen = isQwenEngine(engineName);
     const isQwenClone = isQwenCloneEngine(engineName);
+    const isKokoro = isKokoroEngine(engineName);
     console.log('[updateEngineUI] kokoroCard:', kokoroCard, 'turboCard:', turboCard, 'isTurbo:', isTurbo);
     if (kokoroCard) {
         kokoroCard.style.display = isTurbo || isQwen || isQwenClone ? 'none' : 'block';
@@ -285,6 +1066,9 @@ function updateEngineUI(engineName) {
     if (qwenCard) {
         qwenCard.style.display = isQwen ? 'block' : 'none';
     }
+    if (paralinguisticTagsBar) {
+        paralinguisticTagsBar.style.display = isKokoro ? 'flex' : 'none';
+    }
     updateAssignmentModes(engineName);
     if (isTurbo || isQwenClone) {
         fetchReferencePrompts();
@@ -296,11 +1080,17 @@ function updateEngineUI(engineName) {
     populateVoiceSelects();
 }
 
+function getAssignmentRows() {
+    return Array.from(document.querySelectorAll(
+        '#inline-voice-assignment-list .voice-assignment-row, #speaker-edit-modal-body .voice-assignment-row'
+    ));
+}
+
 function updateAssignmentModes(engineName) {
     const isTurbo = isTurboEngine(engineName);
     const isQwen = isQwenEngine(engineName);
     const isQwenClone = isQwenCloneEngine(engineName);
-    document.querySelectorAll('#inline-voice-assignment-list .voice-assignment-row').forEach(row => {
+    getAssignmentRows().forEach(row => {
         const kokoroControl = row.querySelector('[data-role="kokoro-control"]');
         const turboControl = row.querySelector('[data-role="turbo-control"]');
         const qwenControl = row.querySelector('[data-role="qwen3-control"]');
@@ -319,17 +1109,12 @@ function updateAssignmentModes(engineName) {
             qwenControl.style.display = isQwen ? 'flex' : 'none';
         }
         if (kokoroPanel) {
-            const shouldHide = isTurbo || isQwen || isQwenClone;
-            kokoroPanel.style.display = shouldHide ? 'none' : 'flex';
-            // Clear content when hidden to prevent taking up space
-            if (shouldHide) {
-                kokoroPanel.innerHTML = '';
-            }
+            kokoroPanel.style.display = 'flex';
         }
     });
     // Populate Qwen3 language dropdowns if Qwen3 is selected
     if (isQwen && qwen3Metadata?.languages) {
-        document.querySelectorAll('#inline-voice-assignment-list .qwen3-language-select').forEach(select => {
+        document.querySelectorAll('#inline-voice-assignment-list .qwen3-language-select, #speaker-edit-modal-body .qwen3-language-select').forEach(select => {
             if (select.options.length <= 1) {
                 qwen3Metadata.languages.forEach(lang => {
                     const option = document.createElement('option');
@@ -510,10 +1295,16 @@ function populateReferenceSelects() {
         document.getElementById('chatterbox-reference-select'),
         'Select saved Chatterbox voice'
     );
-    document.querySelectorAll('#inline-voice-assignment-list [data-role="turbo-control"] .reference-select')
+    document.querySelectorAll('#inline-voice-assignment-list [data-role="turbo-control"] .reference-select, #speaker-edit-modal-body [data-role="turbo-control"] .reference-select')
         .forEach(select => {
             populateReferenceDropdown(select, 'Inherit from global selection');
+            const speaker = select.dataset.speaker;
+            const selection = speaker ? turboSelectionState[speaker] : '';
+            if (selection) {
+                select.value = selection;
+            }
     });
+    getAssignmentRows().forEach(row => updateInlineSampleButtonState(row));
 }
 
 async function handleReferenceUpload(event) {
@@ -735,6 +1526,16 @@ let analyzeDebounceTimer = null;
 let lastAnalyzedText = '';
 let analyzeInFlight = false;
 let analyzeRerunRequested = false;
+let sectionReviewInFlight = false;
+let inlineSampleHandlersReady = false;
+const turboSelectionState = {};
+const speakerReadyState = {};
+const speakerProfiles = {};
+let activeSpeakerModal = null;
+let activeSpeakerRow = null;
+let pendingProjectLoad = null;
+let activeProjectId = null;
+let latestGeminiBookTitle = '';
 const ANALYZE_DEBOUNCE_MS = 800;
 const VOICES_EVENT_NAME = window.VOICES_UPDATED_EVENT || 'voices:updated';
 const DEFAULT_FX_STATE = Object.freeze({
@@ -744,7 +1545,10 @@ const DEFAULT_FX_STATE = Object.freeze({
 });
 const voiceFxState = {};
 let currentFxPreviewAudio = null;
+let currentFxPreviewButton = null;
 let queuePollInFlight = false;
+const PROJECT_STORAGE_KEY = 'tts-story-projects';
+let activeSpeakerRowOrigin = null;
 let runtimeSettings = null;
 let availableChatterboxVoices = [];
 let qwen3Metadata = null;
@@ -982,20 +1786,72 @@ function resolveVoiceSelection(speaker) {
     } else if (speaker === 'default' || !speaker) {
         return document.getElementById('default-voice-select')?.value || '';
     }
-    const selector = document.querySelector(`#inline-voice-assignment-list .voice-select[data-speaker="${speaker}"]`);
+    const selector = document.querySelector(
+        `#speaker-edit-modal-body .voice-assignment-row[data-speaker="${speaker}"] .voice-select`
+    ) || document.querySelector(
+        `#inline-voice-assignment-list .voice-select[data-speaker="${speaker}"]`
+    );
     return selector?.value || '';
+}
+
+function resolveVoiceSampleSelection(speaker) {
+    if (speaker === 'default' || !speaker) {
+        return getGlobalReferenceSelection();
+    }
+    const selector = document.querySelector(
+        `#speaker-edit-modal-body .voice-assignment-row[data-speaker="${speaker}"] .reference-select`
+    ) || document.querySelector(
+        `#inline-voice-assignment-list .reference-select[data-speaker="${speaker}"]`
+    );
+    return selector?.value?.trim() || '';
+}
+
+async function previewVoiceSampleFx({ promptPath, pitch, speed }) {
+    const response = await fetch('/api/voice-prompts/preview-fx', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt_path: promptPath, pitch, speed })
+    });
+    const data = await response.json();
+    if (!data.success || !data.audio_base64) {
+        throw new Error(data.error || 'Preview failed');
+    }
+    return data;
 }
 
 async function handleFxPreview(speaker, container) {
     if (!container) return;
-    const voiceName = resolveVoiceSelection(speaker);
     const statusEl = container.querySelector('[data-role="fx-status"]');
     const previewBtn = container.querySelector('[data-role="fx-preview-btn"]');
-    if (!voiceName) {
-        if (statusEl) statusEl.textContent = 'Select a voice first.';
+    if (previewBtn) {
+        if (!previewBtn.dataset.labelPlay) {
+            previewBtn.dataset.labelPlay = previewBtn.textContent.trim() || 'Quick Test';
+        }
+        if (!previewBtn.dataset.labelStop) {
+            previewBtn.dataset.labelStop = 'Stop';
+        }
+    }
+    if (previewBtn && currentFxPreviewAudio && currentFxPreviewButton === previewBtn) {
+        currentFxPreviewAudio.pause();
+        currentFxPreviewAudio.currentTime = 0;
+        currentFxPreviewAudio = null;
+        previewBtn.classList.remove('is-playing');
+        previewBtn.textContent = previewBtn.dataset.labelPlay || 'Quick Test';
+        if (statusEl) statusEl.textContent = '';
         return;
     }
     const engineName = getSelectedJobEngine() || runtimeSettings?.tts_engine || 'kokoro';
+    const usesSamplePreview = isTurboEngine(engineName);
+    const voiceName = usesSamplePreview ? '' : resolveVoiceSelection(speaker);
+    const samplePrompt = usesSamplePreview ? resolveVoiceSampleSelection(speaker) : '';
+    if (!voiceName && !samplePrompt) {
+        if (statusEl) {
+            statusEl.textContent = usesSamplePreview
+                ? 'Select a voice sample first.'
+                : 'Select a voice first.';
+        }
+        return;
+    }
     const langCode = isQwenEngine(engineName)
         ? (document.getElementById('qwen3-default-language')?.value || 'Auto')
         : getLangCodeForVoice(voiceName);
@@ -1003,6 +1859,12 @@ async function handleFxPreview(speaker, container) {
     const sampleText = speaker === 'default'
         ? (state.sampleText || '').trim() || buildDefaultSampleText(speaker)
         : getSharedPreviewText();
+    const panelSpeed = Number(state.speed) || NaN;
+    const globalSpeed = parseFloat(document.getElementById('speed')?.value) || 1.0;
+    let previewSpeed = Number.isFinite(panelSpeed) ? panelSpeed : globalSpeed;
+    previewSpeed = Math.max(0.5, Math.min(previewSpeed, 2.0));
+    const pitchValue = Number(state.pitch) || 0;
+
     const payload = {
         voice: voiceName,
         lang_code: langCode,
@@ -1012,18 +1874,16 @@ async function handleFxPreview(speaker, container) {
     if (fxPayload) {
         payload.fx = fxPayload;
     }
-    const panelSpeed = Number(state.speed) || NaN;
-    const globalSpeed = parseFloat(document.getElementById('speed')?.value) || 1.0;
-    let previewSpeed = Number.isFinite(panelSpeed) ? panelSpeed : globalSpeed;
-    previewSpeed = Math.max(0.5, Math.min(previewSpeed, 2.0));
     payload.speed = previewSpeed;
 
-    const selectedEngine = engineName;
-    if (selectedEngine) {
-        payload.tts_engine = selectedEngine;
-        const overrides = collectEngineOverrides(selectedEngine);
-        if (overrides) {
-            payload.engine_options = overrides;
+    if (!usesSamplePreview) {
+        const selectedEngine = engineName;
+        if (selectedEngine) {
+            payload.tts_engine = selectedEngine;
+            const overrides = collectEngineOverrides(selectedEngine);
+            if (overrides) {
+                payload.engine_options = overrides;
+            }
         }
     }
 
@@ -1031,38 +1891,64 @@ async function handleFxPreview(speaker, container) {
         if (previewBtn) previewBtn.disabled = true;
         if (statusEl) statusEl.textContent = 'Rendering preview…';
 
-        const response = await fetch('/api/preview', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        const data = await response.json();
-        if (!data.success || !data.audio_base64) {
-            throw new Error(data.error || 'Preview failed');
-        }
+        const data = usesSamplePreview
+            ? await previewVoiceSampleFx({
+                promptPath: samplePrompt,
+                pitch: pitchValue,
+                speed: previewSpeed
+            })
+            : await (async () => {
+                const response = await fetch('/api/preview', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+                if (!result.success || !result.audio_base64) {
+                    throw new Error(result.error || 'Preview failed');
+                }
+                return result;
+            })();
         if (currentFxPreviewAudio) {
             currentFxPreviewAudio.pause();
             currentFxPreviewAudio = null;
         }
         const mime = data.mime_type || 'audio/wav';
         currentFxPreviewAudio = new Audio(`data:${mime};base64,${data.audio_base64}`);
+        currentFxPreviewButton = previewBtn || null;
         currentFxPreviewAudio.play().then(() => {
             if (statusEl) statusEl.textContent = 'Playing preview…';
+            if (previewBtn) {
+                previewBtn.disabled = false;
+                previewBtn.classList.add('is-playing');
+                previewBtn.textContent = previewBtn.dataset.labelStop || 'Stop';
+            }
         }).catch(err => {
             console.error('Preview playback failed', err);
             if (statusEl) statusEl.textContent = 'Unable to play preview.';
+            if (previewBtn) {
+                previewBtn.classList.remove('is-playing');
+                previewBtn.textContent = previewBtn.dataset.labelPlay || 'Quick Test';
+            }
         });
         if (currentFxPreviewAudio) {
             currentFxPreviewAudio.onended = () => {
                 if (statusEl) statusEl.textContent = '';
                 currentFxPreviewAudio = null;
+                if (previewBtn) {
+                    previewBtn.classList.remove('is-playing');
+                    previewBtn.textContent = previewBtn.dataset.labelPlay || 'Quick Test';
+                }
+                currentFxPreviewButton = null;
             };
         }
     } catch (error) {
         console.error('Preview failed:', error);
         if (statusEl) statusEl.textContent = error.message || 'Preview failed';
     } finally {
-        if (previewBtn) previewBtn.disabled = false;
+        if (previewBtn && !currentFxPreviewAudio) {
+            previewBtn.disabled = false;
+        }
     }
 }
 
@@ -1084,26 +1970,121 @@ function refreshChapterHint() {
         return;
     }
 
-    if (!currentStats || !currentStats.chapter_detection) {
+    if (!currentStats || !currentStats.section_detection) {
         chapterHint.textContent = chapterCheckbox.checked
-            ? 'Chapter splitting enabled. Awaiting analysis to determine chapters.'
-            : 'Chapters not analyzed yet.';
+            ? 'Section splitting enabled. Awaiting analysis to determine sections.'
+            : 'Sections not analyzed yet.';
         return;
     }
 
-    const { detected, count } = currentStats.chapter_detection;
+    const { detected, count, kind, book_count: bookCount = 0, section_count: sectionCount = 0 } = currentStats.section_detection;
+    const label = kind === 'book' ? 'book' : 'section';
+    const summary = kind === 'book'
+        ? `${bookCount || count} book${(bookCount || count) === 1 ? '' : 's'} · ${sectionCount} section${sectionCount === 1 ? '' : 's'}`
+        : `${count} ${label}${count === 1 ? '' : 's'}`;
     if (!detected) {
         chapterHint.textContent = chapterCheckbox.checked
-            ? 'Splitting enabled, but no chapter headings were detected. The whole story will be one file.'
-            : 'No chapters detected. Add headings like "Chapter 1" to enable per-chapter outputs.';
+            ? 'Splitting enabled, but no section headings were detected. The whole story will be one file.'
+            : 'No section headings detected. Add headings like "Chapter 1" to enable split outputs.';
         return;
     }
 
     if (chapterCheckbox.checked) {
-        chapterHint.textContent = `Splitting enabled: ${count} chapter${count === 1 ? '' : 's'} will become individual audio files.`;
+        chapterHint.textContent = `Splitting enabled: ${summary} will become individual audio files.`;
     } else {
-        chapterHint.textContent = `Detected ${count} chapter${count === 1 ? '' : 's'}. Enable the checkbox to create separate audio files.`;
+        chapterHint.textContent = `Detected ${summary}. Enable the checkbox to create separate audio files.`;
     }
+}
+
+function escapeHtml(value) {
+    const text = String(value ?? '');
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function updateSectionReviewButton(enabled) {
+    const reviewBtn = document.getElementById('review-sections-btn');
+    if (!reviewBtn) return;
+    reviewBtn.disabled = !enabled;
+}
+
+function closeSectionReviewModal() {
+    const overlay = document.getElementById('section-review-modal-overlay');
+    const modal = document.getElementById('section-review-modal');
+    if (overlay) overlay.classList.add('hidden');
+    if (modal) modal.classList.add('hidden');
+}
+
+function openSectionReviewModal() {
+    const overlay = document.getElementById('section-review-modal-overlay');
+    const modal = document.getElementById('section-review-modal');
+    if (!overlay || !modal) return;
+    overlay.classList.remove('hidden');
+    modal.classList.remove('hidden');
+}
+
+function renderSectionReview(data) {
+    const body = document.getElementById('section-review-modal-body');
+    if (!body) return;
+
+    if (!data || !data.success) {
+        const message = data?.error || 'Unable to load section preview.';
+        body.innerHTML = `<div class="section-review-error">${escapeHtml(message)}</div>`;
+        return;
+    }
+
+    if (data.kind === 'none' || (!data.books?.length && !data.sections?.length)) {
+        body.innerHTML = '<div class="section-review-empty">No section headings detected.</div>';
+        return;
+    }
+
+    const summary = data.kind === 'book'
+        ? `${data.book_count || 0} book${data.book_count === 1 ? '' : 's'} · ${data.section_count || 0} section${data.section_count === 1 ? '' : 's'}`
+        : `${data.section_count || 0} section${data.section_count === 1 ? '' : 's'}`;
+
+    const summaryHtml = `<div class="section-review-summary">Detected: <strong>${escapeHtml(summary)}</strong></div>`;
+
+    if (data.kind === 'book') {
+        const bookBlocks = (data.books || []).map((book, bookIdx) => {
+            const chapters = book.chapters || [];
+            const chapterCards = chapters.map(chapter => {
+                const title = chapter.title || 'Untitled section';
+                return `
+                    <div class="section-review-card">
+                        <div class="section-review-title">${escapeHtml(title)}</div>
+                        <div class="section-review-preview">${escapeHtml(chapter.preview || '')}</div>
+                    </div>
+                `;
+            }).join('');
+            return `
+                <div class="section-review-card section-review-book">
+                    <div class="section-review-book-title">
+                        ${escapeHtml(book.title || `Book ${bookIdx + 1}`)}
+                        <span class="section-review-count">${chapters.length} sections</span>
+                    </div>
+                    <div class="section-review-list">${chapterCards}</div>
+                </div>
+            `;
+        }).join('');
+        body.innerHTML = `${summaryHtml}<div class="section-review-list">${bookBlocks}</div>`;
+        return;
+    }
+
+    const sectionCards = (data.sections || []).map(section => {
+        const title = section.title || 'Untitled section';
+        return `
+            <div class="section-review-card">
+                <div class="section-review-title">${escapeHtml(title)}</div>
+                <div class="section-review-preview">${escapeHtml(section.preview || '')}</div>
+            </div>
+        `;
+    }).join('');
+
+    body.innerHTML = `${summaryHtml}<div class="section-review-list">${sectionCards}</div>`;
 }
 
 function getSelectedGeminiPromptOverride() {
@@ -1125,7 +2106,7 @@ async function processWithGemini(buttonEl) {
         return;
     }
 
-    const splitByChapter = document.getElementById('split-chapters-checkbox')?.checked ?? false;
+    const customHeading = document.getElementById('custom-heading-input')?.value?.trim() || '';
     const promptOverride = getSelectedGeminiPromptOverride();
     updateGeminiProgress({ visible: true, label: 'Preparing Gemini request…', count: '', fill: 5 });
 
@@ -1135,141 +2116,107 @@ async function processWithGemini(buttonEl) {
         buttonEl.textContent = 'Processing with Gemini...';
     }
 
-    showNotification(
-        splitByChapter
-            ? 'Splitting content by chapter and sending to Gemini...'
-            : 'Sending entire text to Gemini...',
-        'info'
-    );
+    showNotification('Preparing text for Gemini...', 'info');
 
     try {
-        if (splitByChapter) {
+        updateGeminiProgress({
+            visible: true,
+            label: 'Building section list for Gemini…',
+            count: '',
+            fill: 15
+        });
+
+        const sectionsResponse = await fetch('/api/gemini/sections', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                text,
+                prefer_chapters: true,
+                custom_heading: customHeading || undefined
+            })
+        });
+
+        const sectionsData = await sectionsResponse.json();
+        if (!sectionsData.success) {
+            throw new Error(sectionsData.error || 'Unable to build Gemini sections');
+        }
+
+        const sections = sectionsData.sections || [];
+        if (!sections.length) {
+            throw new Error('No sections were generated for Gemini processing.');
+        }
+        latestGeminiBookTitle = resolveBookTitleFromSections(sections) || latestGeminiBookTitle;
+
+        const outputs = [];
+        const knownSpeakers = new Set();
+        if (currentStats?.speakers?.length) {
+            currentStats.speakers.forEach(name => {
+                if (typeof name === 'string' && name.trim()) {
+                    knownSpeakers.add(name.trim().toLowerCase());
+                }
+            });
+        }
+
+        for (let i = 0; i < sections.length; i++) {
+            const section = sections[i];
+            const currentIndex = i + 1;
             updateGeminiProgress({
                 visible: true,
-                label: 'Building chapter list for Gemini…',
-                count: '',
-                fill: 15
+                label: `Processing section ${currentIndex} of ${sections.length}…`,
+                count: `${currentIndex} / ${sections.length}`,
+                fill: Math.round((currentIndex / sections.length) * 100)
             });
 
-            const sectionsResponse = await fetch('/api/gemini/sections', {
+            const payload = {
+                content: section.content || ''
+            };
+            if (promptOverride) {
+                payload.prompt_override = promptOverride;
+            }
+            if (knownSpeakers.size > 0) {
+                payload.known_speakers = Array.from(knownSpeakers);
+            }
+
+            const sectionResponse = await fetch('/api/gemini/process-section', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    text,
-                    prefer_chapters: true
-                })
+                body: JSON.stringify(payload)
             });
 
-            const sectionsData = await sectionsResponse.json();
-            if (!sectionsData.success) {
-                throw new Error(sectionsData.error || 'Unable to build Gemini chapters');
+            const sectionData = await sectionResponse.json();
+            if (!sectionData.success) {
+                throw new Error(sectionData.error || `Gemini failed on section ${currentIndex}`);
             }
 
-            const sections = sectionsData.sections || [];
-            if (!sections.length) {
-                throw new Error('No chapters were generated for Gemini processing.');
-            }
-
-            const outputs = [];
-            const knownSpeakers = new Set();
-            if (currentStats?.speakers?.length) {
-                currentStats.speakers.forEach(name => {
-                    if (typeof name === 'string' && name.trim()) {
-                        knownSpeakers.add(name.trim().toLowerCase());
+            if (Array.isArray(sectionData.speakers)) {
+                sectionData.speakers.forEach(speaker => {
+                    if (typeof speaker === 'string' && speaker.trim()) {
+                        knownSpeakers.add(speaker.trim().toLowerCase());
                     }
                 });
             }
-
-            for (let i = 0; i < sections.length; i++) {
-                const section = sections[i];
-                const currentIndex = i + 1;
-                updateGeminiProgress({
-                    visible: true,
-                    label: `Processing chapter ${currentIndex} of ${sections.length}…`,
-                    count: `${currentIndex} / ${sections.length}`,
-                    fill: Math.round((currentIndex / sections.length) * 100)
-                });
-
-                const payload = {
-                    content: section.content || ''
-                };
-                if (promptOverride) {
-                    payload.prompt_override = promptOverride;
-                }
-                if (knownSpeakers.size > 0) {
-                    payload.known_speakers = Array.from(knownSpeakers);
-                }
-
-                const sectionResponse = await fetch('/api/gemini/process-section', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(payload)
-                });
-
-                const sectionData = await sectionResponse.json();
-                if (!sectionData.success) {
-                    throw new Error(sectionData.error || `Gemini failed on chapter ${currentIndex}`);
-                }
-
-                if (Array.isArray(sectionData.speakers)) {
-                    sectionData.speakers.forEach(speaker => {
-                        if (typeof speaker === 'string' && speaker.trim()) {
-                            knownSpeakers.add(speaker.trim().toLowerCase());
-                        }
-                    });
-                }
-                outputs.push(sectionData.result_text || '');
-            }
-
-            updateGeminiProgress({
-                visible: true,
-                label: 'Combining Gemini output…',
-                count: `${sections.length} / ${sections.length}`,
-                fill: 100
-            });
-
-            inputEl.value = outputs.join('\n\n').trim();
-        } else {
-            updateGeminiProgress({ visible: true, label: 'Contacting Gemini…', count: '', fill: 20 });
-
-            const response = await fetch('/api/gemini/process-full', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    text,
-                    prompt_override: promptOverride || undefined
-                })
-            });
-
-            const data = await response.json();
-            if (!data.success) {
-                throw new Error(data.error || 'Gemini processing failed');
-            }
-
-            const processedText = (data.result_text || '').trim();
-            if (!processedText) {
-                throw new Error('Gemini returned an empty response.');
-            }
-
-            updateGeminiProgress({
-                visible: true,
-                label: 'Gemini response received…',
-                count: '',
-                fill: 100
-            });
-
-            inputEl.value = processedText;
+            outputs.push(sectionData.result_text || '');
         }
+
+        updateGeminiProgress({
+            visible: true,
+            label: 'Combining Gemini output…',
+            count: `${sections.length} / ${sections.length}`,
+            fill: 100
+        });
+
+        inputEl.value = outputs.join('\n\n').trim();
 
         lastAnalyzedText = '';
         showNotification('Gemini processing complete! Text updated.', 'success');
-        await analyzeText({ auto: true });
+        const analysisSucceeded = await analyzeText({ auto: true });
+        if (analysisSucceeded) {
+            await fetchSpeakerProfiles();
+        }
     } catch (error) {
         console.error('Gemini processing failed:', error);
         alert(error.message || 'Failed to process with Gemini');
@@ -1316,6 +2263,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const chapterCheckbox = document.getElementById('split-chapters-checkbox');
     syncFullStoryOption(chapterCheckbox, true);
     initVoiceDropdownFilters();
+    if (!currentStats) {
+        displayStatistics({
+            speakers: [],
+            speaker_count: 1,
+            total_chunks: 0,
+            word_count: 0,
+            estimated_duration: 0,
+            has_speaker_tags: false
+        });
+    }
+    initHelpSystem();
 });
 
 function initVoiceDropdownFilters() {
@@ -1382,6 +2340,7 @@ function hideAnalysis() {
         chapterInfo.style.display = 'none';
     }
     currentStats = null;
+    updateSectionReviewButton(false);
     refreshChapterHint();
 }
 
@@ -1418,6 +2377,37 @@ function setupEventListeners() {
     const cancelBtn = document.getElementById('cancel-btn');
     const chapterCheckbox = document.getElementById('split-chapters-checkbox');
     const fullStoryCheckbox = document.getElementById('full-story-checkbox');
+    const reviewSectionsBtn = document.getElementById('review-sections-btn');
+    const sectionReviewOverlay = document.getElementById('section-review-modal-overlay');
+    const sectionReviewClose = document.getElementById('section-review-modal-close');
+    const sectionReviewFooterClose = document.getElementById('section-review-close-btn');
+    const speakersList = document.getElementById('speakers-list');
+    const speakerModalOverlay = document.getElementById('speaker-edit-modal-overlay');
+    const speakerModalClose = document.getElementById('speaker-edit-modal-close');
+    const speakerModalFooterClose = document.getElementById('speaker-edit-modal-close-btn');
+    const speakerReadyCheckbox = document.getElementById('speaker-ready-checkbox');
+    const batchGenerateBtn = document.getElementById('generate-voices-btn');
+    const batchModalOverlay = document.getElementById('speaker-batch-modal-overlay');
+    const batchModalClose = document.getElementById('speaker-batch-modal-close');
+    const batchModalCancel = document.getElementById('speaker-batch-cancel-btn');
+    const batchModalConfirm = document.getElementById('speaker-batch-confirm-btn');
+    const batchPrefixInput = document.getElementById('speaker-batch-prefix');
+    const batchStatus = document.getElementById('speaker-batch-status');
+    const batchProgress = document.getElementById('speaker-batch-progress');
+    const batchProgressFill = document.getElementById('speaker-batch-progress-fill');
+    const batchProgressLabel = document.getElementById('speaker-batch-progress-label');
+    const batchComplete = document.getElementById('speaker-batch-complete');
+    const batchCompleteSummary = document.getElementById('speaker-batch-complete-summary');
+    const batchOkBtn = document.getElementById('speaker-batch-ok-btn');
+    let batchGenerationInFlight = false;
+    const projectManageBtn = document.getElementById('project-manage-btn');
+    const projectModalOverlay = document.getElementById('project-modal-overlay');
+    const projectModalClose = document.getElementById('project-modal-close');
+    const projectModalFooterClose = document.getElementById('project-modal-close-btn');
+    const projectSaveConfirm = document.getElementById('project-save-confirm');
+    const projectList = document.getElementById('project-list');
+    const projectNameInput = document.getElementById('project-name-input');
+    const projectStatus = document.getElementById('project-status');
 
     if (analyzeBtn) {
         analyzeBtn.addEventListener('click', analyzeText);
@@ -1439,6 +2429,243 @@ function setupEventListeners() {
     }
     if (cancelBtn) {
         cancelBtn.addEventListener('click', cancelGeneration);
+    }
+    if (reviewSectionsBtn) {
+        reviewSectionsBtn.addEventListener('click', async () => {
+            if (sectionReviewInFlight) return;
+            const text = document.getElementById('input-text')?.value || '';
+            if (!text.trim()) {
+                showNotification('Enter text first to review sections.', 'warning');
+                return;
+            }
+            openSectionReviewModal();
+            const body = document.getElementById('section-review-modal-body');
+            if (body) {
+                body.innerHTML = '<div class="section-review-loading">Loading sections...</div>';
+            }
+            sectionReviewInFlight = true;
+            try {
+                const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
+                const payload = { text };
+                if (customHeading) {
+                    payload.custom_heading = customHeading;
+                }
+                const response = await fetch('/api/sections/preview', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+                renderSectionReview(data);
+            } catch (error) {
+                renderSectionReview({ success: false, error: error.message || 'Unable to load section preview.' });
+            } finally {
+                sectionReviewInFlight = false;
+            }
+        });
+    }
+    if (sectionReviewOverlay) {
+        sectionReviewOverlay.addEventListener('click', event => {
+            if (event.target === sectionReviewOverlay) {
+                closeSectionReviewModal();
+            }
+        });
+    }
+    if (sectionReviewClose) {
+        sectionReviewClose.addEventListener('click', closeSectionReviewModal);
+    }
+    if (sectionReviewFooterClose) {
+        sectionReviewFooterClose.addEventListener('click', closeSectionReviewModal);
+    }
+    if (speakersList) {
+        speakersList.addEventListener('click', event => {
+            const target = event.target instanceof HTMLElement ? event.target : null;
+            const chip = target?.closest('.speaker-tag');
+            if (!chip) return;
+            const speaker = chip.dataset.speaker;
+            if (speaker) {
+                openSpeakerEditModal(speaker);
+                populateReferenceSelects();
+                populateVoiceSelects();
+                updateAssignmentModes(getSelectedJobEngine() || runtimeSettings?.tts_engine || 'kokoro');
+            }
+        });
+    }
+    if (speakerModalOverlay) {
+        speakerModalOverlay.addEventListener('click', event => {
+            if (event.target === speakerModalOverlay) {
+                closeSpeakerEditModal();
+            }
+        });
+    }
+    if (speakerModalClose) {
+        speakerModalClose.addEventListener('click', closeSpeakerEditModal);
+    }
+    if (speakerModalFooterClose) {
+        speakerModalFooterClose.addEventListener('click', closeSpeakerEditModal);
+    }
+    if (speakerReadyCheckbox) {
+        speakerReadyCheckbox.addEventListener('change', event => {
+            const speaker = event.currentTarget.dataset.speaker;
+            if (speaker) {
+                setSpeakerReadyState(speaker, event.currentTarget.checked);
+            }
+        });
+    }
+    if (projectManageBtn) {
+        projectManageBtn.addEventListener('click', () => {
+            openProjectModal();
+            if (projectNameInput && !projectNameInput.value) {
+                const headingValue = document.getElementById('custom-heading-input')?.value?.trim() || '';
+                projectNameInput.value = headingValue || projectNameInput.value;
+            }
+        });
+    }
+    if (projectModalOverlay) {
+        projectModalOverlay.addEventListener('click', event => {
+            if (event.target === projectModalOverlay) {
+                closeProjectModal();
+            }
+        });
+    }
+    if (projectModalClose) {
+        projectModalClose.addEventListener('click', closeProjectModal);
+    }
+    if (projectModalFooterClose) {
+        projectModalFooterClose.addEventListener('click', closeProjectModal);
+    }
+    if (batchGenerateBtn) {
+        batchGenerateBtn.addEventListener('click', () => {
+            if (batchModalOverlay) {
+                batchModalOverlay.classList.remove('hidden');
+            }
+            document.getElementById('speaker-batch-modal')?.classList.remove('hidden');
+            if (batchPrefixInput) {
+                batchPrefixInput.value = '';
+                batchPrefixInput.focus();
+            }
+            if (batchStatus) {
+                batchStatus.textContent = '';
+            }
+            if (batchProgress) {
+                batchProgress.style.display = 'none';
+            }
+            if (batchComplete) {
+                batchComplete.classList.add('hidden');
+            }
+            if (batchOkBtn) {
+                batchOkBtn.classList.add('hidden');
+            }
+            if (batchModalCancel) {
+                batchModalCancel.classList.remove('hidden');
+            }
+            if (batchModalConfirm) {
+                batchModalConfirm.classList.remove('hidden');
+            }
+            if (batchProgressFill) {
+                batchProgressFill.style.width = '0%';
+            }
+            if (batchProgressLabel) {
+                batchProgressLabel.textContent = 'Preparing...';
+            }
+        });
+    }
+    if (batchModalOverlay) {
+        batchModalOverlay.addEventListener('click', event => {
+            if (event.target === batchModalOverlay) {
+                batchModalOverlay.classList.add('hidden');
+                document.getElementById('speaker-batch-modal')?.classList.add('hidden');
+            }
+        });
+    }
+    if (batchModalClose) {
+        batchModalClose.addEventListener('click', () => {
+            batchModalOverlay?.classList.add('hidden');
+            document.getElementById('speaker-batch-modal')?.classList.add('hidden');
+        });
+    }
+    if (batchModalCancel) {
+        batchModalCancel.addEventListener('click', () => {
+            batchModalOverlay?.classList.add('hidden');
+            document.getElementById('speaker-batch-modal')?.classList.add('hidden');
+        });
+    }
+    if (batchModalConfirm) {
+        batchModalConfirm.addEventListener('click', async () => {
+            if (batchGenerationInFlight) return;
+            batchGenerationInFlight = true;
+            batchModalConfirm.disabled = true;
+            batchModalConfirm.textContent = 'Generating...';
+            try {
+                await runBatchVoiceGeneration(batchPrefixInput?.value || '', batchStatus, {
+                    container: batchProgress,
+                    fill: batchProgressFill,
+                    label: batchProgressLabel
+                }, {
+                    completeCard: batchComplete,
+                    completeSummary: batchCompleteSummary
+                });
+                if (batchOkBtn) {
+                    batchOkBtn.classList.remove('hidden');
+                }
+                if (batchModalCancel) {
+                    batchModalCancel.classList.add('hidden');
+                }
+                if (batchModalConfirm) {
+                    batchModalConfirm.classList.add('hidden');
+                }
+            } finally {
+                batchGenerationInFlight = false;
+                batchModalConfirm.disabled = false;
+                batchModalConfirm.textContent = 'Generate';
+            }
+        });
+    }
+    if (batchOkBtn) {
+        batchOkBtn.addEventListener('click', () => {
+            batchModalOverlay?.classList.add('hidden');
+            document.getElementById('speaker-batch-modal')?.classList.add('hidden');
+            document.querySelector('.tab-button[data-tab="generate"]')?.click();
+        });
+    }
+    if (projectSaveConfirm) {
+        projectSaveConfirm.addEventListener('click', () => {
+            const project = getProjectState();
+            const name = projectNameInput?.value?.trim() || `Project ${new Date().toLocaleString()}`;
+            project.name = name;
+            const projects = JSON.parse(localStorage.getItem(PROJECT_STORAGE_KEY) || '[]');
+            const existingByName = projects.find(item => item.name === name);
+            if (existingByName) {
+                const confirmed = confirm(`"${name}" already exists. Overwrite this project?`);
+                if (!confirmed) {
+                    return;
+                }
+                project.id = existingByName.id;
+            }
+            saveProject(project);
+            activeProjectId = project.id;
+            if (projectStatus) {
+                projectStatus.textContent = `Saved ${name}`;
+            }
+        });
+    }
+    if (projectList) {
+        projectList.addEventListener('click', event => {
+            const target = event.target instanceof HTMLElement ? event.target : null;
+            const button = target?.closest('[data-project-action]');
+            if (!button) return;
+            const action = button.dataset.projectAction;
+            const projectId = button.dataset.projectId;
+            const projects = JSON.parse(localStorage.getItem(PROJECT_STORAGE_KEY) || '[]');
+            const project = projects.find(item => String(item.id) === String(projectId));
+            if (action === 'load' && project) {
+                closeProjectModal();
+                applyProjectState(project);
+            }
+            if (action === 'delete' && projectId) {
+                deleteProject(projectId);
+            }
+        });
     }
     if (chapterCheckbox) {
         chapterCheckbox.addEventListener('change', event => {
@@ -1590,6 +2817,10 @@ async function analyzeText(options = {}) {
     analyzeRerunRequested = false;
     try {
         const payload = { text };
+        const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
+        if (customHeading) {
+            payload.custom_heading = customHeading;
+        }
         const selectedEngine = getSelectedJobEngine() || runtimeSettings?.tts_engine;
         if (selectedEngine) {
             payload.tts_engine = selectedEngine;
@@ -1634,9 +2865,685 @@ async function analyzeText(options = {}) {
     }
 }
 
+function normalizeSpeakerLabel(label) {
+    return (label || '').toString().trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function normalizeSpeakerKey(label) {
+    const normalized = normalizeSpeakerLabel(label);
+    return normalized || (label || '').toString().trim().toLowerCase();
+}
+
+function setSpeakerProfiles(profiles) {
+    Object.keys(speakerProfiles).forEach(key => delete speakerProfiles[key]);
+    if (!profiles) return;
+    Object.entries(profiles).forEach(([key, profile]) => {
+        const normalized = normalizeSpeakerKey(key || profile?.name || '');
+        if (!normalized) return;
+        speakerProfiles[normalized] = {
+            name: profile?.name || key,
+            description: profile?.description || '',
+            voice: profile?.voice || ''
+        };
+    });
+}
+
+function findSpeakerProfile(speaker) {
+    const key = normalizeSpeakerKey(speaker);
+    if (speakerProfiles[key]) {
+        return { profile: speakerProfiles[key], matchKey: key };
+    }
+    const strippedKey = key.replace(/(male|female|man|woman)$/i, '');
+    if (strippedKey && speakerProfiles[strippedKey]) {
+        return { profile: speakerProfiles[strippedKey], matchKey: strippedKey };
+    }
+    const matches = Object.entries(speakerProfiles).filter(([profileKey]) =>
+        key.includes(profileKey) || profileKey.includes(key)
+    );
+    if (matches.length === 1) {
+        return { profile: matches[0][1], matchKey: matches[0][0] };
+    }
+    return { profile: null, matchKey: key };
+}
+
+function updateSpeakerProfileEntry(speaker, updates = {}) {
+    if (!speaker) return;
+    const { profile, matchKey } = findSpeakerProfile(speaker);
+    const targetKey = matchKey || normalizeSpeakerKey(speaker);
+    const nextProfile = {
+        name: profile?.name || speaker,
+        description: profile?.description || '',
+        voice: profile?.voice || '',
+        ...updates
+    };
+    speakerProfiles[targetKey] = nextProfile;
+}
+
+function parseGenderFromSpeakerName(speaker) {
+    const tokens = (speaker || '').toString().toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    if (tokens.includes('female')) return 'Female';
+    if (tokens.includes('male')) return 'Male';
+    return null;
+}
+
+async function pollQwenVoiceTask(taskId, statusLabel) {
+    if (!taskId) {
+        throw new Error('Missing task id for queued request.');
+    }
+    const start = Date.now();
+    const timeoutMs = 10 * 60 * 1000;
+    while (Date.now() - start < timeoutMs) {
+        if (statusLabel) {
+            showNotification(statusLabel, 'info');
+        }
+        const response = await fetch(`/api/qwen3/voice-design/tasks/${taskId}`);
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Failed to fetch task status');
+        }
+        if (data.status === 'completed') {
+            return data.result || {};
+        }
+        if (data.status === 'failed') {
+            throw new Error(data.error || 'Queued task failed');
+        }
+        await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+    throw new Error('Timed out waiting for voice generation.');
+}
+
+async function refreshChatterboxVoices() {
+    try {
+        const response = await fetch('/api/chatterbox-voices');
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Unable to load voice prompts');
+        }
+        handleChatterboxVoicesUpdated({ detail: { voices: data.voices } });
+    } catch (error) {
+        console.error('Failed to refresh voice prompts', error);
+        showNotification(error.message || 'Failed to refresh voice prompts.', 'warning');
+    }
+}
+
+async function generateSpeakerVoicePrompt(speaker) {
+    if (!speaker) return;
+    const generateBtn = document.querySelector('#speaker-profile-summary [data-role="speaker-generate-voice"]');
+    const { profile } = findSpeakerProfile(speaker);
+    const description = profile?.description || '';
+    const voice = profile?.voice || '';
+    const instruct = description || '';
+    const shortDescription = voice || '';
+    const sampleText = 'With this line of text, you will always know exactly where I stand, and what I sound like. Whether you like it or not. though, it may not be what you think.';
+    if (!shortDescription) {
+        showNotification('Add a voice type before generating a voice.', 'warning');
+        return;
+    }
+    if (!instruct) {
+        showNotification('Add a speaker profile description before generating a voice.', 'warning');
+        return;
+    }
+    const payload = {
+        name: speaker,
+        gender: parseGenderFromSpeakerName(speaker),
+        language: 'Auto',
+        description: shortDescription,
+        text: sampleText,
+        instruct
+    };
+    try {
+        if (generateBtn) {
+            if (!generateBtn.dataset.labelIdle) {
+                generateBtn.dataset.labelIdle = generateBtn.textContent.trim() || 'Generate Voice';
+            }
+            generateBtn.disabled = true;
+            generateBtn.classList.add('is-loading');
+            generateBtn.textContent = 'Generating…';
+        }
+        showNotification('Generating voice preview...', 'info');
+        const previewResponse = await fetch('/api/qwen3/voice-design/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text: payload.text,
+                instruct: payload.instruct,
+                language: payload.language
+            })
+        });
+        const previewData = await previewResponse.json();
+        if (!previewData.success) {
+            throw new Error(previewData.error || 'Failed to enqueue preview');
+        }
+        const previewResult = await pollQwenVoiceTask(previewData.job_id, 'Generating voice preview...');
+        if (!previewResult.audio_base64) {
+            throw new Error('Preview audio missing from response.');
+        }
+        showNotification('Saving voice prompt...', 'info');
+        if (generateBtn) {
+            generateBtn.textContent = 'Saving…';
+        }
+        const saveResponse = await fetch('/api/qwen3/voice-design/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                ...payload,
+                audio_base64: previewResult.audio_base64
+            })
+        });
+        const saveData = await saveResponse.json();
+        if (!saveData.success) {
+            throw new Error(saveData.error || 'Failed to enqueue save');
+        }
+        await pollQwenVoiceTask(saveData.job_id, 'Saving voice prompt...');
+        await refreshChatterboxVoices();
+        populateReferenceSelects();
+        const latestVoice = availableChatterboxVoices
+            .filter(entry => (entry?.name || '').trim().toLowerCase() === speaker.toLowerCase())
+            .sort((a, b) => new Date(b?.created_at || 0) - new Date(a?.created_at || 0))[0];
+        const promptValue = (latestVoice?.prompt_path || latestVoice?.file_name || '').trim();
+        if (promptValue) {
+            document.querySelectorAll('#inline-voice-assignment-list [data-role="turbo-control"] .reference-select, #speaker-edit-modal-body [data-role="turbo-control"] .reference-select')
+                .forEach(select => {
+                    if (select?.dataset?.speaker === speaker) {
+                        select.value = promptValue;
+                    }
+                });
+            updateInlineSampleButtonState(activeSpeakerRow, { stopPlayback: true });
+        }
+        showNotification('Voice prompt generated and added to the library.', 'success');
+    } catch (error) {
+        console.error('Generate voice failed', error);
+        showNotification(error.message || 'Failed to generate voice.', 'warning');
+    } finally {
+        if (generateBtn) {
+            generateBtn.disabled = false;
+            generateBtn.classList.remove('is-loading');
+            generateBtn.textContent = generateBtn.dataset.labelIdle || 'Generate Voice';
+        }
+    }
+}
+
+function renderSpeakerProfileSummary(speaker) {
+    const summary = document.getElementById('speaker-profile-summary');
+    if (!summary) return;
+    if (!speaker) {
+        summary.classList.add('hidden');
+        summary.innerHTML = '';
+        return;
+    }
+    const { profile } = findSpeakerProfile(speaker);
+    const hasProfiles = Object.keys(speakerProfiles).length > 0;
+    const description = profile?.description || '';
+    const voice = profile?.voice || '';
+    const emptyMessage = hasProfiles
+        ? 'No profile matched this speaker yet.'
+        : 'No speaker profile data yet. Run Prep Text with Gemini.';
+    summary.innerHTML = `
+        <div class="speaker-profile-row speaker-profile-editor">
+            <div class="speaker-profile-fields">
+                <label>
+                    <strong>Profile:</strong>
+                    <textarea class="speaker-profile-input" data-role="speaker-profile-description" rows="3" placeholder="${escapeHtml(emptyMessage)}">${escapeHtml(description)}</textarea>
+                </label>
+                <label>
+                    <strong>Voice Type:</strong>
+                    <input class="speaker-profile-input" data-role="speaker-profile-voice" type="text" value="${escapeHtml(voice)}" placeholder="Not available yet." />
+                </label>
+            </div>
+            <div class="speaker-profile-actions">
+                <button type="button" class="btn btn-secondary btn-sm" data-role="speaker-generate-voice">Generate Voice</button>
+            </div>
+        </div>
+    `;
+    const descriptionInput = summary.querySelector('[data-role="speaker-profile-description"]');
+    const voiceInput = summary.querySelector('[data-role="speaker-profile-voice"]');
+    const generateBtn = summary.querySelector('[data-role="speaker-generate-voice"]');
+    if (descriptionInput) {
+        descriptionInput.addEventListener('input', event => {
+            updateSpeakerProfileEntry(speaker, { description: event.currentTarget.value || '' });
+        });
+    }
+    if (voiceInput) {
+        voiceInput.addEventListener('input', event => {
+            updateSpeakerProfileEntry(speaker, { voice: event.currentTarget.value || '' });
+        });
+    }
+    if (generateBtn) {
+        generateBtn.addEventListener('click', () => generateSpeakerVoicePrompt(speaker));
+    }
+    summary.classList.remove('hidden');
+}
+
+function levenshteinDistance(a, b) {
+    const source = a || '';
+    const target = b || '';
+    if (source === target) return 0;
+    if (!source.length) return target.length;
+    if (!target.length) return source.length;
+
+    const matrix = Array.from({ length: source.length + 1 }, () => []);
+    for (let i = 0; i <= source.length; i += 1) {
+        matrix[i][0] = i;
+    }
+    for (let j = 0; j <= target.length; j += 1) {
+        matrix[0][j] = j;
+    }
+    for (let i = 1; i <= source.length; i += 1) {
+        for (let j = 1; j <= target.length; j += 1) {
+            const cost = source[i - 1] === target[j - 1] ? 0 : 1;
+            matrix[i][j] = Math.min(
+                matrix[i - 1][j] + 1,
+                matrix[i][j - 1] + 1,
+                matrix[i - 1][j - 1] + cost
+            );
+        }
+    }
+    return matrix[source.length][target.length];
+}
+
+function speakerSimilarity(a, b) {
+    const normalizedA = normalizeSpeakerLabel(a);
+    const normalizedB = normalizeSpeakerLabel(b);
+    if (!normalizedA || !normalizedB) return 0;
+    if (normalizedA === normalizedB) return 1;
+    const distance = levenshteinDistance(normalizedA, normalizedB);
+    const maxLength = Math.max(normalizedA.length, normalizedB.length) || 1;
+    return 1 - distance / maxLength;
+}
+
+function getSpeakerDuplicates(speakers, threshold = 0.82) {
+    if (!Array.isArray(speakers)) return [];
+    const pairs = [];
+    for (let i = 0; i < speakers.length; i += 1) {
+        for (let j = i + 1; j < speakers.length; j += 1) {
+            const score = speakerSimilarity(speakers[i], speakers[j]);
+            if (score >= threshold) {
+                pairs.push({
+                    first: speakers[i],
+                    second: speakers[j],
+                    score
+                });
+            }
+        }
+    }
+    return pairs.sort((a, b) => b.score - a.score).slice(0, 6);
+}
+
+function renderSpeakerDuplicates(speakers) {
+    const container = document.getElementById('speakers-duplicates');
+    if (!container) return;
+    const duplicates = getSpeakerDuplicates(speakers);
+    if (!duplicates.length) {
+        container.style.display = 'none';
+        container.innerHTML = '';
+        return;
+    }
+    container.style.display = 'block';
+    container.innerHTML = '<strong>Possible duplicates detected:</strong>';
+    duplicates.forEach(({ first, second, score }) => {
+        const row = document.createElement('div');
+        row.className = 'duplicate-item';
+        const badge = document.createElement('span');
+        badge.className = 'duplicate-badge';
+        badge.textContent = `${Math.round(score * 100)}% match`;
+        const text = document.createElement('span');
+        text.textContent = `${first} ↔ ${second}`;
+        row.appendChild(text);
+        row.appendChild(badge);
+        container.appendChild(row);
+    });
+}
+
+function applySpeakerRename(stats, oldName, newName) {
+    if (!stats || !Array.isArray(stats.speakers)) return;
+    const updated = stats.speakers.map(name => (name === oldName ? newName : name));
+    const seen = new Set();
+    const deduped = [];
+    updated.forEach(name => {
+        const trimmed = (name || '').toString().trim();
+        if (!trimmed) return;
+        const key = normalizeSpeakerLabel(trimmed) || trimmed.toLowerCase();
+        if (!seen.has(key)) {
+            seen.add(key);
+            deduped.push(trimmed);
+        }
+    });
+    stats.speakers = deduped;
+    stats.speaker_count = deduped.length;
+    if (stats.speaker_emotions && stats.speaker_emotions[oldName]) {
+        stats.speaker_emotions[newName] = stats.speaker_emotions[oldName];
+        delete stats.speaker_emotions[oldName];
+    }
+    if (speakerReadyState[oldName]) {
+        speakerReadyState[newName] = speakerReadyState[oldName];
+        delete speakerReadyState[oldName];
+    }
+    const oldKey = normalizeSpeakerKey(oldName);
+    const newKey = normalizeSpeakerKey(newName);
+    if (speakerProfiles[oldKey]) {
+        speakerProfiles[newKey] = { ...speakerProfiles[oldKey], name: newName };
+        delete speakerProfiles[oldKey];
+    }
+    renderSpeakerProfileSummary(newName);
+}
+
+function handleSpeakerEdit(originalName, inputEl) {
+    if (!inputEl) return;
+    const rawName = inputEl.value.trim();
+    const newName = formatSpeakerTagName(rawName);
+    if (!newName) {
+        inputEl.value = originalName;
+        return;
+    }
+    if (newName !== rawName) {
+        inputEl.value = newName;
+    }
+    if (!currentStats || newName === originalName) return;
+    applySpeakerRename(currentStats, originalName, newName);
+    displayStatistics(currentStats);
+    updateVoiceAssignments(currentStats.speakers);
+}
+
+function applySpeakerRenameToText(oldName, newName) {
+    const input = document.getElementById('input-text');
+    if (!input || !oldName || !newName || oldName === newName) return false;
+    const escapedOld = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedNew = newName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const openTag = new RegExp(`\\[${escapedOld}\\]`, 'g');
+    const closeTag = new RegExp(`\\[\\/${escapedOld}\\]`, 'g');
+    const updated = input.value
+        .replace(openTag, `[${escapedNew}]`)
+        .replace(closeTag, `[/${escapedNew}]`);
+    if (updated === input.value) return false;
+    input.value = updated;
+    return true;
+}
+
+function handleInlineRename(originalName, inputEl) {
+    if (!inputEl) return;
+    const rawName = inputEl.value.trim();
+    const newName = formatSpeakerTagName(rawName);
+    if (!newName) {
+        inputEl.value = originalName;
+        return;
+    }
+    if (newName !== rawName) {
+        inputEl.value = newName;
+    }
+    if (!currentStats || newName === originalName) return;
+    applySpeakerRename(currentStats, originalName, newName);
+    applySpeakerRenameToText(originalName, newName);
+    displayStatistics(currentStats);
+    updateVoiceAssignments(currentStats.speakers);
+    if (activeSpeakerModal && activeSpeakerModal === originalName) {
+        closeSpeakerEditModal();
+    }
+    analyzeText({ auto: true });
+}
+
+function setSpeakerReadyState(speaker, ready) {
+    if (!speaker) return;
+    speakerReadyState[speaker] = !!ready;
+    const chip = document.querySelector(`#speakers-list .speaker-tag[data-speaker="${speaker}"]`);
+    if (chip) {
+        chip.classList.toggle('ready', !!ready);
+    }
+}
+
+function openSpeakerEditModal(speaker) {
+    const overlay = document.getElementById('speaker-edit-modal-overlay');
+    const modal = document.getElementById('speaker-edit-modal');
+    const body = document.getElementById('speaker-edit-modal-body');
+    const title = document.getElementById('speaker-edit-modal-title');
+    const readyCheckbox = document.getElementById('speaker-ready-checkbox');
+    const profileSummary = document.getElementById('speaker-profile-summary');
+    const list = document.getElementById('inline-voice-assignment-list');
+    if (!overlay || !modal || !body || !list) return;
+
+    if (activeSpeakerRow && activeSpeakerRowOrigin) {
+        activeSpeakerRowOrigin.appendChild(activeSpeakerRow);
+    }
+
+    const row = list.querySelector(`.voice-assignment-row[data-speaker="${speaker}"]`);
+    if (!row) return;
+
+    body.innerHTML = '';
+    body.appendChild(row);
+    activeSpeakerRow = row;
+    activeSpeakerRowOrigin = list;
+    activeSpeakerModal = speaker;
+
+    const header = row.querySelector('.assignment-header');
+    if (profileSummary && header) {
+        header.insertAdjacentElement('afterend', profileSummary);
+    }
+
+    if (title) {
+        title.textContent = `Edit Speaker: ${speaker}`;
+    }
+    if (readyCheckbox) {
+        readyCheckbox.checked = !!speakerReadyState[speaker];
+        readyCheckbox.dataset.speaker = speaker;
+    }
+    renderSpeakerProfileSummary(speaker);
+
+    overlay.classList.remove('hidden');
+    modal.classList.remove('hidden');
+}
+
+function closeSpeakerEditModal() {
+    const overlay = document.getElementById('speaker-edit-modal-overlay');
+    const modal = document.getElementById('speaker-edit-modal');
+    const body = document.getElementById('speaker-edit-modal-body');
+    const modalBody = document.querySelector('#speaker-edit-modal .modal-body');
+    const profileSummary = document.getElementById('speaker-profile-summary');
+    const modalAnchor = document.getElementById('speaker-edit-modal-body');
+    if (activeSpeakerRow && activeSpeakerRowOrigin) {
+        activeSpeakerRowOrigin.appendChild(activeSpeakerRow);
+    }
+    if (profileSummary && modalBody && modalAnchor) {
+        modalBody.insertBefore(profileSummary, modalAnchor);
+    }
+    if (body) {
+        body.innerHTML = '';
+    }
+    renderSpeakerProfileSummary(null);
+    activeSpeakerRow = null;
+    activeSpeakerRowOrigin = null;
+    activeSpeakerModal = null;
+    if (overlay) overlay.classList.add('hidden');
+    if (modal) modal.classList.add('hidden');
+}
+
+function getProjectState() {
+    return {
+        id: Date.now(),
+        name: '',
+        saved_at: new Date().toISOString(),
+        text: document.getElementById('input-text')?.value || '',
+        engine: document.getElementById('job-tts-engine')?.value || '',
+        default_voice: document.getElementById('default-voice-select')?.value || '',
+        reference_prompt: document.getElementById('chatterbox-reference-select')?.value || '',
+        qwen_default_speaker: document.getElementById('qwen3-default-speaker')?.value || '',
+        qwen_default_language: document.getElementById('qwen3-default-language')?.value || '',
+        qwen_default_instruct: document.getElementById('qwen3-default-instruct')?.value || '',
+        split_chapters: document.getElementById('split-chapters-checkbox')?.checked || false,
+        full_story: document.getElementById('full-story-checkbox')?.checked || false,
+        custom_heading: document.getElementById('custom-heading-input')?.value || '',
+        book_title: latestGeminiBookTitle,
+        output_format: document.getElementById('job-output-format')?.value || 'mp3',
+        output_bitrate: document.getElementById('job-output-bitrate')?.value || '128',
+        gemini_prompt: document.getElementById('gemini-prompt')?.value || '',
+        gemini_preset: document.getElementById('gemini-preset-select')?.value || '',
+        assignments: getVoiceAssignments(),
+        turbo_selections: buildTurboSelectionMap(),
+        qwen_inline_languages: Array.from(document.querySelectorAll('#inline-voice-assignment-list .qwen3-language-select')).reduce((acc, select) => {
+            const speaker = select.dataset.speaker;
+            if (speaker) acc[speaker] = select.value;
+            return acc;
+        }, {}),
+        qwen_inline_instructs: Array.from(document.querySelectorAll('#inline-voice-assignment-list .qwen3-instruct-input')).reduce((acc, input) => {
+            const speaker = input.dataset.speaker;
+            if (speaker) acc[speaker] = input.value;
+            return acc;
+        }, {}),
+        fx_state: JSON.parse(JSON.stringify(voiceFxState || {})),
+        ready_state: JSON.parse(JSON.stringify(speakerReadyState || {})),
+        speaker_profiles: JSON.parse(JSON.stringify(speakerProfiles || {}))
+    };
+}
+
+function loadProjectList() {
+    const list = document.getElementById('project-list');
+    if (!list) return;
+    const projects = JSON.parse(localStorage.getItem(PROJECT_STORAGE_KEY) || '[]');
+    if (!projects.length) {
+        list.innerHTML = '<p class="help-text">No saved projects yet.</p>';
+        return;
+    }
+    list.innerHTML = '';
+    projects.sort((a, b) => new Date(b.saved_at) - new Date(a.saved_at));
+    projects.forEach(project => {
+        const row = document.createElement('div');
+        row.className = 'project-row';
+        row.innerHTML = `
+            <div class="project-row-info">
+                <strong>${project.name || 'Untitled Project'}</strong>
+                <span>${new Date(project.saved_at).toLocaleString()}</span>
+            </div>
+            <div class="project-row-actions">
+                <button class="btn btn-sm btn-secondary" data-project-action="load" data-project-id="${project.id}">Load</button>
+                <button class="btn btn-sm btn-ghost" data-project-action="delete" data-project-id="${project.id}">Delete</button>
+            </div>
+        `;
+        list.appendChild(row);
+    });
+}
+
+function openProjectModal() {
+    const overlay = document.getElementById('project-modal-overlay');
+    const modal = document.getElementById('project-modal');
+    if (!overlay || !modal) return;
+    overlay.classList.remove('hidden');
+    modal.classList.remove('hidden');
+    loadProjectList();
+}
+
+function closeProjectModal() {
+    const overlay = document.getElementById('project-modal-overlay');
+    const modal = document.getElementById('project-modal');
+    if (overlay) overlay.classList.add('hidden');
+    if (modal) modal.classList.add('hidden');
+}
+
+async function applyProjectState(project) {
+    if (!project) return;
+    pendingProjectLoad = project;
+    activeProjectId = project.id || null;
+    const input = document.getElementById('input-text');
+    if (input) {
+        input.value = project.text || '';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    const engineSelect = document.getElementById('job-tts-engine');
+    if (engineSelect && project.engine) {
+        engineSelect.value = project.engine;
+        updateEngineUI(project.engine);
+    }
+    const defaultVoice = document.getElementById('default-voice-select');
+    if (defaultVoice && project.default_voice) defaultVoice.value = project.default_voice;
+    const referenceSelect = document.getElementById('chatterbox-reference-select');
+    if (referenceSelect) referenceSelect.value = project.reference_prompt || '';
+    const qwenDefaultSpeaker = document.getElementById('qwen3-default-speaker');
+    if (qwenDefaultSpeaker) qwenDefaultSpeaker.value = project.qwen_default_speaker || '';
+    const qwenDefaultLang = document.getElementById('qwen3-default-language');
+    if (qwenDefaultLang) qwenDefaultLang.value = project.qwen_default_language || 'Auto';
+    const qwenDefaultInstruct = document.getElementById('qwen3-default-instruct');
+    if (qwenDefaultInstruct) qwenDefaultInstruct.value = project.qwen_default_instruct || '';
+    const splitChapters = document.getElementById('split-chapters-checkbox');
+    if (splitChapters) splitChapters.checked = !!project.split_chapters;
+    const fullStory = document.getElementById('full-story-checkbox');
+    if (fullStory) fullStory.checked = !!project.full_story;
+    const heading = document.getElementById('custom-heading-input');
+    if (heading) heading.value = project.custom_heading || '';
+    const projectNameInput = document.getElementById('project-name-input');
+    if (projectNameInput && project.name) {
+        projectNameInput.value = project.name;
+    }
+    const formatSelect = document.getElementById('job-output-format');
+    if (formatSelect) formatSelect.value = project.output_format || 'mp3';
+    const bitrateSelect = document.getElementById('job-output-bitrate');
+    if (bitrateSelect) bitrateSelect.value = project.output_bitrate || '128';
+    const geminiPrompt = document.getElementById('gemini-prompt');
+    if (geminiPrompt) geminiPrompt.value = project.gemini_prompt || '';
+    const geminiPreset = document.getElementById('gemini-preset-select');
+    if (geminiPreset) geminiPreset.value = project.gemini_preset || '';
+    latestGeminiBookTitle = project.book_title || '';
+
+    Object.keys(voiceFxState).forEach(key => delete voiceFxState[key]);
+    Object.assign(voiceFxState, project.fx_state || {});
+    Object.keys(speakerReadyState).forEach(key => delete speakerReadyState[key]);
+    Object.assign(speakerReadyState, project.ready_state || {});
+    setSpeakerProfiles(project.speaker_profiles || {});
+
+    await analyzeText({ auto: true });
+    pendingProjectLoad = project;
+    applyProjectAssignments(project);
+    pendingProjectLoad = null;
+    showNotification('Project loaded.', 'success');
+}
+
+function applyProjectAssignments(project) {
+    if (!project) return;
+    const assignments = project.assignments || {};
+    const turboSelections = project.turbo_selections || {};
+    const qwenLangs = project.qwen_inline_languages || {};
+    const qwenInstructs = project.qwen_inline_instructs || {};
+    Object.keys(turboSelectionState).forEach(key => delete turboSelectionState[key]);
+    Object.entries(turboSelections).forEach(([speakerKey, selection]) => {
+        const reference = selection?.reference || '';
+        if (reference) {
+            turboSelectionState[speakerKey] = reference;
+        }
+    });
+
+    displayStatistics(currentStats || { speakers: [], speaker_count: 0, total_chunks: 0, word_count: 0, estimated_duration: 0, has_speaker_tags: false });
+
+    getAssignmentRows().forEach(row => {
+        const speaker = row.dataset.speaker;
+        if (!speaker) return;
+        const voiceSelect = row.querySelector('.voice-select');
+        const refSelect = row.querySelector('.reference-select');
+        const qwenLang = row.querySelector('.qwen3-language-select');
+        const qwenInstruct = row.querySelector('.qwen3-instruct-input');
+        if (voiceSelect && assignments[speaker]?.voice) {
+            voiceSelect.value = assignments[speaker].voice;
+        }
+        if (refSelect) {
+            const selection = turboSelectionState[speaker] || turboSelections[speaker]?.reference || '';
+            if (selection) {
+                refSelect.value = selection;
+            }
+        }
+        if (qwenLang && qwenLangs[speaker]) {
+            qwenLang.value = qwenLangs[speaker];
+        }
+        if (qwenInstruct && typeof qwenInstructs[speaker] === 'string') {
+            qwenInstruct.value = qwenInstructs[speaker];
+        }
+        updateInlineSampleButtonState(row, { stopPlayback: true });
+    });
+}
+
 // Display statistics
 function displayStatistics(stats) {
-    document.getElementById('stat-speakers').textContent = stats.speaker_count;
+    const detectedSpeakers = Array.isArray(stats.speakers) ? stats.speakers : [];
+    const hasDetectedSpeakers = stats.has_speaker_tags && detectedSpeakers.length > 0;
+    const activeSpeakers = hasDetectedSpeakers ? detectedSpeakers : ['Speaker 1'];
+    const speakerCount = hasDetectedSpeakers
+        ? (stats.speaker_count || detectedSpeakers.length)
+        : 1;
+    document.getElementById('stat-speakers').textContent = speakerCount;
     document.getElementById('stat-chunks').textContent = stats.total_chunks;
     document.getElementById('stat-words').textContent = stats.word_count;
     
@@ -1651,31 +3558,60 @@ function displayStatistics(stats) {
     const chapterInfo = document.getElementById('chapter-detection-info');
     const chapterHint = document.getElementById('chapter-detection-hint');
     const chapterCheckbox = document.getElementById('split-chapters-checkbox');
-    if (chapterInfo && stats.chapter_detection) {
-        const { detected, count, titles } = stats.chapter_detection;
+    if (chapterInfo && stats.section_detection) {
+        const {
+            detected,
+            count,
+            titles,
+            kind,
+            book_count: bookCount = 0,
+            section_count: sectionCount = 0
+        } = stats.section_detection;
         if (detected) {
             chapterInfo.style.display = 'block';
             const titleList = titles && titles.length ? ` (<em>${titles.slice(0, 5).join(', ')}${titles.length > 5 ? ', …' : ''}</em>)` : '';
-            chapterInfo.innerHTML = `📚 Chapters detected: <strong>${count}</strong>${titleList}`;
+            if (kind === 'book') {
+                const booksLabel = bookCount || count;
+                chapterInfo.innerHTML = `📚 Books detected: <strong>${booksLabel}</strong> · Sections detected: <strong>${sectionCount}</strong>${titleList}`;
+            } else {
+                chapterInfo.innerHTML = `📚 Sections detected: <strong>${count}</strong>${titleList}`;
+            }
             if (chapterCheckbox && !chapterCheckbox.dataset.userToggled) {
                 chapterCheckbox.disabled = false;
                 chapterCheckbox.classList.remove('disabled');
             }
+            updateSectionReviewButton(true);
         } else {
             chapterInfo.style.display = 'block';
-            chapterInfo.innerHTML = '📚 No chapter headings detected.';
+            chapterInfo.innerHTML = '📚 No section headings detected.';
+            updateSectionReviewButton(false);
         }
     }
     refreshChapterHint();
 
-    if (stats.has_speaker_tags) {
+    const batchBtn = document.getElementById('generate-voices-btn');
+    if (batchBtn) {
+        batchBtn.disabled = !hasDetectedSpeakers;
+    }
+
+    if (hasDetectedSpeakers) {
         speakersList.innerHTML = '<p><strong>Detected Speakers:</strong></p>';
-        stats.speakers.forEach(speaker => {
-            const tag = document.createElement('span');
-            tag.className = 'speaker-tag';
+        const tagsWrap = document.createElement('div');
+        tagsWrap.className = 'speaker-tags-wrap';
+        detectedSpeakers.forEach(speaker => {
+            const tag = document.createElement('button');
+            tag.type = 'button';
+            tag.className = `speaker-tag${speakerReadyState[speaker] ? ' ready' : ''}`;
+            tag.dataset.speaker = speaker;
             tag.textContent = speaker;
-            speakersList.appendChild(tag);
+            tagsWrap.appendChild(tag);
         });
+        speakersList.appendChild(tagsWrap);
+        const hint = document.createElement('p');
+        hint.className = 'speaker-modal-hint';
+        hint.textContent = 'Click any speaker chip to open assignments.';
+        speakersList.appendChild(hint);
+        renderSpeakerDuplicates(detectedSpeakers);
         
         // Show emotion tag detection info
         if (stats.has_emotion_tags) {
@@ -1686,10 +3622,24 @@ function displayStatistics(stats) {
         }
         
         // Show inline voice assignments with emotion data
-        displayInlineVoiceAssignments(stats.speakers, stats.speaker_emotions || {});
+        displayInlineVoiceAssignments(detectedSpeakers, stats.speaker_emotions || {});
     } else {
-        speakersList.innerHTML = '<p><em>No speaker tags detected. Using single voice.</em></p>';
-        document.getElementById('inline-voice-assignments').style.display = 'none';
+        speakersList.innerHTML = '<p><strong>Detected Speakers:</strong></p>';
+        const tagsWrap = document.createElement('div');
+        tagsWrap.className = 'speaker-tags-wrap';
+        const tag = document.createElement('button');
+        tag.type = 'button';
+        tag.className = `speaker-tag${speakerReadyState['Speaker 1'] ? ' ready' : ''}`;
+        tag.dataset.speaker = 'Speaker 1';
+        tag.textContent = 'Speaker 1';
+        tagsWrap.appendChild(tag);
+        speakersList.appendChild(tagsWrap);
+        const hint = document.createElement('p');
+        hint.className = 'speaker-modal-hint';
+        hint.textContent = 'Click the speaker chip to open assignments.';
+        speakersList.appendChild(hint);
+        displayInlineVoiceAssignments(activeSpeakers, {});
+        renderSpeakerDuplicates([]);
     }
     
     document.getElementById('stats-section').style.display = 'block';
@@ -1708,6 +3658,10 @@ function displayInlineVoiceAssignments(speakers, speakerEmotions = {}) {
         row.innerHTML = `
             <div class="assignment-header">
                 <span class="speaker-label">${speaker}</span>
+                <div class="speaker-rename">
+                    <input type="text" class="speaker-rename-input" data-role="speaker-rename-input" />
+                    <button type="button" class="btn btn-sm speaker-rename-btn" data-role="speaker-rename-btn">Apply</button>
+                </div>
             </div>
             <div class="assignment-body compact-assignment">
                 <div class="assignment-selection-group">
@@ -1718,10 +3672,15 @@ function displayInlineVoiceAssignments(speakers, speakerEmotions = {}) {
                         </select>
                     </div>
                     <div class="assignment-select turbo-inline-control" data-role="turbo-control">
-                        <label>Chatterbox Voice Prompt</label>
-                        <select class="reference-select" data-speaker="${speaker}">
-                            <option value="">Inherit from global selection</option>
-                        </select>
+                        <label>Voice Sample</label>
+                        <div class="voice-sample-row">
+                            <select class="reference-select" data-speaker="${speaker}">
+                                <option value="">Inherit from global selection</option>
+                            </select>
+                            <button type="button" class="btn btn-sm voice-sample-preview-btn" data-role="voice-sample-preview-btn" data-label-play="Play" data-label-stop="Stop" disabled>
+                                Play
+                            </button>
+                        </div>
                     </div>
                 </div>
                 <div class="qwen3-inline-options" data-role="qwen3-control" style="display: none;">
@@ -1744,24 +3703,32 @@ function displayInlineVoiceAssignments(speakers, speakerEmotions = {}) {
             </div>
         `;
         container.appendChild(row);
-        // Only render FX panel for Kokoro engine (not Qwen3 or Chatterbox)
-        const engineName = getSelectedJobEngine() || runtimeSettings?.tts_engine || 'kokoro';
-        const shouldRenderFx = !isQwenEngine(engineName) && !isTurboEngine(engineName);
+        const renameInput = row.querySelector('[data-role="speaker-rename-input"]');
+        if (renameInput) {
+            renameInput.value = speaker;
+            renameInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    const applyButton = row.querySelector('[data-role="speaker-rename-btn"]');
+                    applyButton?.click();
+                }
+            });
+        }
+        const renameButton = row.querySelector('[data-role="speaker-rename-btn"]');
+        if (renameButton && renameInput) {
+            renameButton.addEventListener('click', () => handleInlineRename(speaker, renameInput));
+        }
         const fxContainer = row.querySelector('.voice-fx-inline');
         if (fxContainer) {
-            if (shouldRenderFx) {
-                renderFxPanel(fxContainer, speaker, {
-                    title: `${speaker} FX`,
-                    showHeader: false,
-                    useSharedPreview: true
-                });
-            } else {
-                // Remove the empty FX container to prevent it taking space
-                fxContainer.remove();
-            }
+            renderFxPanel(fxContainer, speaker, {
+                title: `${speaker} FX`,
+                showHeader: false,
+                useSharedPreview: true
+            });
         }
     });
     
+    initInlineSampleHandlers();
     if (window.availableVoices) {
         populateVoiceSelects();
     } else {
@@ -1773,9 +3740,81 @@ function displayInlineVoiceAssignments(speakers, speakerEmotions = {}) {
         }, 100);
     }
     
-    document.getElementById('inline-voice-assignments').style.display = 'block';
+    const inlineAssignments = document.getElementById('inline-voice-assignments');
+    if (inlineAssignments) {
+        inlineAssignments.style.display = 'none';
+    }
     populateReferenceSelects();
     updateAssignmentModes(getSelectedJobEngine() || runtimeSettings?.tts_engine || 'kokoro');
+}
+
+function updateInlineSampleButtonState(row, options = {}) {
+    if (!row) return;
+    const button = row.querySelector('[data-role="voice-sample-preview-btn"]');
+    if (!button) return;
+    const selection = row.querySelector('.reference-select')?.value?.trim() || '';
+    if (!selection) {
+        button.disabled = true;
+        button.classList.remove('is-playing', 'is-loading');
+        button.textContent = button.dataset.labelPlay || 'Play';
+        if (options.stopPlayback && window.chatterboxPreviewController) {
+            window.chatterboxPreviewController.stop();
+        }
+        return;
+    }
+    button.disabled = false;
+    if (options.stopPlayback && window.chatterboxPreviewController) {
+        window.chatterboxPreviewController.stop();
+    }
+}
+
+function initInlineSampleHandlers() {
+    const containers = [
+        document.getElementById('inline-voice-assignment-list'),
+        document.getElementById('speaker-edit-modal-body')
+    ].filter(Boolean);
+    if (!containers.length) return;
+    containers.forEach(container => {
+        if (container.dataset.handlersReady === 'true') return;
+        container.addEventListener('change', event => {
+            if (!(event.target instanceof HTMLElement)) return;
+            if (!event.target.classList.contains('reference-select')) return;
+            const row = event.target.closest('.voice-assignment-row');
+            const speaker = row?.dataset?.speaker;
+            if (speaker) {
+                const selection = event.target.value?.trim() || '';
+                if (selection) {
+                    turboSelectionState[speaker] = selection;
+                } else {
+                    delete turboSelectionState[speaker];
+                }
+            }
+            updateInlineSampleButtonState(row, { stopPlayback: true });
+        });
+        container.addEventListener('click', event => {
+            const target = event.target instanceof HTMLElement ? event.target : null;
+            const button = target?.closest('[data-role="voice-sample-preview-btn"]');
+            if (!button) return;
+            const row = button.closest('.voice-assignment-row');
+            const selection = row?.querySelector('.reference-select')?.value?.trim();
+            if (!selection) {
+                showNotification('Select a voice sample first.', 'warning');
+                return;
+            }
+            const voiceEntry = findChatterboxVoiceByPath(selection);
+            if (!voiceEntry?.id) {
+                showNotification('Unable to resolve that voice sample.', 'warning');
+                return;
+            }
+            if (!window.chatterboxPreviewController) {
+                showNotification('Preview controls are still loading. Try again shortly.', 'warning');
+                return;
+            }
+            window.chatterboxPreviewController.toggleById(voiceEntry.id, button);
+        });
+        container.dataset.handlersReady = 'true';
+    });
+    inlineSampleHandlersReady = true;
 }
 
 // Populate voice select dropdowns
@@ -1783,7 +3822,7 @@ function populateVoiceSelects() {
     if (!window.availableVoices) return;
     const engineName = getSelectedJobEngine() || runtimeSettings?.tts_engine || 'kokoro';
     const isQwen = isQwenEngine(engineName);
-    const selects = document.querySelectorAll('#inline-voice-assignment-list .voice-select');
+    const selects = document.querySelectorAll('#inline-voice-assignment-list .voice-select, #speaker-edit-modal-body .voice-select');
     selects.forEach(select => {
         const previousValue = select.value;
         select.innerHTML = '<option value="">Select Voice...</option>';
@@ -1817,46 +3856,20 @@ async function generateAudio() {
     // Get voice assignments
     let voiceAssignments = getVoiceAssignments();
     
-    // If no voice assignments, use default voice for all speakers
+    const hasDetectedSpeakers = Array.isArray(currentStats?.speakers) && currentStats.speakers.length > 0;
+    // Require per-speaker assignments since default voice selectors are no longer shown
     if (Object.keys(voiceAssignments).length === 0) {
-        const engineName = getSelectedJobEngine() || runtimeSettings?.tts_engine || 'kokoro';
-        if (isQwenEngine(engineName)) {
-            const qwenSpeaker = document.getElementById('qwen3-default-speaker')?.value || '';
-            const qwenLanguage = document.getElementById('qwen3-default-language')?.value || 'Auto';
-            if (!qwenSpeaker) {
-                alert('Please select a Qwen3 speaker.');
-                return;
-            }
-            const targets = (currentStats.speakers && currentStats.speakers.length > 0)
-                ? currentStats.speakers
-                : ['default'];
-            targets.forEach(speaker => {
-                voiceAssignments[speaker] = {
-                    voice: qwenSpeaker,
-                    extra: { language: qwenLanguage }
-                };
-            });
-        } else {
-            const defaultVoice = document.getElementById('default-voice-select').value;
-            if (!defaultVoice) {
-                alert('Please assign voices to speakers or select a default voice');
-                return;
-            }
-            
-            const langCode = getLangCodeForVoice(defaultVoice);
-            if (currentStats.speakers && currentStats.speakers.length > 0) {
-                currentStats.speakers.forEach(speaker => {
-                    voiceAssignments[speaker] = createAssignment(defaultVoice, langCode, speaker);
-                });
-            } else {
-                voiceAssignments['default'] = createAssignment(defaultVoice, langCode, 'default');
-            }
-        }
+        const warningMessage = hasDetectedSpeakers
+            ? 'Assign voices for the detected speakers before generating audio.'
+            : 'Assign a voice for Speaker 1 before generating audio.';
+        showNotification(warningMessage, 'warning');
+        return;
     }
     
     console.log('Voice assignments for generation:', voiceAssignments);
     
     const splitByChapter = document.getElementById('split-chapters-checkbox')?.checked || false;
+    const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
     const generateFullStory = splitByChapter && (document.getElementById('full-story-checkbox')?.checked || false);
     const outputFormat = document.getElementById('job-output-format')?.value || undefined;
     const outputBitrate = document.getElementById('job-output-bitrate')?.value || undefined;
@@ -1869,6 +3882,9 @@ async function generateAudio() {
         voice_assignments: voiceAssignments,
         review_mode: true  // Always enabled - chunk review happens in library
     };
+    if (customHeading) {
+        payload.custom_heading = customHeading;
+    }
     if (selectedEngine) {
         payload.tts_engine = selectedEngine;
         const overrides = collectEngineOverrides(selectedEngine);
@@ -2067,6 +4083,7 @@ function resetVoiceAssignments() {
 
     currentStats = null;
     lastAnalyzedText = '';
+    updateSectionReviewButton(false);
     initDefaultVoiceFxPanel();
     showNotification('Assignments reset. Run Analyze Text again when you\'re ready.', 'info');
 }
@@ -2151,13 +4168,13 @@ function getLangCodeForVoice(voiceName) {
 // Get voice assignments from UI (from inline assignments in Generate tab)
 function buildTurboSelectionMap() {
     const map = {};
-    document.querySelectorAll('#inline-voice-assignment-list .voice-assignment-row').forEach(row => {
+    getAssignmentRows().forEach(row => {
         const speaker = row.dataset.speaker;
         if (!speaker) return;
         const reference = row.querySelector('.reference-select')?.value.trim();
-        map[speaker] = {
-            reference: reference || ''
-        };
+        if (reference) {
+            map[speaker] = { reference };
+        }
     });
     return map;
 }
@@ -2205,7 +4222,7 @@ function buildTurboAssignment(speakerKey, referencePath) {
 
 function getVoiceAssignments() {
     const assignments = {};
-    const selects = document.querySelectorAll('#inline-voice-assignment-list .voice-select');
+    const selects = document.querySelectorAll('#inline-voice-assignment-list .voice-select, #speaker-edit-modal-body .voice-select');
     const engineName = getSelectedJobEngine() || runtimeSettings?.tts_engine || 'kokoro';
     const turboEnabled = isTurboEngine(engineName);
     const qwenEnabled = isQwenEngine(engineName);

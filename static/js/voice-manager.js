@@ -55,6 +55,128 @@ function setupVoicesAccordion() {
     });
 }
 
+function getSelectionSet(scope) {
+    return scope === 'archived' ? selectedArchivedVoiceIds : selectedVoiceIds;
+}
+
+function getSelectedCount(scope) {
+    return getSelectionSet(scope).size;
+}
+
+function updateBatchToolbar(scope) {
+    const isArchive = scope === 'archived';
+    const count = getSelectedCount(scope);
+    const countLabel = document.getElementById(isArchive ? 'voice-archive-selected-count' : 'voice-selected-count');
+    if (countLabel) {
+        countLabel.textContent = `${count} selected`;
+    }
+    const exportBtn = document.getElementById(isArchive ? 'voice-archive-export-btn' : 'voice-batch-export-btn');
+    const archiveBtn = document.getElementById(isArchive ? 'voice-archive-restore-btn' : 'voice-batch-archive-btn');
+    const deleteBtn = document.getElementById(isArchive ? 'voice-archive-delete-btn' : 'voice-batch-delete-btn');
+    [exportBtn, archiveBtn, deleteBtn].forEach(btn => {
+        if (btn) btn.disabled = count === 0;
+    });
+    const selectAll = document.getElementById(isArchive ? 'voice-archive-select-all' : 'voice-select-all');
+    if (selectAll) {
+        const totalRows = getVoiceRowCheckboxes(scope).length;
+        selectAll.checked = totalRows > 0 && count === totalRows;
+        selectAll.indeterminate = count > 0 && count < totalRows;
+    }
+}
+
+function updateSelectAllState(scope, totalRows) {
+    const selection = getSelectionSet(scope);
+    const selectAll = document.getElementById(scope === 'archived' ? 'voice-archive-select-all' : 'voice-select-all');
+    if (!selectAll) return;
+    const count = selection.size;
+    selectAll.checked = totalRows > 0 && count === totalRows;
+    selectAll.indeterminate = count > 0 && count < totalRows;
+}
+
+function updateRowSelection(row, checked) {
+    if (!row) return;
+    const voiceId = row.dataset.voiceId;
+    if (!voiceId) return;
+    const scope = row.dataset.archived === 'true' ? 'archived' : 'active';
+    const selection = getSelectionSet(scope);
+    if (checked) {
+        selection.add(voiceId);
+    } else {
+        selection.delete(voiceId);
+    }
+    updateBatchToolbar(scope);
+}
+
+function getVoiceRowCheckboxes(scope) {
+    const container = scope === 'archived'
+        ? document.getElementById('chatterbox-voice-archive-list')
+        : document.getElementById('chatterbox-voice-list');
+    if (!container) return [];
+    return Array.from(container.querySelectorAll('input.voice-select-checkbox'));
+}
+
+function syncSelectionSets() {
+    const activeIds = new Set(allVoices.filter(entry => !entry.archived).map(entry => entry.id));
+    const archivedIds = new Set(allVoices.filter(entry => entry.archived).map(entry => entry.id));
+    selectedVoiceIds.forEach(id => {
+        if (!activeIds.has(id)) selectedVoiceIds.delete(id);
+    });
+    selectedArchivedVoiceIds.forEach(id => {
+        if (!archivedIds.has(id)) selectedArchivedVoiceIds.delete(id);
+    });
+}
+
+async function applyArchiveState(voiceIds, archived) {
+    if (!voiceIds.length) return;
+    const response = await fetch('/api/chatterbox-voices/archive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice_ids: voiceIds, archived })
+    });
+    const data = await response.json();
+    if (!data.success) {
+        throw new Error(data.error || 'Archive update failed');
+    }
+}
+
+async function deleteVoicesBatch(voiceIds) {
+    if (!voiceIds.length) return;
+    const response = await fetch('/api/chatterbox-voices/batch-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice_ids: voiceIds })
+    });
+    const data = await response.json();
+    if (!data.success) {
+        throw new Error(data.error || 'Delete failed');
+    }
+}
+
+async function exportVoicesBatch(voiceIds) {
+    if (!voiceIds.length) return;
+    const response = await fetch('/api/chatterbox-voices/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice_ids: voiceIds })
+    });
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Export failed');
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = filenameMatch ? filenameMatch[1] : (blob.type === 'application/zip' ? 'voice_samples.zip' : 'voice_sample.wav');
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+}
+
 function setupQwenVoiceCreation() {
     const generateBtn = document.getElementById('qwen-voice-generate-btn');
     const saveBtn = document.getElementById('qwen-voice-save-btn');
@@ -623,6 +745,8 @@ let externalVoices = [];
 let allVoices = []; // Combined local + external
 let voiceListSortKey = 'name';
 let voiceListSortDir = 'asc';
+const selectedVoiceIds = new Set();
+const selectedArchivedVoiceIds = new Set();
 
 // Locale code to human-readable language name mapping (voice-manager specific)
 const VM_LOCALE_NAMES = {
@@ -777,6 +901,7 @@ function getLanguageDisplayName(localeCode) {
 
 function renderChatterboxVoiceList() {
     const container = document.getElementById('chatterbox-voice-list');
+    const archiveContainer = document.getElementById('chatterbox-voice-archive-list');
     if (!container) return;
     
     // Build set of local file names to detect duplicates
@@ -796,41 +921,64 @@ function renderChatterboxVoiceList() {
         ...filteredExternalVoices.map(v => ({ ...v, source: 'external' }))
     ];
     
+    const activeVoices = allVoices.filter(entry => !entry.archived);
+    const archivedVoices = allVoices.filter(entry => entry.archived);
+
     // Apply filters
-    const filteredVoices = applyVoiceFilters(allVoices);
-    
+    const filteredVoices = applyVoiceFilters(activeVoices);
+    const filteredArchived = applyVoiceFilters(archivedVoices);
+
     // Apply sorting
     const sortedVoices = sortVoices(filteredVoices, voiceListSortKey, voiceListSortDir);
-    
+    const sortedArchived = sortVoices(filteredArchived, voiceListSortKey, voiceListSortDir);
+
     // Update stats
-    updateVoiceListStats(filteredVoices.length, allVoices.length);
+    updateVoiceListStats(filteredVoices.length, activeVoices.length);
     
     // Update language filter options
     updateLanguageFilterOptions(allVoices);
     
-    if (!sortedVoices.length) {
-        container.innerHTML = '<tr><td colspan="6" class="help-text">No voices match your filters.</td></tr>';
+    renderVoiceRows(container, sortedVoices, { archived: false });
+    if (archiveContainer) {
+        renderVoiceRows(archiveContainer, sortedArchived, { archived: true });
+    }
+    syncSelectionSets();
+    updateBatchToolbar('active');
+    updateBatchToolbar('archived');
+}
+
+function renderVoiceRows(container, rows, { archived }) {
+    if (!container) return;
+    if (!rows.length) {
+        container.innerHTML = `<tr><td colspan="7" class="help-text">${archived ? 'No archived voices.' : 'No voices match your filters.'}</td></tr>`;
         return;
     }
-    
     container.innerHTML = '';
-    sortedVoices.forEach(entry => {
+    rows.forEach(entry => {
         const row = document.createElement('tr');
         row.dataset.voiceId = entry.id;
         row.dataset.source = entry.source;
-        
+        row.dataset.archived = archived ? 'true' : 'false';
+
         const isExternal = entry.source === 'external';
         const isDownloaded = isExternal ? entry.is_downloaded : true;
-        const genderBadge = entry.gender ? 
-            `<span class="badge badge-${entry.gender.toLowerCase()}">${entry.gender}</span>` : 
-            '<span class="badge">—</span>';
-        const sourceBadge = isExternal ?
-            (isDownloaded ? '<span class="badge badge-downloaded">Downloaded</span>' : '<span class="badge badge-external">External</span>') :
-            '<span class="badge badge-local">Local</span>';
+        const genderBadge = entry.gender
+            ? `<span class="badge badge-${entry.gender.toLowerCase()}">${entry.gender}</span>`
+            : '<span class="badge">—</span>';
+        const sourceBadge = isExternal
+            ? (isDownloaded ? '<span class="badge badge-downloaded">Downloaded</span>' : '<span class="badge badge-external">External</span>')
+            : '<span class="badge badge-local">Local</span>';
         const durationText = entry.duration_seconds ? `${entry.duration_seconds.toFixed(1)}s` : '—';
         const languageText = getLanguageDisplayName(entry.language);
-        
+        const selectionSet = archived ? selectedArchivedVoiceIds : selectedVoiceIds;
+        const isSelected = selectionSet.has(entry.id);
+        const archiveAction = archived ? 'unarchive' : 'archive';
+        const archiveLabel = archived ? 'Unarchive' : 'Archive';
+
         row.innerHTML = `
+            <td class="select-col">
+                <input type="checkbox" class="voice-select-checkbox" data-role="voice-select" ${isSelected ? 'checked' : ''}>
+            </td>
             <td class="voice-name-cell">
                 ${escapeHtml(entry.name || 'Untitled Voice')}
                 ${entry.missing_file ? '<span class="badge badge-danger">Missing</span>' : ''}
@@ -850,10 +998,12 @@ function renderChatterboxVoiceList() {
                         Play
                     </button>
                 `}
+                <button type="button" class="btn-ghost" data-action="export" ${!isDownloaded ? 'disabled' : ''}>Export</button>
+                <button type="button" class="btn-ghost" data-action="${archiveAction}">${archiveLabel}</button>
                 ${!isExternal ? `
                     <button type="button" class="btn-ghost" data-action="edit-meta">Edit</button>
-                    <button type="button" class="btn-danger" data-action="delete">Delete</button>
                 ` : ''}
+                <button type="button" class="btn-danger" data-action="delete">Delete</button>
             </td>
         `;
         container.appendChild(row);
@@ -995,17 +1145,100 @@ function setupVoiceListControls() {
             });
         });
     }
+    const archiveTable = document.getElementById('chatterbox-voice-archive-table');
+    if (archiveTable) {
+        archiveTable.querySelectorAll('th.sortable').forEach(th => {
+            th.addEventListener('click', () => {
+                const sortKey = th.dataset.sort;
+                if (voiceListSortKey === sortKey) {
+                    voiceListSortDir = voiceListSortDir === 'asc' ? 'desc' : 'asc';
+                } else {
+                    voiceListSortKey = sortKey;
+                    voiceListSortDir = 'asc';
+                }
+                archiveTable.querySelectorAll('th.sortable').forEach(h => {
+                    h.classList.remove('sort-asc', 'sort-desc');
+                });
+                th.classList.add(voiceListSortDir === 'asc' ? 'sort-asc' : 'sort-desc');
+                renderChatterboxVoiceList();
+            });
+        });
+    }
     
     // Load external voices button
     const loadExternalBtn = document.getElementById('load-external-voices-btn');
     if (loadExternalBtn) {
         loadExternalBtn.addEventListener('click', loadExternalVoices);
     }
+
+    const selectAllActive = document.getElementById('voice-select-all');
+    if (selectAllActive) {
+        selectAllActive.addEventListener('change', event => {
+            const checked = event.target.checked;
+            getVoiceRowCheckboxes('active').forEach(checkbox => {
+                checkbox.checked = checked;
+                updateRowSelection(checkbox.closest('tr'), checked);
+            });
+        });
+    }
+
+    const selectAllArchived = document.getElementById('voice-archive-select-all');
+    if (selectAllArchived) {
+        selectAllArchived.addEventListener('change', event => {
+            const checked = event.target.checked;
+            getVoiceRowCheckboxes('archived').forEach(checkbox => {
+                checkbox.checked = checked;
+                updateRowSelection(checkbox.closest('tr'), checked);
+            });
+        });
+    }
+
+    const batchExportBtn = document.getElementById('voice-batch-export-btn');
+    if (batchExportBtn) {
+        batchExportBtn.addEventListener('click', () => handleBatchExport('active'));
+    }
+    const batchArchiveBtn = document.getElementById('voice-batch-archive-btn');
+    if (batchArchiveBtn) {
+        batchArchiveBtn.addEventListener('click', () => handleBatchArchive('active'));
+    }
+    const batchDeleteBtn = document.getElementById('voice-batch-delete-btn');
+    if (batchDeleteBtn) {
+        batchDeleteBtn.addEventListener('click', () => handleBatchDelete('active'));
+    }
+
+    const archiveExportBtn = document.getElementById('voice-archive-export-btn');
+    if (archiveExportBtn) {
+        archiveExportBtn.addEventListener('click', () => handleBatchExport('archived'));
+    }
+    const archiveRestoreBtn = document.getElementById('voice-archive-restore-btn');
+    if (archiveRestoreBtn) {
+        archiveRestoreBtn.addEventListener('click', () => handleBatchArchive('archived'));
+    }
+    const archiveDeleteBtn = document.getElementById('voice-archive-delete-btn');
+    if (archiveDeleteBtn) {
+        archiveDeleteBtn.addEventListener('click', () => handleBatchDelete('archived'));
+    }
     
     // Table row actions (delegated)
     const tbody = document.getElementById('chatterbox-voice-list');
     if (tbody) {
         tbody.addEventListener('click', handleVoiceTableAction);
+        tbody.addEventListener('change', event => {
+            const target = event.target;
+            if (!(target instanceof HTMLInputElement)) return;
+            if (!target.classList.contains('voice-select-checkbox')) return;
+            updateRowSelection(target.closest('tr'), target.checked);
+        });
+    }
+    const archiveBody = document.getElementById('chatterbox-voice-archive-list');
+    if (archiveBody) {
+        archiveBody.addEventListener('click', handleVoiceTableAction);
+        archiveBody.addEventListener('change', event => {
+            const target = event.target;
+            if (!(target instanceof HTMLInputElement)) return;
+            if (!target.classList.contains('voice-select-checkbox')) return;
+            updateRowSelection(target.closest('tr'), target.checked);
+        });
     }
 }
 
@@ -1056,10 +1289,102 @@ async function handleVoiceTableAction(event) {
     } else if (action === 'download') {
         const shortName = btn.dataset.voiceId;
         await downloadExternalVoice(shortName, btn);
+    } else if (action === 'export') {
+        await handleRowExport(voiceId);
+    } else if (action === 'archive') {
+        await handleRowArchive(voiceId, true);
+    } else if (action === 'unarchive') {
+        await handleRowArchive(voiceId, false);
     } else if (action === 'delete') {
-        await deleteChatterboxVoice(voiceId);
+        await handleRowDelete(voiceId);
     } else if (action === 'edit-meta') {
         await editVoiceMetadata(voiceId);
+    }
+}
+
+async function handleBatchExport(scope) {
+    const voiceIds = Array.from(getSelectionSet(scope));
+    if (!voiceIds.length) return;
+    try {
+        await exportVoicesBatch(voiceIds);
+    } catch (error) {
+        console.error('Batch export failed', error);
+        showToast(error.message || 'Export failed', 'error');
+    }
+}
+
+async function handleBatchArchive(scope) {
+    const voiceIds = Array.from(getSelectionSet(scope));
+    if (!voiceIds.length) return;
+    const archived = scope === 'active';
+    try {
+        await applyArchiveState(voiceIds, archived);
+        voiceIds.forEach(id => getSelectionSet(scope).delete(id));
+        await loadChatterboxVoices();
+        renderChatterboxVoiceList();
+        showToast(archived ? 'Voices archived.' : 'Voices restored.', 'success');
+    } catch (error) {
+        console.error('Archive update failed', error);
+        showToast(error.message || 'Archive update failed', 'error');
+    }
+}
+
+async function handleBatchDelete(scope) {
+    const voiceIds = Array.from(getSelectionSet(scope));
+    if (!voiceIds.length) return;
+    const confirmed = confirm(`Delete ${voiceIds.length} voice sample${voiceIds.length === 1 ? '' : 's'}? This cannot be undone.`);
+    if (!confirmed) return;
+    try {
+        await deleteVoicesBatch(voiceIds);
+        voiceIds.forEach(id => getSelectionSet(scope).delete(id));
+        await loadChatterboxVoices();
+        renderChatterboxVoiceList();
+        showToast('Voices deleted.', 'success');
+    } catch (error) {
+        console.error('Batch delete failed', error);
+        showToast(error.message || 'Delete failed', 'error');
+    }
+}
+
+async function handleRowExport(voiceId) {
+    if (!voiceId) return;
+    try {
+        await exportVoicesBatch([voiceId]);
+    } catch (error) {
+        console.error('Export failed', error);
+        showToast(error.message || 'Export failed', 'error');
+    }
+}
+
+async function handleRowArchive(voiceId, archived) {
+    if (!voiceId) return;
+    try {
+        await applyArchiveState([voiceId], archived);
+        selectedVoiceIds.delete(voiceId);
+        selectedArchivedVoiceIds.delete(voiceId);
+        await loadChatterboxVoices();
+        renderChatterboxVoiceList();
+        showToast(archived ? 'Voice archived.' : 'Voice restored.', 'success');
+    } catch (error) {
+        console.error('Archive update failed', error);
+        showToast(error.message || 'Archive update failed', 'error');
+    }
+}
+
+async function handleRowDelete(voiceId) {
+    if (!voiceId) return;
+    const confirmed = confirm('Delete this voice sample? This cannot be undone.');
+    if (!confirmed) return;
+    try {
+        await deleteVoicesBatch([voiceId]);
+        selectedVoiceIds.delete(voiceId);
+        selectedArchivedVoiceIds.delete(voiceId);
+        await loadChatterboxVoices();
+        renderChatterboxVoiceList();
+        showToast('Voice deleted.', 'success');
+    } catch (error) {
+        console.error('Delete failed', error);
+        showToast(error.message || 'Delete failed', 'error');
     }
 }
 

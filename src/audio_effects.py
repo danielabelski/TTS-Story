@@ -6,9 +6,14 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 import logging
+import os
+import subprocess
+import tempfile
+from pathlib import Path
 from typing import Dict, Optional
 
 import numpy as np
+import soundfile as sf
 
 try:
     import librosa
@@ -65,6 +70,8 @@ logger = logging.getLogger(__name__)
 class AudioPostProcessor:
     """Applies pitch, speed, and tonal shaping to generated audio arrays."""
 
+    SOX_PATH = (Path(__file__).resolve().parents[2] / "tools" / "sox" / "sox.exe")
+
     def apply(self, audio: np.ndarray, sample_rate: int, fx: Optional[VoiceFXSettings], blend_override: Optional[float] = None) -> np.ndarray:
         """
         Apply audio effects to the input audio.
@@ -87,12 +94,14 @@ class AudioPostProcessor:
         base_audio = audio.astype(np.float32, copy=False)
         processed = base_audio.copy()
 
-        # Apply speed change first (time stretch without pitch change)
-        if math.isfinite(fx.speed) and abs(fx.speed - 1.0) > 1e-3:
-            processed = self._apply_speed(processed, sample_rate, fx.speed)
-
-        if math.isfinite(fx.pitch_semitones) and abs(fx.pitch_semitones) > 1e-3:
-            processed = self._apply_pitch(processed, sample_rate, fx.pitch_semitones)
+        if self._can_use_sox(fx):
+            try:
+                processed = self._apply_speed_pitch_sox(processed, sample_rate, fx.speed, fx.pitch_semitones)
+            except Exception as exc:  # pragma: no cover - fallback for local installs
+                logger.warning("SoX FX failed (%s); falling back to librosa pipeline.", exc)
+                processed = self._apply_speed_pitch_librosa(processed, sample_rate, fx)
+        else:
+            processed = self._apply_speed_pitch_librosa(processed, sample_rate, fx)
 
         if fx.tone and fx.tone != "neutral":
             processed = self._apply_tone(processed, sample_rate, fx.tone)
@@ -107,6 +116,36 @@ class AudioPostProcessor:
             processed = self._blend_with_original(base_audio, processed, mix=blend_mix)
 
         return np.clip(processed, -1.0, 1.0)
+
+    def prepare_prompt_audio(self, prompt_path: str, fx: Optional[VoiceFXSettings]) -> Optional[Path]:
+        """Apply pitch/speed FX to a prompt audio file and return a temp WAV path."""
+        if fx is None:
+            return None
+        if abs(fx.speed - 1.0) < 1e-3 and abs(fx.pitch_semitones) < 1e-3:
+            return None
+
+        fd, temp_name = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        output_path = Path(temp_name)
+        prompt = Path(prompt_path)
+        try:
+            if self._can_use_sox(fx):
+                command = [str(self.SOX_PATH), str(prompt), str(output_path)]
+                if abs(fx.pitch_semitones) > 1e-3:
+                    command += ["pitch", f"{fx.pitch_semitones * 100:.2f}"]
+                if abs(fx.speed - 1.0) > 1e-3:
+                    command += ["tempo", "-s", f"{fx.speed:.3f}"]
+                result = subprocess.run(command, capture_output=True, text=True)
+                if result.returncode != 0:
+                    raise RuntimeError(result.stderr.strip() or "SoX failed")
+            else:
+                audio, sr = sf.read(str(prompt), dtype='float32')
+                processed = self._apply_speed_pitch_librosa(audio, sr, fx)
+                sf.write(str(output_path), processed, sr)
+            return output_path
+        except Exception:
+            output_path.unlink(missing_ok=True)
+            raise
 
     @staticmethod
     def _compute_blend_mix(fx: VoiceFXSettings) -> float:
@@ -186,6 +225,57 @@ class AudioPostProcessor:
             )
         
         return shifted.astype(np.float32, copy=False)
+
+    @staticmethod
+    def _apply_speed_pitch_librosa(audio: np.ndarray, sample_rate: int, fx: VoiceFXSettings) -> np.ndarray:
+        processed = audio
+        if math.isfinite(fx.speed) and abs(fx.speed - 1.0) > 1e-3:
+            processed = AudioPostProcessor._apply_speed(processed, sample_rate, fx.speed)
+        if math.isfinite(fx.pitch_semitones) and abs(fx.pitch_semitones) > 1e-3:
+            processed = AudioPostProcessor._apply_pitch(processed, sample_rate, fx.pitch_semitones)
+        return processed
+
+    @classmethod
+    def _can_use_sox(cls, fx: VoiceFXSettings) -> bool:
+        if fx is None:
+            return False
+        if not (math.isfinite(fx.speed) or math.isfinite(fx.pitch_semitones)):
+            return False
+        if abs(fx.speed - 1.0) < 1e-3 and abs(fx.pitch_semitones) < 1e-3:
+            return False
+        return cls.SOX_PATH.exists()
+
+    @classmethod
+    def _apply_speed_pitch_sox(
+        cls,
+        audio: np.ndarray,
+        sample_rate: int,
+        speed: float,
+        pitch_semitones: float,
+    ) -> np.ndarray:
+        speed = max(0.5, min(2.0, speed))
+        pitch_semitones = max(-12.0, min(12.0, pitch_semitones))
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_in:
+            input_path = Path(temp_in.name)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_out:
+            output_path = Path(temp_out.name)
+
+        try:
+            sf.write(str(input_path), audio, sample_rate)
+            command = [str(cls.SOX_PATH), str(input_path), str(output_path)]
+            if abs(pitch_semitones) > 1e-3:
+                command += ["pitch", f"{pitch_semitones * 100:.2f}"]
+            if abs(speed - 1.0) > 1e-3:
+                command += ["tempo", "-s", f"{speed:.3f}"]
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or "SoX failed")
+            processed, _ = sf.read(str(output_path), dtype='float32')
+        finally:
+            input_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+
+        return processed.astype(np.float32, copy=False)
 
     @staticmethod
     def _apply_tone(audio: np.ndarray, sample_rate: int, profile: str) -> np.ndarray:

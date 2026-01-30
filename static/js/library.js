@@ -8,6 +8,29 @@ let libraryChunkRegenWatchers = {};
 const LIBRARY_CHUNK_POLL_INTERVAL_MS = 2000;
 const LIBRARY_CHUNK_MAX_ATTEMPTS = 60;
 
+// Library item playback state (only one item should play at a time)
+let activeLibraryPlayer = null;
+let activeLibraryUpdateControls = null;
+
+function setActiveLibraryPlayer(player, updateControls) {
+    if (activeLibraryPlayer && activeLibraryPlayer !== player) {
+        activeLibraryPlayer.pause();
+        activeLibraryPlayer.currentTime = 0;
+        if (activeLibraryUpdateControls) {
+            activeLibraryUpdateControls();
+        }
+    }
+    activeLibraryPlayer = player;
+    activeLibraryUpdateControls = updateControls;
+}
+
+function clearActiveLibraryPlayer(player) {
+    if (activeLibraryPlayer === player) {
+        activeLibraryPlayer = null;
+        activeLibraryUpdateControls = null;
+    }
+}
+
 // Audio playback state for chunk review modal
 let libraryActiveAudio = null;
 let libraryActivePlayButton = null;
@@ -18,6 +41,30 @@ let previewButton = null;
 
 // Voice map for looking up lang_code by voice id
 let libraryVoiceMap = new Map();
+
+function setRegenButtonBusy(button, isBusy, label = 'Regenerating...') {
+    if (!button) return;
+    if (isBusy) {
+        if (!button.dataset.originalText) {
+            button.dataset.originalText = button.textContent || 'Regenerate';
+        }
+        button.disabled = true;
+        button.classList.add('is-loading');
+        button.textContent = label;
+    } else {
+        button.disabled = false;
+        button.classList.remove('is-loading');
+        button.textContent = button.dataset.originalText || 'Regenerate';
+        delete button.dataset.originalText;
+    }
+}
+
+function resetChunkRegenButton(chunkId) {
+    const card = document.querySelector(`.library-chunk-card[data-chunk-id="${chunkId}"]`);
+    if (!card) return;
+    const btn = card.querySelector('.library-chunk-regen');
+    setRegenButtonBusy(btn, false);
+}
 
 // Locale code to human-readable language name mapping
 const LIBRARY_LOCALE_NAMES = {
@@ -58,6 +105,28 @@ const LIBRARY_LOCALE_NAMES = {
 function getLibraryLanguageDisplayName(localeCode) {
     if (!localeCode) return '';
     return LIBRARY_LOCALE_NAMES[localeCode] || localeCode;
+}
+
+function wireBookToggleEvents() {
+    const headers = document.querySelectorAll('.book-header');
+    headers.forEach(header => {
+        header.addEventListener('click', () => {
+            const bookIdx = header.getAttribute('data-book-index');
+            const chaptersContainer = document.querySelector(`.book-chapters[data-book-index="${bookIdx}"]`);
+            const toggle = header.querySelector('.book-toggle');
+
+            if (chaptersContainer) {
+                const isCollapsed = chaptersContainer.classList.contains('collapsed');
+                if (isCollapsed) {
+                    chaptersContainer.classList.remove('collapsed');
+                    if (toggle) toggle.textContent = '▼';
+                } else {
+                    chaptersContainer.classList.add('collapsed');
+                    if (toggle) toggle.textContent = '▶';
+                }
+            }
+        });
+    });
 }
 
 // Library voice dropdown filter state
@@ -144,39 +213,43 @@ function formatEngineName(engine) {
     return engineMap[engine] || engine;
 }
 
-function formatChapterLabel(chapter) {
-    if (!chapter) {
-        return 'Chapter';
+function formatSectionLabel(section, fallbackLabel) {
+    if (!section) {
+        return fallbackLabel;
     }
-    if (chapter.title) {
-        return chapter.title;
+    if (section.title) {
+        return section.title;
     }
-    if (chapter.index) {
-        return `Chapter ${chapter.index}`;
+    if (section.index) {
+        return `${fallbackLabel} ${section.index}`;
     }
-    return 'Chapter';
+    return fallbackLabel;
 }
 
 function renderChapterControls(item) {
-    if (!item.chapters || item.chapters.length <= 1) {
+    const sections = item.book_mode && item.books?.length ? item.books : item.chapters;
+    if (!sections || sections.length <= 1) {
         return '';
     }
+
+    const label = item.book_mode ? 'Books' : 'Chapters';
+    const fallbackLabel = item.book_mode ? 'Book' : 'Chapter';
 
     return `
         <div class="chapter-controls" data-job-id="${item.job_id}">
             <div class="chapter-controls-header">
-                <strong>Chapters</strong>
+                <strong>${label}</strong>
             </div>
             <div class="chapter-pill-container">
-                ${item.chapters.map((chapter, idx) => `
+                ${sections.map((section, idx) => `
                     <button
                         class="btn btn-secondary btn-xs chapter-pill ${idx === 0 ? 'active' : ''}"
                         data-job-id="${item.job_id}"
-                        data-relative-path="${chapter.relative_path}"
-                        data-src="${chapter.output_file}"
-                        data-index="${chapter.index || idx + 1}"
+                        data-relative-path="${section.relative_path}"
+                        data-src="${section.output_file}"
+                        data-index="${section.index || idx + 1}"
                     >
-                        ${formatChapterLabel(chapter)}
+                        ${formatSectionLabel(section, fallbackLabel)}
                     </button>
                 `).join('')}
             </div>
@@ -194,7 +267,7 @@ function renderFullStoryBanner(item) {
         <div class="full-story-banner" data-job-id="${item.job_id}">
             <div>
                 <strong>Full Story Audiobook</strong>
-                <p class="help-text">One continuous file combining every chapter.</p>
+                <p class="help-text">One continuous file combining every section.</p>
             </div>
             <div class="full-story-actions">
                 <button class="btn btn-secondary btn-xs" onclick="playFullStory('${item.job_id}', '${full.output_file}', '${full.relative_path}')">
@@ -228,7 +301,8 @@ function displayLibraryItems(items) {
         const createdDate = new Date(item.created_at);
         const formattedDate = createdDate.toLocaleString();
         const fileSizeMB = (item.file_size / (1024 * 1024)).toFixed(2);
-        const initialChapter = (item.chapters && item.chapters.length > 0) ? item.chapters[0] : null;
+        const sectionList = item.book_mode && item.books?.length ? item.books : item.chapters;
+        const initialChapter = (sectionList && sectionList.length > 0) ? sectionList[0] : null;
         if (initialChapter) {
             currentChapterSelection[item.job_id] = initialChapter;
         }
@@ -236,10 +310,19 @@ function displayLibraryItems(items) {
         // Format engine name for display
         const engineLabel = formatEngineName(item.engine);
 
+        const defaultTitle = item.book_mode ? 'Book Collection' : (item.chapter_mode ? 'Chapter Collection' : 'Generated Audio');
+        const displayTitle = item.collection_title || defaultTitle;
+
         itemCard.innerHTML = `
-            <div class="library-item-header">
+            <div class="library-item-header library-item-summary" data-job-id="${item.job_id}">
+                <button class="library-item-toggle" aria-expanded="false" aria-label="Toggle details">▶</button>
+                <div class="library-item-controls" data-job-id="${item.job_id}" data-full-story-src="${item.full_story ? item.full_story.output_file : ''}" data-full-story-path="${item.full_story ? item.full_story.relative_path : ''}">
+                    <button class="btn btn-secondary btn-xs library-item-control-btn library-item-play" data-job-id="${item.job_id}" aria-label="Play">▶</button>
+                    <button class="btn btn-secondary btn-xs library-item-control-btn library-item-pause" data-job-id="${item.job_id}" aria-label="Pause">⏸</button>
+                </div>
                 <div class="library-item-info">
-                    <strong>${item.chapter_mode ? 'Chapter Collection' : 'Generated Audio'}</strong>
+                    <strong class="library-item-title">${escapeHtml(displayTitle)}</strong>
+                    <button class="btn btn-secondary btn-xs library-title-edit" type="button" title="Edit title">✎</button>
                     <span class="library-item-date">${formattedDate}</span>
                 </div>
                 <div class="library-item-meta">
@@ -248,28 +331,30 @@ function displayLibraryItems(items) {
                     <span class="library-item-format">${item.format.toUpperCase()}</span>
                 </div>
             </div>
-            <div class="library-item-player">
-                <audio controls id="player-${item.job_id}"></audio>
-            </div>
-            ${renderChapterControls(item)}
-            ${renderFullStoryBanner(item)}
-            <div class="library-item-actions">
-                <button class="btn btn-primary btn-sm" onclick="downloadLibraryItem('${item.job_id}')">
-                    Download ${item.chapter_mode ? 'Selected Chapter' : ''}
-                </button>
-                ${item.chapter_mode && item.chapters && item.chapters.length > 1 ? `
-                    <button class="btn btn-secondary btn-sm" onclick="downloadChapterZip('${item.job_id}')">
-                        Download All (ZIP)
+            <div class="library-item-details collapsed" data-job-id="${item.job_id}">
+                <div class="library-item-player">
+                    <audio controls id="player-${item.job_id}"></audio>
+                </div>
+                ${renderChapterControls(item)}
+                ${renderFullStoryBanner(item)}
+                <div class="library-item-actions">
+                    <button class="btn btn-primary btn-sm" onclick="downloadLibraryItem('${item.job_id}')">
+                        Download ${item.book_mode ? 'Selected Book' : (item.chapter_mode ? 'Selected Chapter' : '')}
                     </button>
-                ` : ''}
-                ${item.has_chunks ? `
-                    <button class="btn btn-secondary btn-sm" onclick="restoreToReview('${item.job_id}')">
-                        Review Chunks
+                    ${item.chapter_mode && item.chapters && item.chapters.length > 1 ? `
+                        <button class="btn btn-secondary btn-sm" onclick="downloadChapterZip('${item.job_id}')">
+                            Download All (ZIP)
+                        </button>
+                    ` : ''}
+                    ${item.has_chunks ? `
+                        <button class="btn btn-secondary btn-sm" onclick="restoreToReview('${item.job_id}')">
+                            Review Chunks
+                        </button>
+                    ` : ''}
+                    <button class="btn btn-secondary btn-sm" onclick="deleteLibraryItem('${item.job_id}')">
+                        Delete
                     </button>
-                ` : ''}
-                <button class="btn btn-secondary btn-sm" onclick="deleteLibraryItem('${item.job_id}')">
-                    Delete
-                </button>
+                </div>
             </div>
         `;
         
@@ -282,6 +367,140 @@ function displayLibraryItems(items) {
         } else if (player) {
             player.src = item.output_file;
             player.load();
+        }
+
+        const summaryHeader = itemCard.querySelector(`.library-item-summary[data-job-id="${item.job_id}"]`);
+        const details = itemCard.querySelector(`.library-item-details[data-job-id="${item.job_id}"]`);
+        const toggleBtn = itemCard.querySelector(`.library-item-toggle`);
+        const controls = itemCard.querySelector(`.library-item-controls[data-job-id="${item.job_id}"]`);
+        const playBtn = itemCard.querySelector(`.library-item-play[data-job-id="${item.job_id}"]`);
+        const pauseBtn = itemCard.querySelector(`.library-item-pause[data-job-id="${item.job_id}"]`);
+        const titleEl = itemCard.querySelector('.library-item-title');
+        const editTitleBtn = itemCard.querySelector('.library-title-edit');
+
+        if (summaryHeader && details && toggleBtn) {
+            summaryHeader.addEventListener('click', (event) => {
+                if (event.target.closest('.library-item-controls') || event.target.closest('.library-title-edit')) {
+                    return;
+                }
+                const isCollapsed = details.classList.contains('collapsed');
+                details.classList.toggle('collapsed');
+                toggleBtn.textContent = isCollapsed ? '▼' : '▶';
+                toggleBtn.setAttribute('aria-expanded', String(isCollapsed));
+            });
+        }
+
+        if (editTitleBtn && titleEl) {
+            editTitleBtn.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                const nextTitle = prompt('Collection title', titleEl.textContent || '');
+                if (!nextTitle) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`/api/library/${item.job_id}/title`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ title: nextTitle })
+                    });
+                    const data = await response.json();
+                    if (!data.success) {
+                        alert(`Failed to update title: ${data.error}`);
+                        return;
+                    }
+                    titleEl.textContent = data.title;
+                } catch (error) {
+                    console.error('Error updating collection title:', error);
+                    alert('Failed to update title');
+                }
+            });
+        }
+
+        if (controls && player) {
+            const getFullStoryInfo = () => {
+                const fullStorySrc = controls.getAttribute('data-full-story-src');
+                const fullStoryPath = controls.getAttribute('data-full-story-path');
+                return { fullStorySrc, fullStoryPath };
+            };
+
+            const updateControls = () => {
+                if (!playBtn || !pauseBtn) return;
+
+                const isStopped = (player.currentTime === 0 && player.paused) || player.ended;
+
+                if (isStopped) {
+                    // Fully stopped: show play button, hide pause button
+                    playBtn.textContent = '▶';
+                    playBtn.setAttribute('aria-label', 'Play');
+                    pauseBtn.style.display = 'none';
+                } else {
+                    // Playing or paused (but not stopped): show stop button and pause button
+                    playBtn.textContent = '■';
+                    playBtn.setAttribute('aria-label', 'Stop');
+                    pauseBtn.style.display = 'inline-block';
+                }
+            };
+
+            // Initialize button states
+            updateControls();
+
+            if (playBtn) {
+                playBtn.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    
+                    // If playing or paused, stop it
+                    if (player.currentTime > 0) {
+                        player.pause();
+                        player.currentTime = 0;
+                        clearActiveLibraryPlayer(player);
+                        updateControls();
+                        return;
+                    }
+
+                    // Start playing
+                    const { fullStorySrc, fullStoryPath } = getFullStoryInfo();
+                    if (fullStorySrc) {
+                        player.src = fullStorySrc;
+                        player.load();
+                        currentChapterSelection[item.job_id] = {
+                            output_file: fullStorySrc,
+                            relative_path: fullStoryPath,
+                            title: 'Full Story'
+                        };
+                    }
+                    setActiveLibraryPlayer(player, updateControls);
+                    player.play();
+                    updateControls();
+                });
+            }
+
+            if (pauseBtn) {
+                pauseBtn.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    
+                    // Toggle pause/unpause
+                    if (!player.paused) {
+                        player.pause();
+                    } else if (player.currentTime > 0) {
+                        player.play();
+                    }
+                    // Don't call updateControls here - let the play/pause events handle it
+                });
+            }
+
+            player.addEventListener('play', () => {
+                updateControls();
+            });
+
+            player.addEventListener('pause', () => {
+                updateControls();
+            });
+
+            player.addEventListener('ended', () => {
+                clearActiveLibraryPlayer(player);
+                updateControls();
+            });
         }
 
         // Wire chapter buttons
@@ -301,7 +520,7 @@ function displayLibraryItems(items) {
                     playerEl.load();
                 }
 
-                const selectedChapter = (item.chapters || []).find(ch => ch.relative_path === relativePath) || {
+                const selectedChapter = (sectionList || []).find(ch => ch.relative_path === relativePath) || {
                     output_file: src,
                     relative_path: relativePath,
                     title: button.textContent.trim()
@@ -429,7 +648,9 @@ function renderChunkReviewModal(data) {
 
     const chunks = data.chunks || [];
     const chapters = data.chapters || [];
+    const books = data.books || [];
     const hasChapters = data.has_chapters || false;
+    const hasBooks = data.has_books || false;
     const engine = data.engine || 'kokoro';
     const jobId = data.job_id;
 
@@ -546,56 +767,78 @@ function renderChunkReviewModal(data) {
     `;
     }).join('');
 
-    // Build chunk content - either grouped by chapter or flat list
+    const chunksByChapter = new Map();
+    chunks.forEach((chunk, idx) => {
+        const chapterIdx = chunk.chapter_index ?? 0;
+        if (!chunksByChapter.has(chapterIdx)) {
+            chunksByChapter.set(chapterIdx, []);
+        }
+        chunksByChapter.get(chapterIdx).push({ chunk, idx });
+    });
+
+    const buildChapterSection = (chapter, chapterNum) => {
+        const chapterIdx = chapter.index ?? chapterNum;
+        let chapterChunks = chunksByChapter.get(chapterIdx) || [];
+        if (chapterChunks.length === 0 && chapterIdx > 0) {
+            chapterChunks = chunksByChapter.get(chapterIdx - 1) || [];
+        }
+        if (chapterChunks.length === 0) {
+            chapterChunks = chunksByChapter.get(chapterNum) || [];
+        }
+        const chapterTitle = chapter.title || `Chapter ${chapterIdx + 1}`;
+        const chunkRows = chapterChunks.map(({ chunk, idx }) => 
+            renderLibraryChunkRow(jobId, chunk, engine, idx)
+        ).join('');
+
+        return `
+            <div class="chapter-section" data-chapter-index="${chapterIdx}">
+                <div class="chapter-header" data-chapter-index="${chapterIdx}">
+                    <span class="chapter-toggle">▶</span>
+                    <span class="chapter-title">${escapeHtml(chapterTitle)}</span>
+                    <span class="chapter-chunk-count">${chapterChunks.length} chunks</span>
+                </div>
+                <div class="chapter-chunks collapsed" data-chapter-index="${chapterIdx}">
+                    ${chunkRows}
+                </div>
+            </div>
+        `;
+    };
+
+    // Build chunk content - grouped by book/chapters or flat list
     let chunkContent = '';
-    if (hasChapters && chapters.length > 0) {
-        // Group chunks by chapter_index
-        const chunksByChapter = new Map();
-        chunks.forEach((chunk, idx) => {
-            const chapterIdx = chunk.chapter_index ?? 0;
-            if (!chunksByChapter.has(chapterIdx)) {
-                chunksByChapter.set(chapterIdx, []);
-            }
-            chunksByChapter.get(chapterIdx).push({ chunk, idx });
-        });
-
-        // Render chapters with expandable sections
-        chunkContent = chapters.map((chapter, chapterNum) => {
-            // Try both 0-indexed and the raw index from manifest for backwards compatibility
-            const chapterIdx = chapter.index ?? chapterNum;
-            let chapterChunks = chunksByChapter.get(chapterIdx) || [];
-            // Fallback: if no chunks found and index looks 1-indexed, try 0-indexed lookup
-            if (chapterChunks.length === 0 && chapterIdx > 0) {
-                chapterChunks = chunksByChapter.get(chapterIdx - 1) || [];
-            }
-            // Another fallback: try using the array position (chapterNum) directly
-            if (chapterChunks.length === 0) {
-                chapterChunks = chunksByChapter.get(chapterNum) || [];
-            }
-            const chapterTitle = chapter.title || `Chapter ${chapterIdx + 1}`;
-            const chunkRows = chapterChunks.map(({ chunk, idx }) => 
-                renderLibraryChunkRow(jobId, chunk, engine, idx)
+    if (hasBooks && books.length > 0) {
+        chunkContent = books.map((book, bookNum) => {
+            const bookIdx = book.index ?? bookNum;
+            const chapterIndices = new Set(book.chapter_indices || []);
+            const bookChapters = chapters
+                .filter(ch => (ch.book_index ?? bookIdx) === bookIdx || chapterIndices.has(ch.index))
+                .sort((a, b) => (a.book_order ?? a.index ?? 0) - (b.book_order ?? b.index ?? 0));
+            const chapterBlocks = bookChapters.map((chapter, chapterNum) => 
+                buildChapterSection(chapter, chapterNum)
             ).join('');
-
+            const bookTitle = book.title || `Book ${bookIdx + 1}`;
             return `
-                <div class="chapter-section" data-chapter-index="${chapterIdx}">
-                    <div class="chapter-header" data-chapter-index="${chapterIdx}">
-                        <span class="chapter-toggle">▶</span>
-                        <span class="chapter-title">${escapeHtml(chapterTitle)}</span>
-                        <span class="chapter-chunk-count">${chapterChunks.length} chunks</span>
+                <div class="book-section" data-book-index="${bookIdx}">
+                    <div class="book-header" data-book-index="${bookIdx}">
+                        <span class="book-toggle">▶</span>
+                        <span class="book-title">${escapeHtml(bookTitle)}</span>
+                        <span class="book-chapter-count">${bookChapters.length} chapters</span>
                     </div>
-                    <div class="chapter-chunks collapsed" data-chapter-index="${chapterIdx}">
-                        ${chunkRows}
+                    <div class="book-chapters collapsed" data-book-index="${bookIdx}">
+                        ${chapterBlocks}
                     </div>
                 </div>
             `;
         }).join('');
+    } else if (hasChapters && chapters.length > 0) {
+        chunkContent = chapters.map((chapter, chapterNum) => buildChapterSection(chapter, chapterNum)).join('');
     } else {
-        // No chapters - flat list
         chunkContent = chunks.map((chunk, idx) => renderLibraryChunkRow(jobId, chunk, engine, idx)).join('');
     }
 
-    const chapterInfo = hasChapters ? `<span><strong>Chapters:</strong> ${chapters.length}</span>` : '';
+    const chapterInfo = hasBooks
+        ? `<span><strong>Books:</strong> ${books.length}</span><span><strong>Chapters:</strong> ${chapters.length}</span>`
+        : (hasChapters ? `<span><strong>Chapters:</strong> ${chapters.length}</span>` : '');
 
     body.innerHTML = `
         <div class="chunk-review-header">
@@ -621,6 +864,9 @@ function renderChunkReviewModal(data) {
     // Wire chapter toggle events if chapters exist
     if (hasChapters) {
         wireChapterToggleEvents();
+    }
+    if (hasBooks) {
+        wireBookToggleEvents();
     }
 
     wireChunkReviewEvents(jobId, chunks, engine);
@@ -881,6 +1127,36 @@ function wireChunkReviewEvents(jobId, chunks, engine) {
         btn.addEventListener('click', () => {
             const chunkId = btn.getAttribute('data-chunk-id');
             triggerLibraryChunkRegen(jobId, chunkId, btn);
+        });
+    });
+
+    body.querySelectorAll('.library-chunk-voice-select').forEach(select => {
+        select.addEventListener('change', () => {
+            const chunkId = select.getAttribute('data-chunk-id');
+            if (!chunkId) return;
+            const card = select.closest('.library-chunk-card');
+            const engineSelect = card?.querySelector('.library-chunk-engine-select');
+            const engineOverride = engineSelect?.value
+                || engineSelect?.dataset.selectedEngine
+                || engineSelect?.dataset.currentEngine
+                || '';
+            const normalizedEngine = (engineOverride || engine || '').toLowerCase().replace(/[_-]/g, '');
+            const value = (select.value || '').trim();
+
+            if (!value) {
+                delete libraryChunkVoiceOverrides[chunkId];
+                return;
+            }
+
+            if (normalizedEngine.includes('chatterbox')
+                || normalizedEngine.includes('voxcpm')
+                || (normalizedEngine.includes('qwen3') && normalizedEngine.includes('clone'))
+            ) {
+                libraryChunkVoiceOverrides[chunkId] = { audio_prompt_path: value };
+            } else {
+                const voiceData = libraryVoiceMap.get(value);
+                libraryChunkVoiceOverrides[chunkId] = { voice: value, lang_code: voiceData?.langCode || 'a' };
+            }
         });
     });
 
@@ -1213,7 +1489,7 @@ async function populateLibraryVoiceSelects(engine) {
         }
     }
 
-    async function populateChunkVoiceSelect(select, chunkId, engineName, filters = null, currentLabel = '') {
+    async function populateChunkVoiceSelect(select, chunkId, engineName, filters = null, currentLabel = '', selectedValue = '') {
         const usesPrompts = engineName.includes('chatterbox')
             || engineName.includes('voxcpm')
             || (engineName.includes('qwen3') && engineName.includes('clone'));
@@ -1317,8 +1593,12 @@ async function populateLibraryVoiceSelects(engine) {
             select.appendChild(opt);
         });
         
-        // Clear any previous voice override for this chunk
-        delete libraryChunkVoiceOverrides[chunkId];
+        if (selectedValue) {
+            select.value = selectedValue;
+            if (select.value !== selectedValue) {
+                select.value = '';
+            }
+        }
     }
 
     // Helper to populate bulk speaker voice select based on engine
@@ -1435,6 +1715,8 @@ async function populateLibraryVoiceSelects(engine) {
         const currentEngine = chunk?.engine || engine;
         const currentEngineLabel = currentEngine ? `Current: ${formatEngineName(currentEngine)}` : '-- Same engine --';
         const normalizedCurrentEngine = (currentEngine || '').toLowerCase();
+        select.dataset.currentEngine = currentEngine || '';
+        select.dataset.selectedEngine = '';
         select.innerHTML = `
             <option value="">${currentEngineLabel}</option>
             <option value="kokoro">Kokoro</option>
@@ -1460,8 +1742,12 @@ async function populateLibraryVoiceSelects(engine) {
         const languageFilter = regenSection?.querySelector('.chunk-voice-filter-language');
         if (voiceSelect) {
             const currentVoiceLabel = voiceSelect.dataset.currentVoiceLabel || '';
+            const voiceAssignment = chunk?.voice_assignment || {};
+            const override = libraryChunkVoiceOverrides[chunkId] || {};
+            const selectedValue = override.audio_prompt_path || override.voice
+                || voiceAssignment.audio_prompt_path || voiceAssignment.voice || '';
             const filters = getPromptFilters(regenSection, '.chunk-voice-filter-gender', '.chunk-voice-filter-language');
-            populateChunkVoiceSelect(voiceSelect, chunkId, currentEngine, filters, currentVoiceLabel);
+            populateChunkVoiceSelect(voiceSelect, chunkId, currentEngine, filters, currentVoiceLabel, selectedValue);
         }
         const normalizedEngineValue = (currentEngine || '').toLowerCase();
         const isQwen = normalizedEngineValue.includes('qwen3') && !normalizedEngineValue.includes('clone');
@@ -1487,22 +1773,31 @@ async function populateLibraryVoiceSelects(engine) {
             genderFilter.addEventListener('change', () => {
                 if (!voiceSelect) return;
                 const currentVoiceLabel = voiceSelect.dataset.currentVoiceLabel || '';
+                const voiceAssignment = chunk?.voice_assignment || {};
+                const override = libraryChunkVoiceOverrides[chunkId] || {};
+                const selectedValue = override.audio_prompt_path || override.voice
+                    || voiceAssignment.audio_prompt_path || voiceAssignment.voice || '';
                 const filters = getPromptFilters(regenSection, '.chunk-voice-filter-gender', '.chunk-voice-filter-language');
-                populateChunkVoiceSelect(voiceSelect, chunkId, currentEngine, filters, currentVoiceLabel);
+                populateChunkVoiceSelect(voiceSelect, chunkId, currentEngine, filters, currentVoiceLabel, selectedValue);
             });
         }
         if (languageFilter) {
             languageFilter.addEventListener('change', () => {
                 if (!voiceSelect) return;
                 const currentVoiceLabel = voiceSelect.dataset.currentVoiceLabel || '';
+                const voiceAssignment = chunk?.voice_assignment || {};
+                const override = libraryChunkVoiceOverrides[chunkId] || {};
+                const selectedValue = override.audio_prompt_path || override.voice
+                    || voiceAssignment.audio_prompt_path || voiceAssignment.voice || '';
                 const filters = getPromptFilters(regenSection, '.chunk-voice-filter-gender', '.chunk-voice-filter-language');
-                populateChunkVoiceSelect(voiceSelect, chunkId, currentEngine, filters, currentVoiceLabel);
+                populateChunkVoiceSelect(voiceSelect, chunkId, currentEngine, filters, currentVoiceLabel, selectedValue);
             });
         }
 
         // When engine changes, repopulate the voice dropdown for this chunk and show/hide Qwen3 options
         select.addEventListener('change', async () => {
             const selectedEngine = select.value || currentEngine || engine;
+            select.dataset.selectedEngine = selectedEngine || '';
             const regenSection = select.closest('.chunk-regen-section');
             const voiceSelect = regenSection?.querySelector('.library-chunk-voice-select');
             const qwen3Options = regenSection?.querySelector('.chunk-qwen3-options');
@@ -1512,8 +1807,12 @@ async function populateLibraryVoiceSelects(engine) {
             
             if (voiceSelect) {
                 const currentVoiceLabel = voiceSelect.dataset.currentVoiceLabel || '';
+                const voiceAssignment = chunk?.voice_assignment || {};
+                const override = libraryChunkVoiceOverrides[chunkId] || {};
+                const selectedValue = override.audio_prompt_path || override.voice
+                    || voiceAssignment.audio_prompt_path || voiceAssignment.voice || '';
                 const filters = getPromptFilters(regenSection, '.chunk-voice-filter-gender', '.chunk-voice-filter-language');
-                await populateChunkVoiceSelect(voiceSelect, chunkId, selectedEngine, filters, currentVoiceLabel);
+                await populateChunkVoiceSelect(voiceSelect, chunkId, selectedEngine, filters, currentVoiceLabel, selectedValue);
             }
             
             // Show/hide Qwen3 options based on engine
@@ -1701,7 +2000,7 @@ async function triggerBulkSpeakerRegen(jobId, speaker, chunks, engine, button) {
     const usesVoicePrompts = isChatterbox || isVoxCPM || isQwenClone;
 
     // Build voice payload based on engine type
-    const voiceData = libraryVoiceMap.get(voiceValue);
+    const voiceData = libraryVoiceMap.get(voiceValue || '');
     let voicePayload;
     if (usesVoicePrompts) {
         const promptEntry = libraryVoiceMap.get(voiceValue);
@@ -1799,21 +2098,27 @@ async function triggerLibraryChunkRegen(jobId, chunkId, button) {
         return;
     }
 
-    button.disabled = true;
-    button.textContent = 'Queuing...';
+    setRegenButtonBusy(button, true, '⟳ Queued...');
 
     // Get engine override from per-chunk dropdown
     const chunkEngineSelect = card?.querySelector('.library-chunk-engine-select');
-    const engineOverride = chunkEngineSelect?.value || '';
+    const resolvedEngine = chunkEngineSelect?.value
+        || chunkEngineSelect?.dataset.selectedEngine
+        || chunkEngineSelect?.dataset.currentEngine
+        || (chunkReviewModalData?.chunks || []).find(chunk => chunk.id === chunkId)?.engine
+        || chunkReviewModalData?.engine
+        || '';
     
-    // Get voice selection from per-chunk dropdown
+    // Get voice selection from per-chunk dropdown or stored override
     const voiceSelect = card?.querySelector('.library-chunk-voice-select');
     const voiceValue = voiceSelect?.value || '';
+    const storedOverride = libraryChunkVoiceOverrides[chunkId] || {};
+    const selectedVoiceValue = voiceValue || storedOverride.audio_prompt_path || storedOverride.voice || '';
     
     // Build voice payload based on engine type
     let voicePayload = libraryChunkVoiceOverrides[chunkId] || {};
     const originalChunk = (chunkReviewModalData?.chunks || []).find(chunk => chunk.id === chunkId);
-    const normalizedEngine = (engineOverride || originalChunk?.engine || chunkReviewModalData?.engine || '')
+    const normalizedEngine = (resolvedEngine || originalChunk?.engine || chunkReviewModalData?.engine || '')
         .toLowerCase()
         .replace(/[_-]/g, '');
     const isChatterbox = normalizedEngine.includes('chatterbox');
@@ -1824,10 +2129,10 @@ async function triggerLibraryChunkRegen(jobId, chunkId, button) {
     const voiceData = libraryVoiceMap.get(voiceValue);
 
     if (usesVoicePrompts) {
-        if (voiceValue) {
-            const promptEntry = libraryVoiceMap.get(voiceValue);
+        if (selectedVoiceValue) {
+            const promptEntry = libraryVoiceMap.get(selectedVoiceValue);
             voicePayload = {
-                audio_prompt_path: voiceValue,
+                audio_prompt_path: selectedVoiceValue,
                 ...(promptEntry?.transcript ? { extra: { prompt_text: promptEntry.transcript } } : {})
             };
         }
@@ -1843,16 +2148,20 @@ async function triggerLibraryChunkRegen(jobId, chunkId, button) {
         }
         const existingExtra = voicePayload.extra || {};
         voicePayload = {
-            ...(voiceValue ? { voice: voiceValue } : {}),
             ...voicePayload,
+            ...(selectedVoiceValue ? { voice: selectedVoiceValue } : {}),
             extra: {
                 ...existingExtra,
                 language: language,
                 ...(instruct && { instruct: instruct })
             }
         };
-    } else if (voiceValue) {
-        voicePayload = { voice: voiceValue, lang_code: voiceData?.langCode || 'a' };
+    } else if (selectedVoiceValue) {
+        voicePayload = { voice: selectedVoiceValue, lang_code: voiceData?.langCode || 'a' };
+    }
+
+    if (Object.keys(voicePayload || {}).length > 0) {
+        libraryChunkVoiceOverrides[chunkId] = { ...voicePayload };
     }
 
     try {
@@ -1863,10 +2172,8 @@ async function triggerLibraryChunkRegen(jobId, chunkId, button) {
             chunk_id: chunkId,
             text: text,
             voice: voicePayload,
+            engine: resolvedEngine, // Always send resolved engine
         };
-        if (engineOverride) {
-            requestBody.engine = engineOverride;
-        }
 
         const response = await fetch(`/api/jobs/${jobId}/review/regen`, {
             method: 'POST',
@@ -1886,9 +2193,7 @@ async function triggerLibraryChunkRegen(jobId, chunkId, button) {
     } catch (error) {
         console.error('Regen error:', error);
         alert(error.message || 'Failed to regenerate chunk');
-    } finally {
-        button.disabled = false;
-        button.textContent = 'Regenerate';
+        setRegenButtonBusy(button, false);
     }
 }
 
@@ -1911,6 +2216,15 @@ function updateLibraryChunkStatus(chunkId, status) {
         badge = '<span class="review-chip error">Failed</span>';
     } else if (status === 'completed') {
         badge = '<span class="review-chip success">Updated</span>';
+    }
+
+    const regenButton = card.querySelector('.library-chunk-regen');
+    if (status === 'queued') {
+        setRegenButtonBusy(regenButton, true, '⟳ Queued...');
+    } else if (status === 'running') {
+        setRegenButtonBusy(regenButton, true, '⟳ Rendering...');
+    } else if (status === 'completed' || status === 'failed') {
+        setRegenButtonBusy(regenButton, false);
     }
 
     if (badge) {
@@ -1950,6 +2264,7 @@ async function pollLibraryChunkStatus(jobId, chunkId, entry) {
 
             // Update audio URL if completed
             if (!status || status === 'completed' || status === 'failed') {
+                resetChunkRegenButton(chunkId);
                 const chunk = chunks.find(c => c.id === chunkId);
                 if (chunk && chunk.file_url) {
                     const card = document.querySelector(`.library-chunk-card[data-chunk-id="${chunkId}"]`);
@@ -2081,6 +2396,9 @@ async function triggerChunkPreviewFx(jobId, chunkId, button) {
     const pitch = parseFloat(pitchSlider?.value || 0);
     
     const originalText = button.textContent;
+    if (!button.dataset.originalText) {
+        button.dataset.originalText = originalText;
+    }
     button.textContent = '⏳ Loading...';
     button.disabled = true;
     
@@ -2102,14 +2420,14 @@ async function triggerChunkPreviewFx(jobId, chunkId, button) {
         
         previewAudio = new Audio(audioUrl);
         previewButton = button;
-        
+
         button.textContent = '■ Stop';
         button.disabled = false;
         button.classList.add('previewing');
         
         previewAudio.addEventListener('ended', () => {
             stopPreviewAudio();
-            button.textContent = originalText;
+            button.textContent = button.dataset.originalText;
             button.disabled = false;
             // Re-check if button should be enabled based on slider values
             updateChunkApplyFxButtonState(speedSlider);
@@ -2145,6 +2463,8 @@ function stopPreviewAudio() {
     }
     if (previewButton) {
         previewButton.classList.remove('previewing');
+        previewButton.disabled = false;
+        previewButton.textContent = previewButton.dataset.originalText || 'Preview';
         previewButton = null;
     }
 }

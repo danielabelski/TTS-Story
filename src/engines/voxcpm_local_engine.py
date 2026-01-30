@@ -67,6 +67,9 @@ class VoxCPMLocalEngine(TtsEngineBase):
             raise ImportError("voxcpm is not installed. Run setup to enable VoxCPM local mode.")
 
         resolved_device = self._resolve_device(device)
+        if resolved_device.startswith("cuda") and torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            logger.info("Enabled cuDNN benchmark mode for faster inference")
         logger.info("Loading VoxCPM model=%s device=%s", model_id, resolved_device)
 
         # Download model to local directory to avoid Windows symlink issues
@@ -148,9 +151,6 @@ class VoxCPMLocalEngine(TtsEngineBase):
             for chunk_idx, chunk_text in enumerate(chunks):
                 output_path = output_dir / f"chunk_{chunk_index:04d}.wav"
                 audio = self._synthesize(chunk_text, assignment)
-                fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
-                if fx_settings:
-                    audio = self.post_processor.apply(audio, self.sample_rate, fx_settings)
                 sf.write(str(output_path), audio, self.sample_rate)
                 files.append(str(output_path))
                 chunk_index += 1
@@ -315,6 +315,7 @@ class VoxCPMLocalEngine(TtsEngineBase):
     def _synthesize(self, text: str, assignment: VoiceAssignment) -> np.ndarray:
         prompt_path = assignment.audio_prompt_path or self.default_prompt
         prompt_text = assignment.extra.get("prompt_text") or self.default_prompt_text
+        fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
 
         if prompt_path:
             prompt_path = self._resolve_prompt_path(prompt_path)
@@ -331,20 +332,34 @@ class VoxCPMLocalEngine(TtsEngineBase):
                 )
                 prompt_path = None
 
-        logger.info("VoxCPM generating: text=%r prompt_path=%s prompt_text=%s",
-                    text[:50], prompt_path, prompt_text[:30] if prompt_text else None)
-        wav = self.model.generate(
-            text=text,
-            prompt_wav_path=prompt_path,
-            prompt_text=prompt_text,
-            cfg_value=self.cfg_value,
-            inference_timesteps=self.inference_timesteps,
-            normalize=self.normalize,
-            denoise=self.denoise,
-            retry_badcase=True,
-            retry_badcase_max_times=3,
-            retry_badcase_ratio_threshold=6.0,
-        )
+        temp_prompt = None
+        try:
+            if prompt_path and fx_settings:
+                temp_prompt = self.post_processor.prepare_prompt_audio(prompt_path, fx_settings)
+                if temp_prompt:
+                    prompt_path = str(temp_prompt)
+                    if fx_settings.tone != "neutral":
+                        fx_settings = VoiceFXSettings(pitch_semitones=0.0, speed=1.0, tone=fx_settings.tone)
+                    else:
+                        fx_settings = None
+
+            logger.info("VoxCPM generating: text=%r prompt_path=%s prompt_text=%s",
+                        text[:50], prompt_path, prompt_text[:30] if prompt_text else None)
+            wav = self.model.generate(
+                text=text,
+                prompt_wav_path=prompt_path,
+                prompt_text=prompt_text,
+                cfg_value=self.cfg_value,
+                inference_timesteps=self.inference_timesteps,
+                normalize=self.normalize,
+                denoise=self.denoise,
+            )
+        finally:
+            if temp_prompt:
+                Path(temp_prompt).unlink(missing_ok=True)
+
+        if fx_settings:
+            wav = self.post_processor.apply(wav, self.sample_rate, fx_settings)
         audio = np.asarray(wav, dtype=np.float32)
         
         # Normalize audio to prevent clipping and reduce artifacts

@@ -162,8 +162,12 @@ class ChatterboxTurboReplicateEngine(TtsEngineBase):
                     # Build params and submit async
                     reference_url = None
                     assignment = chunk_info["assignment"]
+                    prompt_fx, output_fx = self._split_prompt_fx(assignment)
                     if assignment.audio_prompt_path:
-                        reference_url = self._upload_reference_audio(assignment.audio_prompt_path)
+                        reference_url = self._upload_reference_audio(
+                            assignment.audio_prompt_path,
+                            prompt_fx,
+                        )
                     
                     params = self._build_payload(chunk_info["text"], assignment, reference_url)
                     
@@ -198,10 +202,8 @@ class ChatterboxTurboReplicateEngine(TtsEngineBase):
                     # Download and process audio
                     audio = self._download_audio(audio_url)
                     
-                    # Apply FX if needed
-                    fx_settings = VoiceFXSettings.from_payload(chunk_info["assignment"].fx_payload)
-                    if fx_settings:
-                        audio = self.post_processor.apply(audio, self.sample_rate, fx_settings)
+                    if output_fx:
+                        audio = self.post_processor.apply(audio, self.sample_rate, output_fx)
                     
                     sf.write(str(output_path), audio, self.sample_rate)
                     results[global_idx] = str(output_path)
@@ -299,8 +301,12 @@ class ChatterboxTurboReplicateEngine(TtsEngineBase):
     # ------------------------------------------------------------------ #
     def _synthesize(self, text: str, assignment: VoiceAssignment) -> Tuple[np.ndarray, int]:
         reference_url = None
+        prompt_fx, output_fx = self._split_prompt_fx(assignment)
         if assignment.audio_prompt_path:
-            reference_url = self._upload_reference_audio(assignment.audio_prompt_path)
+            reference_url = self._upload_reference_audio(
+                assignment.audio_prompt_path,
+                prompt_fx,
+            )
 
         params = self._build_payload(text, assignment, reference_url)
         try:
@@ -309,9 +315,8 @@ class ChatterboxTurboReplicateEngine(TtsEngineBase):
             raise RuntimeError(f"Chatterbox Turbo (Replicate) request failed: {exc}") from exc
 
         audio_array = self._download_audio(output_url)
-        fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
-        if fx_settings:
-            audio_array = self.post_processor.apply(audio_array, self.sample_rate, fx_settings)
+        if output_fx:
+            audio_array = self.post_processor.apply(audio_array, self.sample_rate, output_fx)
         return audio_array, self.sample_rate
 
     # ------------------------------------------------------------------ #
@@ -351,23 +356,51 @@ class ChatterboxTurboReplicateEngine(TtsEngineBase):
             return default_value
 
     # ------------------------------------------------------------------ #
-    def _upload_reference_audio(self, path_str: str) -> str:
+    def _upload_reference_audio(self, path_str: str, prompt_fx: Optional[VoiceFXSettings]) -> str:
         resolved = self._resolve_prompt_path(path_str)
-        key = str(resolved.resolve())
-        cached = self.prompt_upload_cache.get(key)
+        cache_key = str(resolved.resolve())
+        if prompt_fx:
+            cache_key = f"{cache_key}:{prompt_fx.pitch_semitones:.3f}:{prompt_fx.speed:.3f}"
+        cached = self.prompt_upload_cache.get(cache_key)
         if cached:
             return cached
 
-        file_resource = self.client.files.create(str(resolved))
-        url = (
-            file_resource.urls.get("get")
-            or file_resource.urls.get("download")
-            or file_resource.urls.get("web")
-        )
-        if not url:
-            raise RuntimeError("Replicate did not return a download URL for uploaded prompt.")
-        self.prompt_upload_cache[key] = url
-        return url
+        temp_prompt = None
+        try:
+            upload_path = resolved
+            if prompt_fx:
+                temp_prompt = self.post_processor.prepare_prompt_audio(str(resolved), prompt_fx)
+                if temp_prompt:
+                    upload_path = temp_prompt
+            file_resource = self.client.files.create(str(upload_path))
+            url = (
+                file_resource.urls.get("get")
+                or file_resource.urls.get("download")
+                or file_resource.urls.get("web")
+            )
+            if not url:
+                raise RuntimeError("Replicate did not return a download URL for uploaded prompt.")
+            self.prompt_upload_cache[cache_key] = url
+            return url
+        finally:
+            if temp_prompt:
+                temp_prompt.unlink(missing_ok=True)
+
+    @staticmethod
+    def _split_prompt_fx(assignment: VoiceAssignment) -> Tuple[Optional[VoiceFXSettings], Optional[VoiceFXSettings]]:
+        fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
+        if not fx_settings:
+            return None, None
+        if assignment.audio_prompt_path and (
+            abs(fx_settings.pitch_semitones) > 1e-3 or abs(fx_settings.speed - 1.0) > 1e-3
+        ):
+            prompt_fx = fx_settings
+            if fx_settings.tone != "neutral":
+                output_fx = VoiceFXSettings(pitch_semitones=0.0, speed=1.0, tone=fx_settings.tone)
+            else:
+                output_fx = None
+            return prompt_fx, output_fx
+        return None, fx_settings
 
     # ------------------------------------------------------------------ #
     @staticmethod

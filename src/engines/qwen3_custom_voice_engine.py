@@ -54,6 +54,9 @@ class Qwen3CustomVoiceEngine(TtsEngineBase):
             raise ImportError("qwen-tts is not installed. Run setup to enable Qwen3-TTS local mode.")
 
         resolved_device = self._resolve_device(device)
+        if resolved_device.startswith("cuda") and torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            logger.info("Enabled cuDNN benchmark mode for faster inference")
         resolved_dtype = self._resolve_dtype(dtype)
         resolved_attn = self._resolve_attn_implementation(attn_implementation)
         logger.info(
@@ -156,9 +159,6 @@ class Qwen3CustomVoiceEngine(TtsEngineBase):
                 output_path = output_dir / f"chunk_{chunk_index:04d}.wav"
                 audio, sr = self._synthesize(chunk_text, voice_name, language, instruct)
                 self._sample_rate = sr
-                fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
-                if fx_settings:
-                    audio = self.post_processor.apply(audio, sr, fx_settings)
                 sf.write(str(output_path), audio, sr)
                 files.append(str(output_path))
                 chunk_index += 1
@@ -201,10 +201,7 @@ class Qwen3CustomVoiceEngine(TtsEngineBase):
         language = lang_code or self.default_language
         wav, sr = self._synthesize(text, voice, language, self.default_instruct)
         self._sample_rate = sr
-        audio = wav
-        if fx_settings:
-            audio = self.post_processor.apply(audio, sr, fx_settings)
-        return audio
+        return wav
 
     def _voice_assignment_for(self, voice_config: Dict[str, Dict], speaker: str) -> VoiceAssignment:
         payload = voice_config.get(speaker) or voice_config.get("default") or {}

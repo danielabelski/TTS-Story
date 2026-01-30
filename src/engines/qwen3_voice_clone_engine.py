@@ -66,6 +66,9 @@ class Qwen3VoiceCloneEngine(TtsEngineBase):
             raise ImportError("qwen-tts is not installed. Run setup to enable Qwen3-TTS local mode.")
 
         resolved_device = self._resolve_device(device)
+        if resolved_device.startswith("cuda") and torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            logger.info("Enabled cuDNN benchmark mode for faster inference")
         resolved_dtype = self._resolve_dtype(dtype)
         resolved_attn = self._resolve_attn_implementation(attn_implementation)
         logger.info(
@@ -137,6 +140,7 @@ class Qwen3VoiceCloneEngine(TtsEngineBase):
             language = (assignment.extra.get("language") if assignment.extra else None) or self.default_language
             prompt_path = assignment.audio_prompt_path or self.default_prompt
             prompt_text = assignment.extra.get("prompt_text") or self.default_prompt_text
+            fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
 
             if prompt_path:
                 prompt_path = self._resolve_prompt_path(prompt_path)
@@ -146,6 +150,16 @@ class Qwen3VoiceCloneEngine(TtsEngineBase):
 
             if not prompt_path:
                 raise ValueError("Qwen3 Voice Clone requires a reference audio prompt.")
+
+            temp_prompt = None
+            if prompt_path and fx_settings:
+                temp_prompt = self.post_processor.prepare_prompt_audio(prompt_path, fx_settings)
+                if temp_prompt:
+                    prompt_path = str(temp_prompt)
+                    if fx_settings.tone != "neutral":
+                        fx_settings = VoiceFXSettings(pitch_semitones=0.0, speed=1.0, tone=fx_settings.tone)
+                    else:
+                        fx_settings = None
 
             x_vector_only_mode = False
             if not prompt_text:
@@ -164,33 +178,36 @@ class Qwen3VoiceCloneEngine(TtsEngineBase):
                 Path(prompt_path).name if prompt_path else None,
             )
 
-            for chunk_idx, chunk_text in enumerate(chunks):
-                output_path = output_dir / f"chunk_{chunk_index:04d}.wav"
-                wavs, sr = self.model.generate_voice_clone(
-                    text=chunk_text,
-                    language=language or "Auto",
-                    ref_audio=prompt_path,
-                    ref_text=prompt_text or "",
-                    x_vector_only_mode=x_vector_only_mode,
-                )
-                audio = np.asarray(wavs[0], dtype=np.float32)
-                self._sample_rate = int(sr)
-                fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
-                if fx_settings:
-                    audio = self.post_processor.apply(audio, int(sr), fx_settings)
-                sf.write(str(output_path), audio, int(sr))
-                files.append(str(output_path))
-                chunk_index += 1
-                if callable(progress_cb):
-                    progress_cb()
-                if callable(chunk_cb):
-                    chunk_meta = {
-                        "speaker": speaker,
-                        "text": chunk_text,
-                        "segment_index": seg_idx,
-                        "chunk_index": chunk_idx,
-                    }
-                    chunk_cb(chunk_idx, chunk_meta, str(output_path))
+            try:
+                for chunk_idx, chunk_text in enumerate(chunks):
+                    output_path = output_dir / f"chunk_{chunk_index:04d}.wav"
+                    wavs, sr = self.model.generate_voice_clone(
+                        text=chunk_text,
+                        language=language or "Auto",
+                        ref_audio=prompt_path,
+                        ref_text=prompt_text or "",
+                        x_vector_only_mode=x_vector_only_mode,
+                    )
+                    audio = np.asarray(wavs[0], dtype=np.float32)
+                    self._sample_rate = int(sr)
+                    if fx_settings:
+                        audio = self.post_processor.apply(audio, int(sr), fx_settings)
+                    sf.write(str(output_path), audio, int(sr))
+                    files.append(str(output_path))
+                    chunk_index += 1
+                    if callable(progress_cb):
+                        progress_cb()
+                    if callable(chunk_cb):
+                        chunk_meta = {
+                            "speaker": speaker,
+                            "text": chunk_text,
+                            "segment_index": seg_idx,
+                            "chunk_index": chunk_idx,
+                        }
+                        chunk_cb(chunk_idx, chunk_meta, str(output_path))
+            finally:
+                if temp_prompt:
+                    Path(temp_prompt).unlink(missing_ok=True)
 
         return files
 

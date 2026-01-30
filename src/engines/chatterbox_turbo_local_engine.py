@@ -59,6 +59,9 @@ class ChatterboxTurboLocalEngine(TtsEngineBase):
             )
 
         resolved_device = self._resolve_device(device)
+        if resolved_device.startswith("cuda") and torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            logger.info("Enabled cuDNN benchmark mode for faster inference")
         logger.info("Loading Chatterbox Turbo on device=%s", resolved_device)
         self._patch_s3tokenizer_prepare_audio()  # Must patch BEFORE model loads
         self._patch_prepare_conditionals()  # Patch to ensure float32 audio throughout
@@ -81,6 +84,7 @@ class ChatterboxTurboLocalEngine(TtsEngineBase):
         self.norm_loudness = bool(norm_loudness)
         self.prompt_norm_loudness = bool(prompt_norm_loudness)
         self.prompt_cache: Dict[str, Path] = {}
+        self._last_prompt_path: Optional[Path] = None
         self.post_processor = AudioPostProcessor()
 
     def _download_model(self) -> str:
@@ -233,6 +237,7 @@ class ChatterboxTurboLocalEngine(TtsEngineBase):
         progress_cb=None,
         chunk_cb=None,
         parallel_workers: int = 1,
+        group_by_speaker: bool = False,
     ) -> List[str]:
         if sample_rate and sample_rate != self.sample_rate:
             logger.warning(
@@ -243,38 +248,62 @@ class ChatterboxTurboLocalEngine(TtsEngineBase):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        files: List[str] = []
-        chunk_index = 0
+        chunk_items: List[Dict[str, Any]] = []
+        chunk_order = 0
+        speaker_order: List[str] = []
         for seg_idx, segment in enumerate(segments):
-            speaker = segment["speaker"]
-            chunks = segment["chunks"]
+            speaker = segment.get("speaker")
+            if speaker not in speaker_order:
+                speaker_order.append(speaker)
+            for chunk_idx, chunk_text in enumerate(segment.get("chunks") or []):
+                chunk_items.append({
+                    "speaker": speaker,
+                    "text": chunk_text,
+                    "segment_index": seg_idx,
+                    "chunk_index": chunk_idx,
+                    "order_index": chunk_order,
+                })
+                chunk_order += 1
+
+        if group_by_speaker and chunk_items:
+            grouped: List[Dict[str, Any]] = []
+            by_speaker: Dict[str, List[Dict[str, Any]]] = {speaker: [] for speaker in speaker_order}
+            for item in chunk_items:
+                by_speaker[item["speaker"]].append(item)
+            for speaker in speaker_order:
+                grouped.extend(sorted(by_speaker.get(speaker, []), key=lambda entry: entry["order_index"]))
+            processing_items = grouped
+        else:
+            processing_items = chunk_items
+
+        files: List[Optional[str]] = [None] * len(chunk_items)
+        for item in processing_items:
+            speaker = item["speaker"]
             assignment = self._voice_assignment_for(voice_config, speaker)
             logger.info(
-                "Chatterbox Turbo segment %s/%s speaker=%s voice=%s",
-                seg_idx + 1,
-                len(segments),
+                "Chatterbox Turbo chunk %s/%s speaker=%s voice=%s",
+                item["order_index"] + 1,
+                len(chunk_items),
                 speaker,
                 assignment.voice,
             )
+            output_path = output_dir / f"chunk_{item['order_index']:04d}.wav"
+            audio, sr = self._synthesize(item["text"], assignment, speed)
+            sf.write(str(output_path), audio, sr)
+            files[item["order_index"]] = str(output_path)
+            if callable(progress_cb):
+                progress_cb()
+            if callable(chunk_cb):
+                chunk_meta = {
+                    "speaker": speaker,
+                    "text": item["text"],
+                    "segment_index": item["segment_index"],
+                    "chunk_index": item["chunk_index"],
+                    "order_index": item["order_index"],
+                }
+                chunk_cb(item["chunk_index"], chunk_meta, str(output_path))
 
-            for chunk_idx, chunk_text in enumerate(chunks):
-                output_path = output_dir / f"chunk_{chunk_index:04d}.wav"
-                audio, sr = self._synthesize(chunk_text, assignment, speed)
-                sf.write(str(output_path), audio, sr)
-                files.append(str(output_path))
-                chunk_index += 1
-                if callable(progress_cb):
-                    progress_cb()
-                if callable(chunk_cb):
-                    chunk_meta = {
-                        "speaker": speaker,
-                        "text": chunk_text,
-                        "segment_index": seg_idx,
-                        "chunk_index": chunk_idx,
-                    }
-                    chunk_cb(chunk_idx, chunk_meta, str(output_path))
-
-        return files
+        return [path for path in files if path]
 
     # ------------------------------------------------------------------ #
     def cleanup(self) -> None:  # pragma: no cover - device cleanup
@@ -331,10 +360,21 @@ class ChatterboxTurboLocalEngine(TtsEngineBase):
         # ensure we keep things in float32 before each conditioning step.
         self._ensure_tokenizer_buffers()
         prompt_path = assignment.audio_prompt_path or self.default_prompt
+        fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
         reference_seconds = None
+        temp_prompt = None
+        resolved_prompt = None
         if prompt_path:
             try:
                 resolved_prompt = self._resolve_prompt_path(prompt_path)
+                if fx_settings:
+                    temp_prompt = self.post_processor.prepare_prompt_audio(str(resolved_prompt), fx_settings)
+                    if temp_prompt:
+                        resolved_prompt = temp_prompt
+                        if fx_settings.tone != "neutral":
+                            fx_settings = VoiceFXSettings(pitch_semitones=0.0, speed=1.0, tone=fx_settings.tone)
+                        else:
+                            fx_settings = None
             except FileNotFoundError:
                 if assignment.audio_prompt_path:
                     raise
@@ -343,47 +383,54 @@ class ChatterboxTurboLocalEngine(TtsEngineBase):
                     "Add a voice in Settings or the Chatterbox Voices section."
                 )
                 prompt_path = None
-        if prompt_path:
-            reference_seconds = None
-            try:
-                import soundfile as _sf
-                info = _sf.info(resolved_prompt)
-                reference_seconds = info.frames / float(info.samplerate or 16000)
-            except Exception:  # pragma: no cover - best effort warning
+        if resolved_prompt:
+            reuse_conditionals = temp_prompt is None and self._last_prompt_path == resolved_prompt
+            if not reuse_conditionals or self.model.conds is None:
                 reference_seconds = None
-            if reference_seconds is not None and reference_seconds < 5.0:
-                raise ValueError(
-                    f"Reference prompt '{prompt_path}' is only {reference_seconds:.2f}s. "
-                    "Chatterbox Turbo requires clips at least 5 seconds long."
+                try:
+                    import soundfile as _sf
+                    info = _sf.info(resolved_prompt)
+                    reference_seconds = info.frames / float(info.samplerate or 16000)
+                except Exception:  # pragma: no cover - best effort warning
+                    reference_seconds = None
+                if reference_seconds is not None and reference_seconds < 5.0:
+                    raise ValueError(
+                        f"Reference prompt '{Path(resolved_prompt).name}' is only {reference_seconds:.2f}s. "
+                        "Chatterbox Turbo requires clips at least 5 seconds long."
+                    )
+                self.model.prepare_conditionals(
+                    str(resolved_prompt),
+                    exaggeration=self._resolve_numeric(
+                        assignment.extra, "exaggeration", self.exaggeration
+                    ),
+                    norm_loudness=self.prompt_norm_loudness,
                 )
-            self.model.prepare_conditionals(
-                str(resolved_prompt),
-                exaggeration=self._resolve_numeric(
-                    assignment.extra, "exaggeration", self.exaggeration
-                ),
-                norm_loudness=self.prompt_norm_loudness,
-            )
+                if temp_prompt is None:
+                    self._last_prompt_path = resolved_prompt
         elif self.model.conds is None:
             raise ValueError(
                 "Chatterbox Turbo requires a reference audio prompt of at least 5 seconds. "
                 "Specify an audio_prompt_path per speaker or set chatterbox_local_default_prompt."
             )
 
-        params = self._resolve_generation_params(assignment.extra or {})
-        wav = self.model.generate(
-            text=text,
-            temperature=params["temperature"],
-            top_p=params["top_p"],
-            top_k=params["top_k"],
-            repetition_penalty=params["repetition_penalty"],
-            cfg_weight=params["cfg_weight"],
-            exaggeration=params["exaggeration"],
-            audio_prompt_path=None,  # already prepared via prepare_conditionals
-            norm_loudness=params["norm_loudness"],
-        )
+        try:
+            params = self._resolve_generation_params(assignment.extra or {})
+            wav = self.model.generate(
+                text=text,
+                temperature=params["temperature"],
+                top_p=params["top_p"],
+                top_k=params["top_k"],
+                repetition_penalty=params["repetition_penalty"],
+                cfg_weight=params["cfg_weight"],
+                exaggeration=params["exaggeration"],
+                audio_prompt_path=None,  # already prepared via prepare_conditionals
+                norm_loudness=params["norm_loudness"],
+            )
+        finally:
+            if temp_prompt:
+                temp_prompt.unlink(missing_ok=True)
 
         audio = wav.squeeze(0).detach().cpu().numpy().astype("float32")
-        fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
         if fx_settings:
             audio = self.post_processor.apply(audio, self.sample_rate, fx_settings)
 

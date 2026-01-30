@@ -6,10 +6,53 @@ const geminiPresetState = {
     isPersisting: false,
 };
 
+const LOCAL_LLM_BASE_URLS = {
+    lmstudio: 'http://localhost:1234/v1',
+    ollama: 'http://localhost:11434'
+};
+
 document.addEventListener('DOMContentLoaded', () => {
     loadSettings();
     setupSettingsListeners();
 });
+
+function updateLLMSettingsUI(provider = 'gemini') {
+    const geminiCredentials = document.getElementById('gemini-credentials');
+    const geminiModelGroup = document.getElementById('gemini-model-group');
+    const geminiModelsActions = document.getElementById('gemini-models-actions');
+    const localSettings = document.getElementById('llm-local-settings');
+
+    const isLocal = (provider || '').toLowerCase() === 'local';
+    if (geminiCredentials) geminiCredentials.style.display = isLocal ? 'none' : '';
+    if (geminiModelGroup) geminiModelGroup.style.display = isLocal ? 'none' : '';
+    if (geminiModelsActions) geminiModelsActions.style.display = isLocal ? 'none' : '';
+    if (localSettings) localSettings.style.display = isLocal ? '' : 'none';
+}
+
+function setupLlmProviderHandlers() {
+    const providerSelect = document.getElementById('llm-provider');
+    const localProviderSelect = document.getElementById('llm-local-provider');
+    if (providerSelect) {
+        providerSelect.addEventListener('change', () => {
+            updateLLMSettingsUI(providerSelect.value);
+        });
+    }
+    if (localProviderSelect) {
+        localProviderSelect.addEventListener('change', () => {
+            updateLocalProviderDefaults(localProviderSelect.value);
+        });
+    }
+}
+
+function updateLocalProviderDefaults(nextProvider) {
+    const baseUrlInput = document.getElementById('llm-local-base-url');
+    if (!baseUrlInput) return;
+    const currentValue = baseUrlInput.value.trim();
+    const fallback = LOCAL_LLM_BASE_URLS[nextProvider] || '';
+    if (!currentValue || Object.values(LOCAL_LLM_BASE_URLS).includes(currentValue)) {
+        baseUrlInput.value = fallback;
+    }
+}
 
 function normalizeGeminiPreset(preset, fallbackIndex = 0) {
     if (!preset || typeof preset !== 'object') {
@@ -316,6 +359,7 @@ function setupSettingsListeners() {
     
     // Engine sub-tabs within Engine Settings
     setupEngineTabSwitching();
+    setupLlmProviderHandlers();
 }
 
 // Settings accordion toggle
@@ -500,6 +544,7 @@ function applySettings(settings) {
 
     // Parallel processing
     setElementValue('parallel-chunks', settings.parallel_chunks ?? 3, 3);
+    setCheckboxValue('group-chunks-by-speaker', settings.group_chunks_by_speaker ?? false, false);
 
     // VRAM cleanup setting
     const cleanupVramCheckbox = document.getElementById('cleanup-vram-after-job');
@@ -523,7 +568,18 @@ function applySettings(settings) {
         geminiModelSelect.value = savedGeminiModel;
     }
     setElementValue('gemini-prompt', settings.gemini_prompt || '');
+    setElementValue('gemini-speaker-profile-prompt', settings.gemini_speaker_profile_prompt || '');
     setGeminiPresetState(settings.gemini_prompt_presets || []);
+
+    // Local LLM settings
+    const llmProvider = settings.llm_provider || 'gemini';
+    setElementValue('llm-provider', llmProvider, 'gemini');
+    setElementValue('llm-local-provider', settings.llm_local_provider || 'lmstudio', 'lmstudio');
+    setElementValue('llm-local-base-url', settings.llm_local_base_url || LOCAL_LLM_BASE_URLS.lmstudio, LOCAL_LLM_BASE_URLS.lmstudio);
+    setElementValue('llm-local-model', settings.llm_local_model || '');
+    setElementValue('llm-local-api-key', settings.llm_local_api_key || '');
+    setElementValue('llm-local-timeout', settings.llm_local_timeout ?? 120, 120);
+    updateLLMSettingsUI(llmProvider);
 
     // Engine + Chatterbox settings
     const ttsEngineSelect = document.getElementById('settings-tts-engine');
@@ -721,11 +777,19 @@ async function saveSettings() {
         intro_silence_ms: parseInt(document.getElementById('intro-silence').value, 10) || 0,
         inter_chunk_silence_ms: parseInt(document.getElementById('inter-silence').value, 10) || 0,
         parallel_chunks: Math.min(25, Math.max(1, parseInt(document.getElementById('parallel-chunks')?.value, 10) || 3)),
+        group_chunks_by_speaker: document.getElementById('group-chunks-by-speaker')?.checked ?? false,
         cleanup_vram_after_job: document.getElementById('cleanup-vram-after-job')?.checked ?? false,
         gemini_api_key: document.getElementById('gemini-api-key').value,
         gemini_model: document.getElementById('gemini-model').value,
         gemini_prompt: document.getElementById('gemini-prompt').value,
+        gemini_speaker_profile_prompt: document.getElementById('gemini-speaker-profile-prompt')?.value || '',
         gemini_prompt_presets: geminiPresetState.list.map(preset => ({ ...preset })),
+        llm_provider: document.getElementById('llm-provider')?.value || 'gemini',
+        llm_local_provider: document.getElementById('llm-local-provider')?.value || 'lmstudio',
+        llm_local_base_url: document.getElementById('llm-local-base-url')?.value || LOCAL_LLM_BASE_URLS.lmstudio,
+        llm_local_model: document.getElementById('llm-local-model')?.value || '',
+        llm_local_api_key: document.getElementById('llm-local-api-key')?.value || '',
+        llm_local_timeout: parseInt(document.getElementById('llm-local-timeout')?.value, 10) || 120,
         tts_engine: document.getElementById('settings-tts-engine').value,
         chatterbox_turbo_local_device: document.getElementById('chatterbox-turbo-local-device').value,
         chatterbox_turbo_local_default_prompt: document.getElementById('chatterbox-turbo-local-prompt').value,
@@ -826,11 +890,18 @@ async function resetSettings() {
         intro_silence_ms: 0,
         inter_chunk_silence_ms: 0,
         parallel_chunks: 3,
+        group_chunks_by_speaker: false,
         cleanup_vram_after_job: false,
         gemini_api_key: '',
         gemini_model: 'gemini-1.5-flash',
         gemini_prompt: '',
         gemini_prompt_presets: [],
+        llm_provider: 'gemini',
+        llm_local_provider: 'lmstudio',
+        llm_local_base_url: LOCAL_LLM_BASE_URLS.lmstudio,
+        llm_local_model: '',
+        llm_local_api_key: '',
+        llm_local_timeout: 120,
         tts_engine: 'kokoro',
         voxcpm_local_model_id: 'openbmb/VoxCPM1.5',
         voxcpm_local_device: 'auto',
