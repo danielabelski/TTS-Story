@@ -13,27 +13,19 @@
             <h1>🎭 TTS-Story</h1>
             <p>Multi-Voice Text-to-Speech for Stories and Audiobooks</p>
             <div class="status-bar">
-                <span id="mode-indicator">Compute: <strong id="current-mode">Loading...</strong></span>
+                <span id="mode-indicator">Mode: <strong id="current-mode">Loading...</strong></span>
                 <span id="cuda-indicator">CUDA: <strong id="cuda-status">Checking...</strong></span>
             </div>
 
         </header>
 
-        <div class="tabs-row">
-            <div class="tabs">
-                <button class="tab-button active" data-tab="generate">Generate</button>
-                <button class="tab-button" data-tab="queue">Job Queue</button>
-                <button class="tab-button" data-tab="library">Library</button>
-                <button class="tab-button" data-tab="voices">Available Voices</button>
-                <button class="tab-button" data-tab="settings">Settings</button>
-                <button class="tab-button" data-tab="help">Help</button>
-            </div>
-            <div class="update-notice is-hidden" id="update-notice">
-                <button type="button" class="update-notice-button" id="update-notice-btn">
-                    ⚡ Updates Available
-                    <span class="update-badge is-hidden" id="update-notice-count"></span>
-                </button>
-            </div>
+        <div class="tabs">
+            <button class="tab-button active" data-tab="generate">Generate</button>
+            <button class="tab-button" data-tab="queue">Job Queue</button>
+            <button class="tab-button" data-tab="library">Library</button>
+            <button class="tab-button" data-tab="voices">Available Voices</button>
+            <button class="tab-button" data-tab="settings">Settings</button>
+            <button class="tab-button" data-tab="help">Help</button>
         </div>
 
         <!-- Generate Tab -->
@@ -185,11 +177,11 @@
                                         <div class="form-group">
                                             <label for="job-tts-engine">Engine</label>
                                             <select id="job-tts-engine">
-                                                <option value="kokoro">Kokoro · Local</option>
+                                                <option value="kokoro">Kokoro · Local GPU</option>
                                                 <option value="kokoro_replicate">Kokoro · Replicate</option>
-                                                <option value="chatterbox_turbo_local">Chatterbox · Local</option>
+                                                <option value="chatterbox_turbo_local">Chatterbox · Local GPU</option>
                                                 <option value="chatterbox_turbo_replicate">Chatterbox · Replicate</option>
-                                                <option value="voxcpm_local">VoxCPM 1.5 · Local</option>
+                                                <option value="voxcpm_local">VoxCPM 1.5 · Local GPU</option>
                                                 <option value="qwen3_custom">Qwen3-TTS · Custom Voice</option>
                                                 <option value="qwen3_clone">Qwen3-TTS · Voice Clone</option>
                                             </select>
@@ -589,23 +581,14 @@
                             <div class="form-group">
                                 <label for="settings-tts-engine">Default Engine</label>
                                 <select id="settings-tts-engine">
-                                    <option value="kokoro">Kokoro · Local</option>
+                                    <option value="kokoro">Kokoro · Local GPU</option>
                                     <option value="kokoro_replicate">Kokoro · Replicate</option>
-                                    <option value="chatterbox_turbo_local">Chatterbox · Local</option>
+                                    <option value="chatterbox_turbo_local">Chatterbox · Local GPU</option>
                                     <option value="chatterbox_turbo_replicate">Chatterbox · Replicate</option>
-                                    <option value="voxcpm_local">VoxCPM 1.5 · Local</option>
+                                    <option value="voxcpm_local">VoxCPM 1.5 · Local GPU</option>
                                     <option value="qwen3_custom">Qwen3-TTS · Custom Voice</option>
                                     <option value="qwen3_clone">Qwen3-TTS · Voice Clone</option>
                                 </select>
-                            </div>
-                            <div class="form-group">
-                                <label for="settings-compute-mode">Compute Mode</label>
-                                <select id="settings-compute-mode">
-                                    <option value="auto">Auto (match hardware)</option>
-                                    <option value="gpu">GPU</option>
-                                    <option value="cpu">CPU</option>
-                                </select>
-                                <small id="settings-compute-mode-status" class="help-text"></small>
                             </div>
                             <div class="form-group">
                                 <label for="settings-output-format">File Format</label>
@@ -666,7 +649,7 @@
                                 <h4>Chatterbox Local</h4>
                                 <button type="button" class="help-icon" data-help-id="engine-chatterbox-local" aria-label="Help: Chatterbox Local">?</button>
                             </div>
-                            <p class="help-text" style="margin-top:0;">Local Chatterbox Turbo running on your machine. GPU recommended for faster generation.</p>
+                            <p class="help-text" style="margin-top:0;">Local Chatterbox Turbo. Requires CUDA GPU with ~8GB VRAM.</p>
                             <div class="settings-form-grid">
                                 <div class="form-group">
                                     <label for="chatterbox-turbo-local-device">Device</label>
@@ -1079,25 +1062,6 @@
             <div class="button-group" style="margin-top:20px;">
                 <button id="save-settings-btn" class="btn btn-primary">Save Settings</button>
                 <button id="reset-settings-btn" class="btn btn-secondary">Reset to Defaults</button>
-            </div>
-        </div>
-    </div>
-
-    <div class="modal-overlay hidden" id="update-modal-overlay">
-        <div class="modal hidden" id="update-modal" style="max-width: 520px; width: 95%;">
-            <div class="modal-header">
-                <h3>Updates Available</h3>
-                <button class="modal-close" id="update-modal-close">&times;</button>
-            </div>
-            <div class="modal-body">
-                <p class="help-text">
-                    A newer version of TTS-Story is available. Updating will download the latest code and restart the app.
-                </p>
-                <div class="update-modal-status" id="update-modal-status"></div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" id="update-modal-cancel-btn">Not now</button>
-                <button class="btn btn-primary" id="update-modal-confirm-btn">Update Now</button>
             </div>
         </div>
     </div>

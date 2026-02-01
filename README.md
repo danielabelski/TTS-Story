@@ -189,15 +189,15 @@ All voice selection dropdowns (main screen and library) now show:
 To download the installer, *Right-Click* the link and click "Save As":
 [Install-Update.bat](https://github.com/Xerophayze/TTS-Story/raw/52b8d3a8edd6ac1ad8acfb1b83421bb4508d8d01/install-update.bat)
 
-The installer will clone or update the repository, then run the setup script which will prompt you to confirm whether you have an NVIDIA GPU and will:
+The installer will clone or update the repository, then run the setup script which will automatically:
 - ✅ Detect your Python version
 - ✅ Create a Python virtual environment
-- ✅ Install PyTorch with appropriate CUDA support (or CPU-only if you select no GPU)
+- ✅ Detect your NVIDIA GPU and CUDA version
+- ✅ Install PyTorch with appropriate CUDA support (or CPU-only if no GPU)
 - ✅ Download and install espeak-ng automatically
 - ✅ Install all other required dependencies
 - ✅ Download the Rubber Band CLI and wire it up for high-quality pitch/tempo FX
 - ✅ Verify the installation
-- ✅ Remind you that you can use Replicate with an API key for cloud processing
 
 **Supported CUDA Versions:**
 - CUDA 12.9, 12.8, 12.6, 12.4, 12.1

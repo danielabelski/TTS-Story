@@ -1,7 +1,6 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 set "SCRIPT_DIR=%~dp0"
-for /f %%A in ('echo prompt $E^| cmd') do set "ESC=%%A"
 pushd "%SCRIPT_DIR%"
 echo ========================================
 echo TTS-Story Setup
@@ -45,13 +44,13 @@ echo.
 echo [4/10] Upgrading pip...
 python -m pip install --upgrade pip --quiet
 
-REM Install PyTorch (GPU or CPU)
+REM Install PyTorch (let pip/PyTorch auto-detect CUDA)
 echo.
 echo [5/10] Installing PyTorch...
 echo This may take several minutes...
 echo.
 
-REM Check if Python is working
+REM Check if CUDA is available using Python
 python -c "import sys; sys.exit(0)" >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Python not working in virtual environment
@@ -59,55 +58,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo %ESC%[95m##############################################################################
-echo #                                                                            #
-echo #                          GPU SETUP QUESTION                               #
-echo #                                                                            #
-echo ##############################################################################%ESC%[0m
-echo.
-set "GPU_DETECTED=0"
-where nvidia-smi >nul 2>&1
-if not errorlevel 1 (
-    set "GPU_DETECTED=1"
-) else (
-    for /f "usebackq delims=" %%G in (`powershell -NoLogo -NoProfile -Command "try { (Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA' } | Select-Object -First 1 -ExpandProperty Name) } catch { '' }"`) do (
-        if not "%%G"=="" set "GPU_DETECTED=1"
-    )
-)
-
-if "!GPU_DETECTED!"=="1" (
-    echo Detected an NVIDIA GPU. You can install GPU or CPU PyTorch.
-) else (
-    echo No NVIDIA GPU detected. CPU-only PyTorch is recommended.
-)
-echo.
-set "GPU_RESPONSE="
-set /p GPU_RESPONSE=Do you want to install GPU-enabled PyTorch? (y/n): 
-if /I "!GPU_RESPONSE!"=="y" goto :InstallTorchGPU
-if /I "!GPU_RESPONSE!"=="yes" goto :InstallTorchGPU
-goto :InstallTorchCPU
-
-:InstallTorchGPU
+REM Install PyTorch with CUDA 12.1 (most compatible)
 echo Installing PyTorch with CUDA 12.1 support...
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-if errorlevel 1 (
-    echo.
-    echo PyTorch CUDA install failed, trying CPU version...
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-)
-goto :AfterTorchInstall
 
-:InstallTorchCPU
-echo Installing PyTorch CPU-only build...
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 if errorlevel 1 (
     echo.
-    echo PyTorch CPU install failed, trying default PyTorch wheels...
+    echo PyTorch installation failed, trying CPU version...
     pip install torch torchvision torchaudio
 )
-goto :AfterTorchInstall
-
-:AfterTorchInstall
 
 REM Install other dependencies (excluding torch + chatterbox runtime handled separately)
 echo.
@@ -262,31 +221,6 @@ echo Next steps:
 echo 1. If espeak-ng is not installed, install it now
 echo 2. Run: run.bat
 echo 3. Open browser to: http://localhost:5000
-echo.
-echo Need cloud processing? You can use Replicate with an API key (Kokoro/Chatterbox).
-echo Add your key in Settings after launch.
-echo.
-echo %ESC%[96m##############################################################################
-echo #                                                                            #
-echo #                       CREATE DESKTOP SHORTCUT                              #
-echo #                                                                            #
-echo ##############################################################################%ESC%[0m
-echo.
-set "SHORTCUT_RESPONSE="
-set /p SHORTCUT_RESPONSE=Create a desktop shortcut for Run TTS-Story? (y/n): 
-if /I "!SHORTCUT_RESPONSE!"=="y" goto :CreateShortcut
-if /I "!SHORTCUT_RESPONSE!"=="yes" goto :CreateShortcut
-goto :AfterShortcut
-
-:CreateShortcut
-powershell -NoLogo -NoProfile -Command "$shortcutPath = Join-Path $env:USERPROFILE 'Desktop\run tts-story.lnk'; $targetPath = Join-Path '%SCRIPT_DIR%' 'run.bat'; $wsh = New-Object -ComObject WScript.Shell; $shortcut = $wsh.CreateShortcut($shortcutPath); $shortcut.TargetPath = $targetPath; $shortcut.WorkingDirectory = '%SCRIPT_DIR%'; $shortcut.Save()"
-if errorlevel 1 (
-    echo WARNING: Failed to create desktop shortcut.
-) else (
-    echo Desktop shortcut created: run tts-story
-)
-
-:AfterShortcut
 echo.
 pause
 goto :EOF

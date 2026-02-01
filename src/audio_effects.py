@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 class AudioPostProcessor:
     """Applies pitch, speed, and tonal shaping to generated audio arrays."""
 
-    SOX_PATH = (Path(__file__).resolve().parents[1] / "tools" / "sox" / "sox.exe")
+    SOX_PATH = (Path(__file__).resolve().parents[2] / "tools" / "sox" / "sox.exe")
 
     def apply(self, audio: np.ndarray, sample_rate: int, fx: Optional[VoiceFXSettings], blend_override: Optional[float] = None) -> np.ndarray:
         """

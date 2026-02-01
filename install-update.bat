@@ -3,10 +3,6 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 set "REPO_URL=https://github.com/Xerophayze/TTS-Story.git"
 set "REPO_DIR=TTS-Story"
-set "SCRIPT_DIR=%~dp0"
-set "INSIDE_REPO=0"
-if exist "%SCRIPT_DIR%\.git" set "INSIDE_REPO=1"
-if exist "%SCRIPT_DIR%app.py" set "INSIDE_REPO=1"
 set "GIT_INSTALLER_URL=https://github.com/git-for-windows/git/releases/latest/download/Git-2.44.0-64-bit.exe"
 set "GIT_INSTALLER=%TEMP%\git-installer.exe"
 
@@ -46,10 +42,10 @@ if errorlevel 1 (
 
 echo.
 echo Cloning or updating repository...
-if "%INSIDE_REPO%"=="1" (
-    echo Detected script running inside the TTS-Story repository. Skipping clone.
-    if exist "%SCRIPT_DIR%\.git" (
-        pushd "%SCRIPT_DIR%"
+if exist "%REPO_DIR%" (
+    if exist "%REPO_DIR%\.git" (
+        echo Repository found. Pulling latest updates...
+        pushd "%REPO_DIR%"
         git pull
         if errorlevel 1 (
             echo ERROR: Git pull failed.
@@ -59,82 +55,32 @@ if "%INSIDE_REPO%"=="1" (
         )
         popd
     ) else (
-        echo WARNING: No .git folder detected here. Skipping git pull.
+        echo ERROR: "%REPO_DIR%" exists but is not a Git repository.
+        echo Please rename or remove the folder and re-run this script.
+        pause
+        exit /b 1
     )
 ) else (
-    if exist "%REPO_DIR%" (
-        if exist "%REPO_DIR%\.git" (
-            echo Repository found. Pulling latest updates...
-            pushd "%REPO_DIR%"
-            git pull
-            if errorlevel 1 (
-                echo ERROR: Git pull failed.
-                popd
-                pause
-                exit /b 1
-            )
-            popd
-        ) else (
-            echo ERROR: "%REPO_DIR%" exists but is not a Git repository.
-            echo Please rename or remove the folder and re-run this script.
-            pause
-            exit /b 1
-        )
-    ) else (
-        git clone "%REPO_URL%" "%REPO_DIR%"
-        if errorlevel 1 (
-            echo ERROR: Git clone failed.
-            pause
-            exit /b 1
-        )
+    git clone "%REPO_URL%" "%REPO_DIR%"
+    if errorlevel 1 (
+        echo ERROR: Git clone failed.
+        pause
+        exit /b 1
     )
 )
 
 echo.
 echo Running setup.bat...
-if "%INSIDE_REPO%"=="1" (
-    if exist "%SCRIPT_DIR%\setup.bat" (
-        pushd "%SCRIPT_DIR%"
-        call setup.bat
-        popd
-    ) else (
-        echo ERROR: setup.bat not found in %SCRIPT_DIR%.
-        pause
-        exit /b 1
-    )
+if exist "%REPO_DIR%\setup.bat" (
+    pushd "%REPO_DIR%"
+    call setup.bat
+    popd
 ) else (
-    if exist "%REPO_DIR%\setup.bat" (
-        pushd "%REPO_DIR%"
-        call setup.bat
-        popd
-    ) else (
-        echo ERROR: setup.bat not found in %REPO_DIR%.
-        pause
-        exit /b 1
-    )
+    echo ERROR: setup.bat not found in %REPO_DIR%.
+    pause
+    exit /b 1
 )
 
 echo.
 echo ✅ Install/update complete.
-if /I "%~1"=="restart" goto :RestartApp
 pause
-goto :EOF
-
-:RestartApp
-echo.
-echo Restarting TTS-Story...
-if "%INSIDE_REPO%"=="1" (
-    if exist "%SCRIPT_DIR%\run.bat" (
-        start "" "%SCRIPT_DIR%\run.bat"
-    ) else (
-        echo WARNING: run.bat not found in %SCRIPT_DIR%.
-    )
-) else (
-    if exist "%REPO_DIR%\run.bat" (
-        start "" "%REPO_DIR%\run.bat"
-    ) else (
-        echo WARNING: run.bat not found in %REPO_DIR%.
-    )
-)
-pause
-goto :EOF

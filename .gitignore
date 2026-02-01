@@ -70,5 +70,3 @@ data/external_voices_cache.json
 # Tools (bundled binaries)
 tools/ffmpeg/
 tools/rubberband/
-!tools/sox/
-!tools/sox/**

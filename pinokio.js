@@ -67,13 +67,8 @@ module.exports = {
           },
           {
             icon: "fa-solid fa-plug",
-            text: "Reinstall (GPU)",
+            text: "Reinstall",
             href: "install.json"
-          },
-          {
-            icon: "fa-solid fa-plug",
-            text: "Reinstall (CPU)",
-            href: "install_cpu.json"
           },
           {
             icon: "fa-solid fa-broom",
@@ -86,13 +81,8 @@ module.exports = {
       return [
         {
           icon: "fa-solid fa-plug",
-          text: "Install (GPU)",
+          text: "Install",
           href: "install.json"
-        },
-        {
-          icon: "fa-solid fa-plug",
-          text: "Install (CPU)",
-          href: "install_cpu.json"
         },
         {
           icon: "fa-solid fa-rotate",

@@ -1,6 +1,4 @@
 const MIN_CHATTERBOX_PROMPT_SECONDS = 5;
-const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
-let updateCheckTimer = null;
 
 const HELP_TOPICS = {
     'input-text': {
@@ -281,111 +279,6 @@ const HELP_TOPICS = {
         `
     }
 };
-
-function openUpdateModal() {
-    const overlay = document.getElementById('update-modal-overlay');
-    const modal = document.getElementById('update-modal');
-    const status = document.getElementById('update-modal-status');
-    if (status) {
-        status.textContent = '';
-    }
-    if (overlay) overlay.classList.remove('hidden');
-    if (modal) modal.classList.remove('hidden');
-}
-
-function closeUpdateModal() {
-    const overlay = document.getElementById('update-modal-overlay');
-    const modal = document.getElementById('update-modal');
-    if (overlay) overlay.classList.add('hidden');
-    if (modal) modal.classList.add('hidden');
-}
-
-function setUpdateNoticeVisible(isVisible, behindBy = 0) {
-    const notice = document.getElementById('update-notice');
-    const badge = document.getElementById('update-notice-count');
-    if (!notice) return;
-    if (isVisible) {
-        notice.classList.remove('is-hidden');
-        if (badge) {
-            badge.textContent = behindBy > 0 ? String(behindBy) : '';
-            badge.classList.toggle('is-hidden', behindBy <= 1);
-        }
-    } else {
-        notice.classList.add('is-hidden');
-        if (badge) {
-            badge.textContent = '';
-            badge.classList.add('is-hidden');
-        }
-    }
-}
-
-async function checkForUpdates({ silent = false } = {}) {
-    try {
-        const response = await fetch('/api/updates/check');
-        const data = await response.json();
-        if (!data.success) {
-            if (!silent) {
-                showNotification(data.error || 'Update check failed.', 'warning');
-            }
-            setUpdateNoticeVisible(false);
-            return;
-        }
-        if (data.updates_available) {
-            setUpdateNoticeVisible(true, data.behind_by || 0);
-        } else {
-            setUpdateNoticeVisible(false);
-        }
-    } catch (error) {
-        console.error('Update check failed', error);
-        if (!silent) {
-            showNotification('Update check failed.', 'warning');
-        }
-    }
-}
-
-async function applyUpdate() {
-    const status = document.getElementById('update-modal-status');
-    const confirmBtn = document.getElementById('update-modal-confirm-btn');
-    if (confirmBtn) {
-        confirmBtn.disabled = true;
-        confirmBtn.textContent = 'Updating...';
-    }
-    if (status) {
-        status.textContent = 'Launching updater and restarting the app...';
-    }
-    try {
-        const response = await fetch('/api/updates/apply', { method: 'POST' });
-        const data = await response.json();
-        if (!data.success) {
-            throw new Error(data.error || 'Update failed.');
-        }
-        if (status) {
-            status.textContent = 'Updater launched. The app will restart shortly.';
-        }
-        setTimeout(() => {
-            window.location.reload();
-        }, 15000);
-    } catch (error) {
-        console.error('Update apply failed', error);
-        if (status) {
-            status.textContent = error.message || 'Update failed.';
-        }
-        if (confirmBtn) {
-            confirmBtn.disabled = false;
-            confirmBtn.textContent = 'Update Now';
-        }
-    }
-}
-
-function initUpdateChecks() {
-    if (updateCheckTimer) {
-        clearInterval(updateCheckTimer);
-    }
-    checkForUpdates({ silent: true });
-    updateCheckTimer = setInterval(() => {
-        checkForUpdates({ silent: true });
-    }, UPDATE_CHECK_INTERVAL_MS);
-}
 
 async function generateSpeakerVoicePromptBatch(speaker, displayName, statusEl) {
     if (!speaker) return false;
@@ -2614,11 +2507,6 @@ function setupEventListeners() {
     const projectList = document.getElementById('project-list');
     const projectNameInput = document.getElementById('project-name-input');
     const projectStatus = document.getElementById('project-status');
-    const updateNoticeBtn = document.getElementById('update-notice-btn');
-    const updateModalOverlay = document.getElementById('update-modal-overlay');
-    const updateModalClose = document.getElementById('update-modal-close');
-    const updateModalCancel = document.getElementById('update-modal-cancel-btn');
-    const updateModalConfirm = document.getElementById('update-modal-confirm-btn');
 
     if (analyzeBtn) {
         analyzeBtn.addEventListener('click', analyzeText);
@@ -2803,25 +2691,6 @@ function setupEventListeners() {
     }
     if (projectModalFooterClose) {
         projectModalFooterClose.addEventListener('click', closeProjectModal);
-    }
-    if (updateNoticeBtn) {
-        updateNoticeBtn.addEventListener('click', openUpdateModal);
-    }
-    if (updateModalOverlay) {
-        updateModalOverlay.addEventListener('click', event => {
-            if (event.target === updateModalOverlay) {
-                closeUpdateModal();
-            }
-        });
-    }
-    if (updateModalClose) {
-        updateModalClose.addEventListener('click', closeUpdateModal);
-    }
-    if (updateModalCancel) {
-        updateModalCancel.addEventListener('click', closeUpdateModal);
-    }
-    if (updateModalConfirm) {
-        updateModalConfirm.addEventListener('click', applyUpdate);
     }
     if (batchGenerateBtn) {
         batchGenerateBtn.addEventListener('click', () => {
@@ -3024,7 +2893,6 @@ function setupEventListeners() {
             window.chatterboxPreviewController.toggleById(voiceEntry.id, event.currentTarget);
         });
     }
-    initUpdateChecks();
 }
 
 function syncFullStoryOption(chapterCheckbox, force = false) {
@@ -3046,30 +2914,26 @@ function syncFullStoryOption(chapterCheckbox, force = false) {
 
 // Engine display name mapping
 const engineDisplayNames = {
-    'kokoro': 'Kokoro · Local',
+    'kokoro': 'Kokoro · Local GPU',
     'kokoro_replicate': 'Kokoro · Replicate',
-    'chatterbox_turbo_local': 'Chatterbox · Local',
+    'chatterbox_turbo_local': 'Chatterbox · Local GPU',
     'chatterbox_turbo_replicate': 'Chatterbox · Replicate',
-    'voxcpm_local': 'VoxCPM 1.5 · Local',
+    'voxcpm_local': 'VoxCPM 1.5 · Local GPU',
     'qwen3_custom': 'Qwen3-TTS · Custom Voice',
     'qwen3_clone': 'Qwen3-TTS · Voice Clone'
 };
 
 // Update mode indicator based on engine name (called when dropdown changes)
-function updateModeIndicator(engineName, computeMode) {
+function updateModeIndicator(engineName) {
     const modeEl = document.getElementById('current-mode');
     if (!modeEl) return;
-
+    
     const normalizedEngine = (engineName || 'kokoro').toLowerCase();
-    const normalizedMode = (computeMode || '').toLowerCase();
-    const label = normalizedMode === 'gpu'
-        ? 'GPU Mode'
-        : normalizedMode === 'cpu'
-            ? 'CPU Mode'
-            : 'Auto';
-
-    modeEl.textContent = label;
-    modeEl.style.color = normalizedMode === 'gpu' ? '#22c55e' : '#38bdf8';
+    const isLocal = ['kokoro', 'chatterbox_turbo_local', 'voxcpm_local', 'qwen3_custom', 'qwen3_clone']
+        .includes(normalizedEngine);
+    
+    modeEl.textContent = engineDisplayNames[normalizedEngine] || normalizedEngine;
+    modeEl.style.color = isLocal ? '#10b981' : '#f59e0b';
 }
 
 // Load health status
@@ -3080,7 +2944,7 @@ async function loadHealthStatus() {
         
         if (data.success) {
             const engineName = data.tts_engine || 'kokoro';
-            updateModeIndicator(engineName, data.compute_mode);
+            updateModeIndicator(engineName);
             document.getElementById('cuda-status').textContent = 
                 data.cuda_available ? 'Available' : 'Not Available';
         }

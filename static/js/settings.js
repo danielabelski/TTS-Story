@@ -16,41 +16,6 @@ document.addEventListener('DOMContentLoaded', () => {
     setupSettingsListeners();
 });
 
-function updateComputeModeStatus(data = {}) {
-    const statusEl = document.getElementById('settings-compute-mode-status');
-    if (!statusEl) return;
-
-    const computeMode = (data.compute_mode || 'auto').toLowerCase();
-    const torchVariant = (data.torch_variant || '').toLowerCase();
-    const install = data.torch_install || {};
-
-    if (install.in_progress) {
-        statusEl.textContent = `Installing ${install.mode?.toUpperCase() || ''} components... Restart after it completes.`;
-        return;
-    }
-
-    if (torchVariant) {
-        statusEl.textContent = `Torch build: ${torchVariant.toUpperCase()} · Selected: ${computeMode.toUpperCase()}`;
-        return;
-    }
-
-    statusEl.textContent = computeMode === 'auto'
-        ? 'Auto mode will pick CPU/GPU based on availability.'
-        : `Selected: ${computeMode.toUpperCase()}`;
-}
-
-async function refreshComputeModeStatus() {
-    try {
-        const response = await fetch('/api/health');
-        const data = await response.json();
-        if (data?.success) {
-            updateComputeModeStatus(data);
-        }
-    } catch (error) {
-        console.warn('Failed to refresh compute status', error);
-    }
-}
-
 function updateLLMSettingsUI(provider = 'gemini') {
     const geminiCredentials = document.getElementById('gemini-credentials');
     const geminiModelGroup = document.getElementById('gemini-model-group');
@@ -369,13 +334,6 @@ function setupSettingsListeners() {
         });
     }
 
-    const computeModeSelect = document.getElementById('settings-compute-mode');
-    if (computeModeSelect) {
-        computeModeSelect.addEventListener('change', () => {
-            updateComputeModeStatus({ compute_mode: computeModeSelect.value });
-        });
-    }
-
     const defaultFormatSelect = document.getElementById('settings-output-format');
     if (defaultFormatSelect) {
         defaultFormatSelect.addEventListener('change', () => {
@@ -531,7 +489,6 @@ async function loadSettings() {
         
         if (data.success) {
             applySettings(data.settings);
-            refreshComputeModeStatus();
         }
     } catch (error) {
         console.error('Error loading settings:', error);
@@ -631,12 +588,6 @@ function applySettings(settings) {
         ttsEngineSelect.value = preferredEngine;
     }
     toggleEngineSettingsSections(preferredEngine);
-
-    const computeModeSelect = document.getElementById('settings-compute-mode');
-    if (computeModeSelect) {
-        computeModeSelect.value = (settings.compute_mode || 'auto').toLowerCase();
-        updateComputeModeStatus({ compute_mode: computeModeSelect.value });
-    }
 
     // Chatterbox Local settings
     const localDeviceInput = document.getElementById('chatterbox-turbo-local-device');
@@ -840,7 +791,6 @@ async function saveSettings() {
         llm_local_api_key: document.getElementById('llm-local-api-key')?.value || '',
         llm_local_timeout: parseInt(document.getElementById('llm-local-timeout')?.value, 10) || 120,
         tts_engine: document.getElementById('settings-tts-engine').value,
-        compute_mode: document.getElementById('settings-compute-mode')?.value || 'auto',
         chatterbox_turbo_local_device: document.getElementById('chatterbox-turbo-local-device').value,
         chatterbox_turbo_local_default_prompt: document.getElementById('chatterbox-turbo-local-prompt').value,
         chatterbox_turbo_local_temperature: parseFloat(document.getElementById('chatterbox-turbo-local-temperature').value) || 0.8,
@@ -912,7 +862,6 @@ async function saveSettings() {
                 console.warn('loadHealthStatus not available, reloading page');
                 location.reload();
             }
-            refreshComputeModeStatus();
         } else {
             alert('Error saving settings: ' + data.error);
         }
@@ -954,8 +903,6 @@ async function resetSettings() {
         llm_local_api_key: '',
         llm_local_timeout: 120,
         tts_engine: 'kokoro',
-        compute_mode: 'auto',
-        device: 'auto',
         voxcpm_local_model_id: 'openbmb/VoxCPM1.5',
         voxcpm_local_device: 'auto',
         voxcpm_local_default_prompt: '',
