@@ -1207,10 +1207,21 @@ def _ensure_qwen3_model(model_id: str) -> Path:
                 "(repo: %s) into %s, then retry. If the model requires access, set HF_TOKEN." % (model_id, model_path)
             ) from exc
         if not _has_weights(model_path):
-            raise RuntimeError(
-                "Qwen3 VoiceDesign model download completed but no weights were found in %s. "
-                "Ensure the repo access is valid (HF_TOKEN if required), then retry." % model_path
+            logger.warning(
+                "Qwen3 download missing weights after filtered download. Retrying full snapshot download..."
             )
+            shutil.rmtree(model_path, ignore_errors=True)
+            snapshot_download(
+                repo_id=model_id,
+                local_dir=str(model_path),
+                local_dir_use_symlinks=False,
+                token=token,
+            )
+            if not _has_weights(model_path):
+                raise RuntimeError(
+                    "Qwen3 VoiceDesign model download completed but no weights were found in %s. "
+                    "Ensure the repo access is valid (HF_TOKEN if required), then retry." % model_path
+                )
     return model_path
 
 
