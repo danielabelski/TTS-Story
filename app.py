@@ -86,9 +86,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def _ensure_bundled_tools_on_path() -> None:
+    repo_root = Path(__file__).resolve().parent
+    sox_exe = repo_root / "tools" / "sox" / "sox.exe"
+    if sox_exe.exists():
+        current_path = os.environ.get("PATH", "")
+        sox_dir = str(sox_exe.parent)
+        if sox_dir not in current_path.split(os.pathsep):
+            os.environ["PATH"] = sox_dir + os.pathsep + current_path
+
+
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
+_ensure_bundled_tools_on_path()
 
 # Configuration
 CONFIG_FILE = "config.json"
