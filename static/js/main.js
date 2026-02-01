@@ -2804,6 +2804,25 @@ function setupEventListeners() {
     if (projectModalFooterClose) {
         projectModalFooterClose.addEventListener('click', closeProjectModal);
     }
+    if (updateNoticeBtn) {
+        updateNoticeBtn.addEventListener('click', openUpdateModal);
+    }
+    if (updateModalOverlay) {
+        updateModalOverlay.addEventListener('click', event => {
+            if (event.target === updateModalOverlay) {
+                closeUpdateModal();
+            }
+        });
+    }
+    if (updateModalClose) {
+        updateModalClose.addEventListener('click', closeUpdateModal);
+    }
+    if (updateModalCancel) {
+        updateModalCancel.addEventListener('click', closeUpdateModal);
+    }
+    if (updateModalConfirm) {
+        updateModalConfirm.addEventListener('click', applyUpdate);
+    }
     if (batchGenerateBtn) {
         batchGenerateBtn.addEventListener('click', () => {
             if (batchModalOverlay) {
