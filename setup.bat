@@ -1,6 +1,7 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 set "SCRIPT_DIR=%~dp0"
+for /f %%A in ('echo prompt $E^| cmd') do set "ESC=%%A"
 pushd "%SCRIPT_DIR%"
 echo ========================================
 echo TTS-Story Setup
@@ -58,9 +59,11 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo ========================================
-echo           GPU SETUP QUESTION
-echo ========================================
+echo %ESC%[95m##############################################################################
+echo #                                                                            #
+echo #                          GPU SETUP QUESTION                               #
+echo #                                                                            #
+echo ##############################################################################%ESC%[0m
 echo.
 set "GPU_DETECTED=0"
 where nvidia-smi >nul 2>&1
@@ -263,9 +266,11 @@ echo.
 echo Need cloud processing? You can use Replicate with an API key (Kokoro/Chatterbox).
 echo Add your key in Settings after launch.
 echo.
-echo ========================================
-echo         CREATE DESKTOP SHORTCUT
-echo ========================================
+echo %ESC%[96m##############################################################################
+echo #                                                                            #
+echo #                       CREATE DESKTOP SHORTCUT                              #
+echo #                                                                            #
+echo ##############################################################################%ESC%[0m
 echo.
 set "SHORTCUT_RESPONSE="
 set /p SHORTCUT_RESPONSE=Create a desktop shortcut for Run TTS-Story? (y/n): 
