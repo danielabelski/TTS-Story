@@ -32,6 +32,7 @@ from functools import lru_cache
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Dict, List, Optional, Tuple
+from threading import Thread
 from werkzeug.utils import secure_filename
 import soundfile as sf
 
@@ -2587,6 +2588,29 @@ def save_config(config):
         json.dump(merged, f, indent=2)
 
 
+def _get_repo_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _run_git_command(args: List[str], timeout: int = 20) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        args,
+        cwd=_get_repo_root(),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def _schedule_shutdown(delay_seconds: float = 1.5) -> None:
+    def _shutdown() -> None:
+        time.sleep(delay_seconds)
+        os._exit(0)
+
+    Thread(target=_shutdown, daemon=True).start()
+
+
 @app.route('/')
 def index():
     """Main page"""
@@ -3307,6 +3331,81 @@ def archive_chatterbox_voices():
     return jsonify({"success": True, "updated": updated})
 
 
+@app.route('/api/updates/check', methods=['GET'])
+def check_updates():
+    """Check if the git repository is behind origin/main."""
+    repo_root = _get_repo_root()
+    if not (repo_root / '.git').exists():
+        return jsonify({
+            "success": False,
+            "error": "No git repository found.",
+            "updates_available": False,
+        })
+
+    try:
+        fetch = _run_git_command(["git", "fetch", "origin", "main"])
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return jsonify({
+            "success": False,
+            "error": "Git fetch failed (git missing or timed out).",
+            "updates_available": False,
+        })
+
+    if fetch.returncode != 0:
+        return jsonify({
+            "success": False,
+            "error": fetch.stderr.strip() or "Git fetch failed.",
+            "updates_available": False,
+        })
+
+    behind = _run_git_command(["git", "rev-list", "HEAD..origin/main", "--count"])
+    if behind.returncode != 0:
+        return jsonify({
+            "success": False,
+            "error": behind.stderr.strip() or "Unable to compare remote state.",
+            "updates_available": False,
+        })
+
+    try:
+        behind_count = int((behind.stdout or "0").strip())
+    except ValueError:
+        behind_count = 0
+
+    return jsonify({
+        "success": True,
+        "updates_available": behind_count > 0,
+        "behind_by": behind_count,
+    })
+
+
+@app.route('/api/updates/apply', methods=['POST'])
+def apply_updates():
+    """Run install-update.bat from parent directory and shut down server."""
+    repo_root = _get_repo_root()
+    script_path = repo_root.parent / 'install-update.bat'
+    if not script_path.exists():
+        return jsonify({
+            "success": False,
+            "error": "install-update.bat not found one directory above the repo.",
+        }), 404
+
+    try:
+        subprocess.Popen(
+            ["cmd", "/c", "start", "", str(script_path), "restart"],
+            cwd=str(repo_root.parent),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({
+            "success": False,
+            "error": f"Failed to launch update script: {exc}",
+        }), 500
+
+    _schedule_shutdown()
+    return jsonify({"success": True, "updating": True})
+
+
 @app.route('/api/chatterbox-voices/batch-delete', methods=['POST'])
 def batch_delete_chatterbox_voices():
     data = request.get_json(silent=True) or {}
@@ -3357,994 +3456,12 @@ def batch_delete_chatterbox_voices():
     return jsonify({"success": True, "deleted": deleted})
 
 
-@app.route('/api/chatterbox-voices/<voice_id>/preview')
-def preview_chatterbox_voice(voice_id: str):
-    entries = _load_chatterbox_voice_entries()
-    entry = _resolve_chatterbox_voice(voice_id, entries)
-    if not entry:
-        return jsonify({"success": False, "error": "Voice not found."}), 404
-    file_name = entry.get("file_name")
-    if not file_name:
-        return jsonify({"success": False, "error": "Voice has no associated file."}), 404
-    file_path = VOICE_PROMPT_DIR / file_name
-    if not file_path.exists():
-        return jsonify({"success": False, "error": "Audio file missing on disk."}), 404
-    mime_type, _ = mimetypes.guess_type(file_path.name)
-    return send_file(
-        file_path,
-        mimetype=mime_type or 'audio/mpeg',
-        conditional=True,
-        as_attachment=False,
-        download_name=file_path.name,
-    )
-
-
-# External TTS samples from GitHub
-EXTERNAL_VOICES_CACHE_FILE = Path("data/external_voices_cache.json")
-EXTERNAL_VOICES_URL = "https://raw.githubusercontent.com/yaph/tts-samples/main/data/voices.json"
-EXTERNAL_SAMPLES_BASE_URL = "https://raw.githubusercontent.com/yaph/tts-samples/main/mp3"
-EXTERNAL_VOICES_DIR = Path("data/external_voices")
-EXTERNAL_VOICES_DIR.mkdir(parents=True, exist_ok=True)
-
-# Mapping from locale code prefix to GitHub folder name
-LOCALE_TO_FOLDER = {
-    'af': 'Afrikaans', 'sq': 'Albanian', 'am': 'Amharic', 'ar': 'Arabic',
-    'az': 'Azerbaijani', 'bn': 'Bengali', 'bs': 'Bosnian', 'bg': 'Bulgarian',
-    'my': 'Burmese', 'ca': 'Catalan', 'zh': 'Chinese', 'yue': 'Chinese',
-    'wuu': 'Chinese', 'hr': 'Croatian', 'cs': 'Czech', 'da': 'Danish',
-    'nl': 'Dutch', 'en': 'English', 'et': 'Estonian', 'fil': 'Filipino',
-    'fi': 'Finnish', 'fr': 'French', 'gl': 'Galician', 'ka': 'Georgian',
-    'de': 'German', 'el': 'Greek', 'gu': 'Gujarati', 'he': 'Hebrew',
-    'hi': 'Hindi', 'hu': 'Hungarian', 'is': 'Icelandic', 'id': 'Indonesian',
-    'ga': 'Irish', 'it': 'Italian', 'ja': 'Japanese', 'jv': 'Javanese',
-    'kn': 'Kannada', 'kk': 'Kazakh', 'km': 'Khmer', 'ko': 'Korean',
-    'lo': 'Lao', 'lv': 'Latvian', 'lt': 'Lithuanian', 'mk': 'Macedonian',
-    'ms': 'Malay', 'ml': 'Malayalam', 'mt': 'Maltese', 'mr': 'Marathi',
-    'mn': 'Mongolian', 'ne': 'Nepali', 'nb': 'Norwegian', 'ps': 'Pashto',
-    'fa': 'Persian', 'pl': 'Polish', 'pt': 'Portuguese', 'ro': 'Romanian',
-    'ru': 'Russian', 'sr': 'Serbian', 'si': 'Sinhala', 'sk': 'Slovak',
-    'sl': 'Slovenian', 'so': 'Somali', 'es': 'Spanish', 'su': 'Sundanese',
-    'sw': 'Swahili', 'sv': 'Swedish', 'ta': 'Tamil', 'te': 'Telugu',
-    'th': 'Thai', 'tr': 'Turkish', 'uk': 'Ukrainian', 'ur': 'Urdu',
-    'uz': 'Uzbek', 'vi': 'Vietnamese', 'cy': 'Welsh', 'zu': 'Zulu',
-    'eu': 'Basque',
-}
-
-def _get_github_folder_for_locale(locale: str) -> str:
-    """Get the GitHub folder name for a locale code like 'en-GB' -> 'English'."""
-    if not locale:
-        return "English"
-    # Extract language code (e.g., 'en' from 'en-GB')
-    lang_code = locale.split('-')[0].lower()
-    return LOCALE_TO_FOLDER.get(lang_code, "English")
-
-_external_voices_cache: Optional[List[Dict[str, Any]]] = None
-_external_voices_cache_time: float = 0
-
-
-def _fetch_external_voices(force_refresh: bool = False) -> List[Dict[str, Any]]:
-    """Fetch external TTS voice samples from GitHub with caching."""
-    global _external_voices_cache, _external_voices_cache_time
-    
-    cache_max_age = 3600 * 24  # 24 hours
-    now = time.time()
-    
-    # Return memory cache if fresh
-    if not force_refresh and _external_voices_cache and (now - _external_voices_cache_time) < cache_max_age:
-        return _external_voices_cache
-    
-    # Try to load from file cache
-    if not force_refresh and EXTERNAL_VOICES_CACHE_FILE.exists():
-        try:
-            cache_mtime = EXTERNAL_VOICES_CACHE_FILE.stat().st_mtime
-            if (now - cache_mtime) < cache_max_age:
-                with EXTERNAL_VOICES_CACHE_FILE.open("r", encoding="utf-8") as f:
-                    _external_voices_cache = json.load(f)
-                    _external_voices_cache_time = now
-                    return _external_voices_cache
-        except Exception as e:
-            logger.warning("Failed to load external voices cache: %s", e)
-    
-    # Fetch from GitHub
-    try:
-        import urllib.request
-        logger.info("Fetching external TTS voices from GitHub...")
-        with urllib.request.urlopen(EXTERNAL_VOICES_URL, timeout=30) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        
-        # Save to file cache
-        EXTERNAL_VOICES_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with EXTERNAL_VOICES_CACHE_FILE.open("w", encoding="utf-8") as f:
-            json.dump(data, f)
-        
-        _external_voices_cache = data
-        _external_voices_cache_time = now
-        logger.info("Fetched %d external TTS voices", len(data))
-        return data
-    except Exception as e:
-        logger.error("Failed to fetch external voices: %s", e)
-        # Return stale cache if available
-        if _external_voices_cache:
-            return _external_voices_cache
-        return []
-
-
-def _serialize_external_voice(voice: Dict[str, Any], archived_ids: Optional[set] = None) -> Dict[str, Any]:
-    """Serialize an external voice entry for the API."""
-    short_name = voice.get("ShortName", "")
-    locale = voice.get("Locale", "")
-    gender = voice.get("Gender", "")
-    friendly_name = voice.get("FriendlyName", "")
-    
-    # Extract clean name from FriendlyName (e.g., "Microsoft Jenny Online (Natural) - English (United States)")
-    name_match = re.match(r"Microsoft (\w+)", friendly_name)
-    display_name = name_match.group(1) if name_match else short_name
-    
-    # Check if downloaded locally
-    local_file = EXTERNAL_VOICES_DIR / f"{short_name}.mp3"
-    is_downloaded = local_file.exists()
-    
-    # Get correct GitHub folder name (e.g., "English" not "en-GB")
-    folder_name = _get_github_folder_for_locale(locale)
-    archived_ids = archived_ids or set()
-    return {
-        "id": f"external:{short_name}",
-        "name": display_name,
-        "short_name": short_name,
-        "file_name": f"{short_name}.mp3" if is_downloaded else None,
-        "prompt_path": str(local_file) if is_downloaded else None,
-        "gender": gender,
-        "language": locale,
-        "friendly_name": friendly_name,
-        "source": "external",
-        "is_downloaded": is_downloaded,
-        "archived": short_name in archived_ids,
-        "download_url": f"{EXTERNAL_SAMPLES_BASE_URL}/{folder_name}/{short_name}.mp3",
-        "voice_personalities": voice.get("VoiceTag", {}).get("VoicePersonalities", []),
-    }
-
-
-@app.route('/api/external-voices', methods=['GET'])
-def list_external_voices():
-    """List available external TTS voice samples from GitHub."""
-    try:
-        force_refresh = request.args.get('refresh', '').lower() == 'true'
-        voices = _fetch_external_voices(force_refresh=force_refresh)
-        archived_ids = _load_external_voice_archives()
-        serialized = [_serialize_external_voice(v, archived_ids) for v in voices]
-        return jsonify({
-            "success": True,
-            "voices": serialized,
-            "total": len(serialized),
-        })
-    except Exception as e:
-        logger.error("Failed to list external voices: %s", e, exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route('/api/external-voices/<voice_id>/download', methods=['POST'])
-def download_external_voice(voice_id: str):
-    """Download an external voice sample to use locally."""
-    try:
-        # Find the voice in the cache
-        voices = _fetch_external_voices()
-        voice = None
-        for v in voices:
-            if v.get("ShortName") == voice_id:
-                voice = v
-                break
-        
-        if not voice:
-            return jsonify({"success": False, "error": "Voice not found"}), 404
-        
-        short_name = voice.get("ShortName")
-        locale = voice.get("Locale")
-        folder_name = _get_github_folder_for_locale(locale)
-        download_url = f"{EXTERNAL_SAMPLES_BASE_URL}/{folder_name}/{short_name}.mp3"
-        local_file = EXTERNAL_VOICES_DIR / f"{short_name}.mp3"
-        
-        # Download the file
-        import urllib.request
-        logger.info("Downloading external voice: %s", short_name)
-        urllib.request.urlretrieve(download_url, str(local_file))
-        
-        # Also copy to voice_prompts directory for use with TTS engines
-        voice_prompt_file = VOICE_PROMPT_DIR / f"{short_name}.mp3"
-        shutil.copy(str(local_file), str(voice_prompt_file))
-        
-        # Add to chatterbox voices registry
-        entries = _load_chatterbox_voice_entries()
-        existing = next((e for e in entries if e.get("file_name") == f"{short_name}.mp3"), None)
-        if not existing:
-            # Extract display name
-            friendly_name = voice.get("FriendlyName", "")
-            name_match = re.match(r"Microsoft (\w+)", friendly_name)
-            display_name = name_match.group(1) if name_match else short_name
-            
-            new_entry = {
-                "id": str(uuid.uuid4()),
-                "name": f"{display_name} ({locale})",
-                "file_name": f"{short_name}.mp3",
-                "created_at": datetime.utcnow().isoformat(),
-                "gender": voice.get("Gender"),
-                "language": locale,
-            }
-            entries.append(new_entry)
-            _save_chatterbox_voice_entries(entries)
-        
-        return jsonify({
-            "success": True,
-            "voice": _serialize_external_voice(voice, _load_external_voice_archives()),
-            "message": f"Downloaded {short_name}.mp3"
-        })
-    except Exception as e:
-        logger.error("Failed to download external voice %s: %s", voice_id, e, exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route('/api/external-voices/<voice_id>/preview')
-def preview_external_voice(voice_id: str):
-    """Stream preview of an external voice (downloads if not cached)."""
-    try:
-        voices = _fetch_external_voices()
-        voice = None
-        for v in voices:
-            if v.get("ShortName") == voice_id:
-                voice = v
-                break
-        
-        if not voice:
-            return jsonify({"success": False, "error": "Voice not found"}), 404
-        
-        short_name = voice.get("ShortName")
-        local_file = EXTERNAL_VOICES_DIR / f"{short_name}.mp3"
-        
-        # Download if not cached
-        if not local_file.exists():
-            locale = voice.get("Locale")
-            folder_name = _get_github_folder_for_locale(locale)
-            download_url = f"{EXTERNAL_SAMPLES_BASE_URL}/{folder_name}/{short_name}.mp3"
-            import urllib.request
-            urllib.request.urlretrieve(download_url, str(local_file))
-        
-        return send_file(
-            local_file,
-            mimetype='audio/mpeg',
-            conditional=True,
-            as_attachment=False,
-            download_name=f"{short_name}.mp3",
-        )
-    except Exception as e:
-        logger.error("Failed to preview external voice %s: %s", voice_id, e, exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route('/api/chatterbox-voices/<voice_id>/update', methods=['PUT'])
-def update_chatterbox_voice_metadata(voice_id: str):
-    """Update metadata (gender, language) for a chatterbox voice."""
-    data = request.get_json() or {}
-    
-    entries = _load_chatterbox_voice_entries()
-    entry = _resolve_chatterbox_voice(voice_id, entries)
-    if not entry:
-        return jsonify({"success": False, "error": "Voice not found."}), 404
-    
-    # Update allowed fields
-    if "gender" in data:
-        entry["gender"] = data["gender"] if data["gender"] in ("Male", "Female", None) else None
-    if "language" in data:
-        entry["language"] = data["language"]
-    if "name" in data and data["name"]:
-        entry["name"] = data["name"].strip()
-    
-    _save_chatterbox_voice_entries(entries)
-    return jsonify({"success": True, "voice": _serialize_chatterbox_voice(entry)})
-
-
-@app.route('/api/voices/samples', methods=['POST'])
-def generate_voice_samples_api():
-    """Generate preview samples for all voices."""
-    overwrite = request.json.get('overwrite', False) if request.is_json else False
-    sample_text = request.json.get('text') if request.is_json else None
-    device = request.json.get('device', 'auto') if request.is_json else 'auto'
-
-    logger.info("Voice sample generation requested", extra={
-        "overwrite": overwrite,
-        "device": device
-    })
-
-    try:
-        report = generate_voice_samples(
-            overwrite=overwrite,
-            device=device,
-            sample_text=sample_text or None,
-        )
-    except RuntimeError as err:
-        logger.error(f"Voice sample generation failed: {err}")
-        return jsonify({
-            "success": False,
-            "error": str(err)
-        }), 400
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.error("Unexpected error during voice sample generation", exc_info=True)
-        return jsonify({
-            "success": False,
-            "error": "Failed to generate voice samples"
-        }), 500
-
-
-def _serialize_chunk_for_response(job_id: str, chunk: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "id": chunk.get("id"),
-        "order_index": chunk.get("order_index"),
-        "chapter_index": chunk.get("chapter_index"),
-        "chunk_index": chunk.get("chunk_index"),
-        "speaker": chunk.get("speaker"),
-        "text": chunk.get("text"),
-        "relative_file": chunk.get("relative_file"),
-        "file_url": _chunk_file_url(job_id, chunk.get("relative_file")),
-        "duration_seconds": chunk.get("duration_seconds"),
-        "regenerated_at": chunk.get("regenerated_at"),
-        "voice": chunk.get("voice_label"),
-        "voice_assignment": chunk.get("voice_assignment"),
-    }
-
-
-@app.route('/api/jobs/<job_id>/chunks', methods=['GET'])
-def get_job_chunks(job_id: str):
-    """Return chunk metadata for a review-enabled job."""
-    try:
-        with queue_lock:
-            job_entry = jobs.get(job_id)
-            if not job_entry:
-                return jsonify({"success": False, "error": "Job not found"}), 404
-            _ensure_review_ready(job_entry)
-            chunks = [dict(item) for item in (job_entry.get("chunks") or [])]
-            regen_tasks = copy.deepcopy(job_entry.get("regen_tasks") or {})
-            review_status = {
-                "status": job_entry.get("status"),
-                "chapter_mode": job_entry.get("chapter_mode"),
-                "full_story_requested": job_entry.get("full_story_requested"),
-                "has_active_regen": _has_active_regen_tasks(job_entry),
-                "engine": job_entry.get("engine"),
-            }
-
-        payload = {
-            "success": True,
-            "chunks": [_serialize_chunk_for_response(job_id, c) for c in chunks],
-            "regen_tasks": regen_tasks,
-            "review": review_status,
-        }
-        return jsonify(payload)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.error("Failed to load chunks for job %s: %s", job_id, exc, exc_info=True)
-        return jsonify({"success": False, "error": "Failed to load job chunks"}), 500
-
-
-@app.route('/api/jobs/<job_id>/review/regen', methods=['POST'])
-def request_chunk_regeneration(job_id: str):
-    """Schedule a chunk regeneration request."""
-    data = request.json or {}
-    chunk_id = (data.get("chunk_id") or "").strip()
-    updated_text = (data.get("text") or "").strip()
-    voice_payload = data.get("voice") or {}
-    engine_override = (data.get("engine") or "").strip() or None
-
-    if not chunk_id:
-        return jsonify({"success": False, "error": "chunk_id is required"}), 400
-    if not updated_text:
-        return jsonify({"success": False, "error": "Updated text cannot be empty"}), 400
-
-    try:
-        with queue_lock:
-            job_entry = jobs.get(job_id)
-            if not job_entry:
-                return jsonify({"success": False, "error": "Job not found"}), 404
-            _ensure_review_ready(job_entry)
-            _, chunk = _find_chunk_record(job_entry, chunk_id)
-            if chunk is None:
-                return jsonify({"success": False, "error": "Chunk not found"}), 404
-            regen_tasks = job_entry.setdefault("regen_tasks", {})
-            task_state = regen_tasks.get(chunk_id)
-            if task_state and task_state.get("status") in {"queued", "running"}:
-                return jsonify({"success": False, "error": "Chunk regeneration already in progress"}), 409
-
-        _schedule_chunk_regeneration(job_id, chunk_id, updated_text, voice_payload, engine_override=engine_override)
-        return jsonify({"success": True})
-    except ValueError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 400
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.error("Failed to schedule chunk regen for job %s chunk %s: %s", job_id, chunk_id, exc, exc_info=True)
-        return jsonify({"success": False, "error": "Failed to schedule chunk regeneration"}), 500
-
-
-@app.route('/api/jobs/<job_id>/review/regen-all', methods=['POST'])
-def request_full_job_regeneration(job_id: str):
-    """Schedule regeneration for every chunk in the job."""
-    data = request.json or {}
-    chunk_updates_raw = data.get("chunks") or []
-    global_engine_override = (data.get("engine") or "").strip() or None
-    chunk_updates: Dict[str, Dict[str, Any]] = {}
-    for entry in chunk_updates_raw:
-        if not isinstance(entry, dict):
-            continue
-        chunk_key = (entry.get("chunk_id") or "").strip()
-        if not chunk_key:
-            continue
-        chunk_updates[chunk_key] = {
-            "text": (entry.get("text") or "").strip(),
-            "voice": entry.get("voice"),
-            "engine": (entry.get("engine") or "").strip() or None,
-        }
-
-    try:
-        with queue_lock:
-            job_entry = jobs.get(job_id)
-            if not job_entry:
-                return jsonify({"success": False, "error": "Job not found"}), 404
-            _ensure_review_ready(job_entry)
-            if _has_active_regen_tasks(job_entry):
-                return jsonify({"success": False, "error": "Chunk regeneration already in progress"}), 409
-            job_chunks = job_entry.get("chunks") or []
-            if not job_chunks:
-                return jsonify({"success": False, "error": "No chunks available to regenerate"}), 400
-            tasks_to_schedule: List[Tuple[str, str, Optional[Dict[str, Any]], Optional[str]]] = []
-            for chunk in job_chunks:
-                chunk_id = chunk.get("id")
-                if not chunk_id:
-                    continue
-                overrides = chunk_updates.get(chunk_id) or {}
-                text_value = (overrides.get("text") or chunk.get("text") or "").strip()
-                if not text_value:
-                    raise ValueError(f"Chunk {chunk_id} does not have text to regenerate.")
-                voice_payload = overrides.get("voice")
-                engine_override = overrides.get("engine") or global_engine_override
-                tasks_to_schedule.append((chunk_id, text_value, voice_payload, engine_override))
-        for chunk_id, text_value, voice_payload, engine_override in tasks_to_schedule:
-            _schedule_chunk_regeneration(job_id, chunk_id, text_value, voice_payload, engine_override=engine_override)
-        return jsonify({"success": True, "queued_chunks": len(tasks_to_schedule)})
-    except ValueError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 400
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.error("Failed to queue full regeneration for job %s: %s", job_id, exc, exc_info=True)
-        return jsonify({"success": False, "error": "Failed to queue full regeneration"}), 500
-
-
-@app.route('/api/jobs/<job_id>/review/apply-fx', methods=['POST'])
-def apply_chunk_audio_effects(job_id: str):
-    """Apply audio effects (speed, pitch) to one or more chunks without regenerating."""
-    from src.audio_effects import AudioPostProcessor, VoiceFXSettings
-    import soundfile as sf
-    
-    data = request.json or {}
-    chunks_fx = data.get("chunks") or []
-    
-    if not chunks_fx:
-        return jsonify({"success": False, "error": "No chunks specified"}), 400
-    
-    try:
-        with queue_lock:
-            job_entry = jobs.get(job_id)
-            if not job_entry:
-                return jsonify({"success": False, "error": "Job not found"}), 404
-            _ensure_review_ready(job_entry)
-            job_dir = _job_dir_from_entry(job_id, job_entry)
-            job_chunks = job_entry.get("chunks") or []
-            chunk_map = {c.get("id"): c for c in job_chunks if c.get("id")}
-        
-        processor = AudioPostProcessor()
-        processed_count = 0
-        errors = []
-        
-        for fx_entry in chunks_fx:
-            chunk_id = (fx_entry.get("chunk_id") or "").strip()
-            if not chunk_id:
-                continue
-            
-            chunk = chunk_map.get(chunk_id)
-            if not chunk:
-                errors.append(f"Chunk {chunk_id} not found")
-                continue
-            
-            relative_file = chunk.get("relative_file")
-            if not relative_file:
-                errors.append(f"Chunk {chunk_id} has no audio file")
-                continue
-            
-            audio_path = job_dir / relative_file
-            if not audio_path.exists():
-                errors.append(f"Audio file not found for chunk {chunk_id}")
-                continue
-            
-            # Parse FX settings
-            speed = float(fx_entry.get("speed", 1.0) or 1.0)
-            pitch = float(fx_entry.get("pitch", 0.0) or 0.0)
-            
-            # Skip if no changes
-            if abs(speed - 1.0) < 1e-3 and abs(pitch) < 1e-3:
-                continue
-            
-            try:
-                # Load audio
-                audio_data, sample_rate = sf.read(str(audio_path), dtype='float32')
-                
-                # Create FX settings - use no blending for post-apply effects
-                fx = VoiceFXSettings(
-                    pitch_semitones=max(-12.0, min(12.0, pitch)),
-                    speed=max(0.5, min(2.0, speed)),
-                    tone="neutral"
-                )
-                
-                # Apply effects without blending (blend_override=0 means no original mixed in)
-                processed = processor.apply(audio_data, sample_rate, fx, blend_override=0.0)
-                
-                # Save back to file
-                sf.write(str(audio_path), processed, sample_rate)
-                
-                # Update chunk metadata
-                with queue_lock:
-                    job_entry = jobs.get(job_id)
-                    if job_entry:
-                        for c in job_entry.get("chunks", []):
-                            if c.get("id") == chunk_id:
-                                c["fx_applied"] = {"speed": speed, "pitch": pitch}
-                                c["modified_at"] = datetime.now().isoformat()
-                                break
-                
-                processed_count += 1
-                
-            except Exception as exc:
-                logger.error("Failed to apply FX to chunk %s: %s", chunk_id, exc, exc_info=True)
-                errors.append(f"Failed to process chunk {chunk_id}: {str(exc)}")
-        
-        # Persist metadata changes
-        _persist_chunks_metadata(job_id, job_dir)
-        
-        return jsonify({
-            "success": True,
-            "processed": processed_count,
-            "errors": errors if errors else None
-        })
-        
-    except ValueError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 400
-    except Exception as exc:
-        logger.error("Failed to apply audio effects for job %s: %s", job_id, exc, exc_info=True)
-        return jsonify({"success": False, "error": "Failed to apply audio effects"}), 500
-
-
-@app.route('/api/jobs/<job_id>/review/preview-fx', methods=['POST'])
-def preview_chunk_audio_effects(job_id: str):
-    """Preview audio effects on a chunk without saving. Returns the processed audio file."""
-    from src.audio_effects import AudioPostProcessor, VoiceFXSettings
-    import soundfile as sf
-    import tempfile
-    import io
-    
-    data = request.json or {}
-    chunk_id = (data.get("chunk_id") or "").strip()
-    speed = float(data.get("speed", 1.0) or 1.0)
-    pitch = float(data.get("pitch", 0.0) or 0.0)
-    
-    if not chunk_id:
-        return jsonify({"success": False, "error": "chunk_id is required"}), 400
-    
-    try:
-        # First try to restore job from library if not in memory
-        job_dir = OUTPUT_DIR / job_id
-        if not job_dir.exists():
-            return jsonify({"success": False, "error": "Job not found"}), 404
-        
-        # Load chunks metadata to find the chunk
-        chunks_meta_path = job_dir / "chunks_metadata.json"
-        chunk = None
-        if chunks_meta_path.exists():
-            with chunks_meta_path.open("r", encoding="utf-8") as f:
-                chunks_meta = json.load(f)
-                for c in chunks_meta.get("chunks", []):
-                    if c.get("id") == chunk_id:
-                        chunk = c
-                        break
-        
-        if not chunk:
-            return jsonify({"success": False, "error": "Chunk not found"}), 404
-        
-        relative_file = chunk.get("relative_file")
-        if not relative_file:
-            return jsonify({"success": False, "error": "Chunk has no audio file"}), 400
-        
-        audio_path = job_dir / relative_file
-        if not audio_path.exists():
-            return jsonify({"success": False, "error": "Audio file not found"}), 404
-        
-        # Load audio
-        audio_data, sample_rate = sf.read(str(audio_path), dtype='float32')
-        
-        # If no effects, just return the original
-        if abs(speed - 1.0) < 1e-3 and abs(pitch) < 1e-3:
-            return send_file(str(audio_path), mimetype='audio/wav')
-        
-        # Create FX settings and apply without blending
-        fx = VoiceFXSettings(
-            pitch_semitones=max(-12.0, min(12.0, pitch)),
-            speed=max(0.5, min(2.0, speed)),
-            tone="neutral"
-        )
-        
-        processor = AudioPostProcessor()
-        processed = processor.apply(audio_data, sample_rate, fx, blend_override=0.0)
-        
-        # Write to in-memory buffer
-        buffer = io.BytesIO()
-        sf.write(buffer, processed, sample_rate, format='WAV')
-        buffer.seek(0)
-        
-        return send_file(
-            buffer,
-            mimetype='audio/wav',
-            as_attachment=False,
-            download_name=f"preview_{chunk_id}.wav"
-        )
-        
-    except Exception as exc:
-        logger.error("Failed to preview audio effects for job %s chunk %s: %s", job_id, chunk_id, exc, exc_info=True)
-        return jsonify({"success": False, "error": "Failed to preview audio effects"}), 500
-
-
-def _merge_review_job(job_id: str, job_entry: Dict[str, Any], manifest: Dict[str, Any]):
-    config_snapshot = copy.deepcopy(job_entry.get("config_snapshot") or load_config())
-    merge_options = job_entry.get("merge_options") or {}
-    output_format = merge_options.get("output_format") or config_snapshot.get("output_format") or "mp3"
-    crossfade_seconds = float(merge_options.get("crossfade_duration") or 0)
-    merger = AudioMerger(
-        crossfade_ms=int(max(0.0, crossfade_seconds) * 1000),
-        intro_silence_ms=int(max(0, merge_options.get("intro_silence_ms") or 0)),
-        inter_chunk_silence_ms=int(max(0, merge_options.get("inter_chunk_silence_ms") or 0)),
-        bitrate_kbps=int(merge_options.get("output_bitrate_kbps") or 0),
-    )
-    job_dir = _job_dir_from_entry(job_id, job_entry)
-
-    chapters = manifest.get("chapters", []) or []
-    all_full_story_chunks = manifest.get("all_full_story_chunks") or []
-    books = manifest.get("books", []) or []
-    total_steps = len(chapters) + len(books) + (1 if all_full_story_chunks else 0)
-    with queue_lock:
-        entry = jobs.get(job_id)
-        if entry:
-            entry["post_process_total"] = max(int(total_steps), 0)
-            entry["post_process_done"] = 0
-            entry["post_process_percent"] = 0
-            entry["post_process_active"] = True
-
-    chapter_outputs = []
-    for chapter in chapters:
-        rel_chunk_files = chapter.get("chunk_files") or []
-        chunk_paths = [str(job_dir / rel_path) for rel_path in rel_chunk_files]
-        if not chunk_paths:
-            continue
-        # Verify chunk files exist before merging
-        missing_chunks = [p for p in chunk_paths if not Path(p).exists()]
-        if missing_chunks:
-            logger.error(f"Missing chunk files for merge: {missing_chunks}")
-            continue
-        logger.info(f"Merging {len(chunk_paths)} chunks: {chunk_paths}")
-        output_filename = chapter.get("output_filename") or f"chapter_{chapter.get('index', 0):02d}.{output_format}"
-        chapter_dir = job_dir / (chapter.get("chapter_dir") or ".")
-        chapter_dir.mkdir(parents=True, exist_ok=True)
-        output_path = chapter_dir / output_filename
-        logger.info(f"Output path: {output_path}")
-        merger.merge_wav_files(
-            input_files=chunk_paths,
-            output_path=str(output_path),
-            format=output_format,
-            cleanup_chunks=False,
-            progress_callback=lambda ratio, idx=len(chapter_outputs) + 1: _update_review_post_progress(
-                job_id,
-                idx,
-                ratio,
-            ),
-        )
-        with queue_lock:
-            entry = jobs.get(job_id)
-            if entry:
-                entry["post_process_done"] = min(
-                    len(chapter_outputs) + 1,
-                    int(entry.get("post_process_total") or 0) or 0,
-                )
-        # Verify output was created with content
-        if output_path.exists():
-            output_size = output_path.stat().st_size
-            logger.info(f"Merged output size: {output_size} bytes")
-            if output_size < 1000:
-                logger.warning(f"Output file suspiciously small: {output_size} bytes")
-        rel_path = (Path(chapter.get("chapter_dir") or ".") / output_filename).as_posix()
-        # Normalize "./filename" to just "filename"
-        if rel_path.startswith("./"):
-            rel_path = rel_path[2:]
-        chapter_outputs.append({
-            "index": chapter.get("index"),
-            "title": chapter.get("title"),
-            "file_url": f"/static/audio/{job_id}/{rel_path}",
-            "relative_path": rel_path,
-        })
-
-    full_story_entry = None
-    if all_full_story_chunks:
-        chunk_paths = [str(job_dir / rel_path) for rel_path in all_full_story_chunks]
-        full_story_name = f"full_story.{output_format}"
-        full_story_path = job_dir / full_story_name
-        merger.merge_wav_files(
-            input_files=chunk_paths,
-            output_path=str(full_story_path),
-            format=output_format,
-            cleanup_chunks=False,
-            progress_callback=lambda ratio: _update_review_post_progress(
-                job_id,
-                int((jobs.get(job_id, {}).get("post_process_total") or 1)),
-                ratio,
-            ),
-        )
-        with queue_lock:
-            entry = jobs.get(job_id)
-            if entry:
-                entry["post_process_done"] = min(
-                    int(entry.get("post_process_total") or 0) or 0,
-                    int(entry.get("post_process_total") or 0) or 0,
-                )
-        full_story_entry = {
-            "title": "Full Story",
-            "file_url": f"/static/audio/{job_id}/{full_story_name}",
-            "relative_path": full_story_name,
-        }
-
-    book_mode = bool(manifest.get("book_mode"))
-    book_outputs = []
-    if book_mode:
-        # Merge book-level audio files
-        for book in manifest.get("books", []):
-            book_chunk_files = book.get("chunk_files") or []
-            if not book_chunk_files:
-                continue
-            
-            chunk_paths = [str(job_dir / rel_path) for rel_path in book_chunk_files]
-            missing_chunks = [p for p in chunk_paths if not Path(p).exists()]
-            if missing_chunks:
-                logger.error(f"Missing chunk files for book merge: {missing_chunks}")
-                continue
-            
-            output_filename = book.get("output_filename")
-            rel_book_dir = book.get("book_dir") or "."
-            if not output_filename:
-                continue
-            
-            book_dir_path = job_dir / rel_book_dir
-            book_dir_path.mkdir(parents=True, exist_ok=True)
-            output_path = book_dir_path / output_filename
-            
-            logger.info(f"Merging book-level audio: {len(chunk_paths)} chunks into {output_path}")
-            merger.merge_wav_files(
-                input_files=chunk_paths,
-                output_path=str(output_path),
-                format=output_format,
-                cleanup_chunks=False,
-                progress_callback=lambda ratio, idx=len(book_outputs) + 1: _update_review_post_progress(
-                    job_id,
-                    len(chapters) + idx,
-                    ratio,
-                ),
-            )
-            
-            rel_path = Path(rel_book_dir) / output_filename
-            book_outputs.append({
-                "index": book.get("index", 0),
-                "title": book.get("title"),
-                "file_url": f"/static/audio/{job_id}/{rel_path.as_posix()}",
-                "relative_path": rel_path.as_posix(),
-            })
-
-    metadata = {
-        "chapter_mode": job_entry.get("chapter_mode"),
-        "book_mode": book_mode,
-        "output_format": output_format,
-        "chapters": chapter_outputs,
-        "chapter_count": len(chapter_outputs),
-        "books": book_outputs,
-        "book_count": len(book_outputs),
-        "full_story": full_story_entry,
-    }
-    save_job_metadata(job_dir, metadata)
-
-    invalidate_library_cache()
-
-    with queue_lock:
-        entry = jobs.get(job_id)
-        if entry:
-            entry["status"] = "completed"
-            entry["progress"] = 100
-            entry["eta_seconds"] = 0
-            entry["post_process_percent"] = 100
-            entry["post_process_active"] = False
-            entry["post_process_done"] = int(entry.get("post_process_total") or entry.get("post_process_done") or 0)
-            entry["chapter_outputs"] = chapter_outputs
-            entry["completed_at"] = datetime.now().isoformat()
-            if full_story_entry:
-                entry["full_story"] = full_story_entry
-            entry["output_file"] = (full_story_entry or (chapter_outputs[0] if chapter_outputs else {})).get("file_url")
-
-
-@app.route('/api/jobs/<job_id>/review/finish', methods=['POST'])
-def finish_review_job(job_id: str):
-    """Finalize a review-mode job by merging audio and updating metadata."""
-    try:
-        with queue_lock:
-            job_entry = jobs.get(job_id)
-            if not job_entry:
-                return jsonify({"success": False, "error": "Job not found"}), 404
-            _ensure_review_ready(job_entry)
-            # Allow recompile for completed jobs with review_mode (chunk review from library)
-            if job_entry.get("status") not in ("waiting_review", "completed"):
-                return jsonify({"success": False, "error": "Job is not ready for recompile"}), 409
-            if _has_active_regen_tasks(job_entry):
-                return jsonify({"success": False, "error": "Wait for all chunk regenerations to finish"}), 409
-
-        manifest = _load_review_manifest(job_id, job_entry)
-        _merge_review_job(job_id, job_entry, manifest)
-        return jsonify({"success": True})
-    except FileNotFoundError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 404
-    except ValueError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 400
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.error("Failed to finalize review job %s: %s", job_id, exc, exc_info=True)
-        return jsonify({"success": False, "error": "Failed to finalize review job"}), 500
-
-    voice_manager = VoiceManager()  # Reload manifest with updated manifest file
-    missing = voice_manager.missing_samples()
-
-    return jsonify({
-        "success": True,
-        "samples": report.get("manifest", {}),
-        "generated": report.get("generated", []),
-        "skipped_existing": report.get("skipped_existing", []),
-        "failed": report.get("failed", []),
-        "samples_ready": voice_manager.all_samples_present(),
-        "missing_samples": missing,
-        "total_unique_voices": voice_manager.total_unique_voice_count(),
-        "sample_count": voice_manager.sample_count()
-    })
-
-
-@app.route('/api/preview', methods=['POST'])
-def preview_audio():
-    """Generate a short preview clip with optional FX settings."""
-    data = request.json or {}
-    voice = (data.get('voice') or '').strip()
-    lang_code = (data.get('lang_code') or 'a').strip()
-    text = (data.get('text') or '').strip()
-    speed = float(data.get('speed') or 1.0)
-    fx_settings = VoiceFXSettings.from_payload(data.get('fx'))
-    requested_engine = (data.get('tts_engine') or '').strip().lower()
-
-    if not voice:
-        return jsonify({"success": False, "error": "Voice is required for preview."}), 400
-    if not text:
-        text = "This is a quick Kokoro preview."
-
-    config = load_config()
-    # Use requested engine if provided, otherwise fall back to config
-    if requested_engine:
-        engine_name = _normalize_engine_name(requested_engine)
-    else:
-        engine_name = _normalize_engine_name(config.get("tts_engine"))
-    sample_rate = int(config.get('sample_rate', DEFAULT_SAMPLE_RATE))
-    audio_bytes = None
-
-    try:
-        logger.info("Preview request: engine=%s, voice=%s, lang_code=%s", engine_name, voice, lang_code)
-        engine = get_tts_engine(engine_name, config=config)
-        # Check if engine has generate_audio method that returns numpy array
-        if hasattr(engine, 'generate_audio'):
-            audio = engine.generate_audio(
-                text=text,
-                voice=voice,
-                lang_code=lang_code,
-                speed=speed,
-                sample_rate=sample_rate,
-                fx_settings=fx_settings,
-            )
-            if hasattr(audio, 'size') and audio.size == 0:
-                raise RuntimeError("No audio produced for the requested preview.")
-            if hasattr(audio, 'size'):
-                # Numpy array - write to buffer
-                buffer = io.BytesIO()
-                sf.write(buffer, audio, sample_rate, format='wav')
-                audio_bytes = buffer.getvalue()
-            elif isinstance(audio, str) and os.path.exists(audio):
-                # File path returned
-                with open(audio, 'rb') as fh:
-                    audio_bytes = fh.read()
-            elif isinstance(audio, bytes):
-                audio_bytes = audio
-            else:
-                raise RuntimeError("Unexpected audio format from engine.")
-    except Exception as exc:
-        logger.error("Preview generation failed: %s", exc, exc_info=True)
-        return jsonify({"success": False, "error": str(exc)}), 400
-
-    if not audio_bytes:
-        return jsonify({"success": False, "error": "Preview failed to generate audio."}), 500
-
-    encoded = base64.b64encode(audio_bytes).decode('ascii')
-    return jsonify({
-        "success": True,
-        "audio_base64": encoded,
-        "mime_type": "audio/wav",
-    })
-
-
-@app.route('/api/custom-voices', methods=['GET', 'POST'])
-def custom_voices_collection():
-    """List or create custom voice blends."""
-    if request.method == 'GET':
-        entries = list_custom_voice_entries()
-        return jsonify({
-            "success": True,
-            "voices": [_to_public_custom_voice(entry) for entry in entries],
-        })
-
-    try:
-        payload = _prepare_custom_voice_payload(request.json or {})
-    except ValueError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 400
-
-    now = datetime.now().isoformat()
-    payload["created_at"] = now
-    payload["updated_at"] = now
-    saved = save_custom_voice(payload)
-    clear_cached_custom_voice()
-    return jsonify({
-        "success": True,
-        "voice": _to_public_custom_voice(saved),
-    }), 201
-
-
-@app.route('/api/custom-voices/<voice_id>', methods=['GET', 'PUT', 'DELETE'])
-def custom_voice_detail(voice_id):
-    """Retrieve, update, or delete a custom voice definition."""
-    raw = _get_raw_custom_voice(voice_id)
-    if not raw:
-        return jsonify({"success": False, "error": "Custom voice not found."}), 404
-
-    if request.method == 'GET':
-        return jsonify({"success": True, "voice": _to_public_custom_voice(raw)})
-
-    if request.method == 'DELETE':
-        delete_custom_voice(raw["id"])
-        clear_cached_custom_voice(f"{CUSTOM_CODE_PREFIX}{raw['id']}")
-        return jsonify({"success": True, "deleted": True})
-
-    try:
-        payload = _prepare_custom_voice_payload(request.json or {}, existing=raw)
-    except ValueError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 400
-
-    payload["id"] = raw["id"]
-    payload["created_at"] = raw.get("created_at")
-    payload["updated_at"] = datetime.now().isoformat()
-    updated = replace_custom_voice(payload)
-    clear_cached_custom_voice(f"{CUSTOM_CODE_PREFIX}{raw['id']}")
-    return jsonify({"success": True, "voice": _to_public_custom_voice(updated)})
-
-
 @app.route('/api/settings', methods=['GET', 'POST'])
 def settings():
     """Get or update settings"""
     if request.method == 'GET':
         config = load_config()
-        return jsonify({
-            "success": True,
-            "settings": config
-        })
+        return jsonify({"success": True, "settings": config})
     else:
         try:
             new_settings = request.json

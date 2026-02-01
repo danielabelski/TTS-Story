@@ -19,13 +19,21 @@
 
         </header>
 
-        <div class="tabs">
-            <button class="tab-button active" data-tab="generate">Generate</button>
-            <button class="tab-button" data-tab="queue">Job Queue</button>
-            <button class="tab-button" data-tab="library">Library</button>
-            <button class="tab-button" data-tab="voices">Available Voices</button>
-            <button class="tab-button" data-tab="settings">Settings</button>
-            <button class="tab-button" data-tab="help">Help</button>
+        <div class="tabs-row">
+            <div class="tabs">
+                <button class="tab-button active" data-tab="generate">Generate</button>
+                <button class="tab-button" data-tab="queue">Job Queue</button>
+                <button class="tab-button" data-tab="library">Library</button>
+                <button class="tab-button" data-tab="voices">Available Voices</button>
+                <button class="tab-button" data-tab="settings">Settings</button>
+                <button class="tab-button" data-tab="help">Help</button>
+            </div>
+            <div class="update-notice is-hidden" id="update-notice">
+                <button type="button" class="update-notice-button" id="update-notice-btn">
+                    ⚡ Updates Available
+                    <span class="update-badge is-hidden" id="update-notice-count"></span>
+                </button>
+            </div>
         </div>
 
         <!-- Generate Tab -->
@@ -1062,6 +1070,25 @@
             <div class="button-group" style="margin-top:20px;">
                 <button id="save-settings-btn" class="btn btn-primary">Save Settings</button>
                 <button id="reset-settings-btn" class="btn btn-secondary">Reset to Defaults</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay hidden" id="update-modal-overlay">
+        <div class="modal hidden" id="update-modal" style="max-width: 520px; width: 95%;">
+            <div class="modal-header">
+                <h3>Updates Available</h3>
+                <button class="modal-close" id="update-modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="help-text">
+                    A newer version of TTS-Story is available. Updating will download the latest code and restart the app.
+                </p>
+                <div class="update-modal-status" id="update-modal-status"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="update-modal-cancel-btn">Not now</button>
+                <button class="btn btn-primary" id="update-modal-confirm-btn">Update Now</button>
             </div>
         </div>
     </div>

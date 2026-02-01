@@ -1,4 +1,6 @@
 const MIN_CHATTERBOX_PROMPT_SECONDS = 5;
+const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+let updateCheckTimer = null;
 
 const HELP_TOPICS = {
     'input-text': {
@@ -279,6 +281,111 @@ const HELP_TOPICS = {
         `
     }
 };
+
+function openUpdateModal() {
+    const overlay = document.getElementById('update-modal-overlay');
+    const modal = document.getElementById('update-modal');
+    const status = document.getElementById('update-modal-status');
+    if (status) {
+        status.textContent = '';
+    }
+    if (overlay) overlay.classList.remove('hidden');
+    if (modal) modal.classList.remove('hidden');
+}
+
+function closeUpdateModal() {
+    const overlay = document.getElementById('update-modal-overlay');
+    const modal = document.getElementById('update-modal');
+    if (overlay) overlay.classList.add('hidden');
+    if (modal) modal.classList.add('hidden');
+}
+
+function setUpdateNoticeVisible(isVisible, behindBy = 0) {
+    const notice = document.getElementById('update-notice');
+    const badge = document.getElementById('update-notice-count');
+    if (!notice) return;
+    if (isVisible) {
+        notice.classList.remove('is-hidden');
+        if (badge) {
+            badge.textContent = behindBy > 0 ? String(behindBy) : '';
+            badge.classList.toggle('is-hidden', behindBy <= 1);
+        }
+    } else {
+        notice.classList.add('is-hidden');
+        if (badge) {
+            badge.textContent = '';
+            badge.classList.add('is-hidden');
+        }
+    }
+}
+
+async function checkForUpdates({ silent = false } = {}) {
+    try {
+        const response = await fetch('/api/updates/check');
+        const data = await response.json();
+        if (!data.success) {
+            if (!silent) {
+                showNotification(data.error || 'Update check failed.', 'warning');
+            }
+            setUpdateNoticeVisible(false);
+            return;
+        }
+        if (data.updates_available) {
+            setUpdateNoticeVisible(true, data.behind_by || 0);
+        } else {
+            setUpdateNoticeVisible(false);
+        }
+    } catch (error) {
+        console.error('Update check failed', error);
+        if (!silent) {
+            showNotification('Update check failed.', 'warning');
+        }
+    }
+}
+
+async function applyUpdate() {
+    const status = document.getElementById('update-modal-status');
+    const confirmBtn = document.getElementById('update-modal-confirm-btn');
+    if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = 'Updating...';
+    }
+    if (status) {
+        status.textContent = 'Launching updater and restarting the app...';
+    }
+    try {
+        const response = await fetch('/api/updates/apply', { method: 'POST' });
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Update failed.');
+        }
+        if (status) {
+            status.textContent = 'Updater launched. The app will restart shortly.';
+        }
+        setTimeout(() => {
+            window.location.reload();
+        }, 15000);
+    } catch (error) {
+        console.error('Update apply failed', error);
+        if (status) {
+            status.textContent = error.message || 'Update failed.';
+        }
+        if (confirmBtn) {
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = 'Update Now';
+        }
+    }
+}
+
+function initUpdateChecks() {
+    if (updateCheckTimer) {
+        clearInterval(updateCheckTimer);
+    }
+    checkForUpdates({ silent: true });
+    updateCheckTimer = setInterval(() => {
+        checkForUpdates({ silent: true });
+    }, UPDATE_CHECK_INTERVAL_MS);
+}
 
 async function generateSpeakerVoicePromptBatch(speaker, displayName, statusEl) {
     if (!speaker) return false;
@@ -2507,6 +2614,11 @@ function setupEventListeners() {
     const projectList = document.getElementById('project-list');
     const projectNameInput = document.getElementById('project-name-input');
     const projectStatus = document.getElementById('project-status');
+    const updateNoticeBtn = document.getElementById('update-notice-btn');
+    const updateModalOverlay = document.getElementById('update-modal-overlay');
+    const updateModalClose = document.getElementById('update-modal-close');
+    const updateModalCancel = document.getElementById('update-modal-cancel-btn');
+    const updateModalConfirm = document.getElementById('update-modal-confirm-btn');
 
     if (analyzeBtn) {
         analyzeBtn.addEventListener('click', analyzeText);
@@ -2893,6 +3005,7 @@ function setupEventListeners() {
             window.chatterboxPreviewController.toggleById(voiceEntry.id, event.currentTarget);
         });
     }
+    initUpdateChecks();
 }
 
 function syncFullStoryOption(chapterCheckbox, force = false) {

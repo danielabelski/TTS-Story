@@ -116,4 +116,25 @@ if "%INSIDE_REPO%"=="1" (
 
 echo.
 echo ✅ Install/update complete.
+if /I "%~1"=="restart" goto :RestartApp
 pause
+goto :EOF
+
+:RestartApp
+echo.
+echo Restarting TTS-Story...
+if "%INSIDE_REPO%"=="1" (
+    if exist "%SCRIPT_DIR%\run.bat" (
+        start "" "%SCRIPT_DIR%\run.bat"
+    ) else (
+        echo WARNING: run.bat not found in %SCRIPT_DIR%.
+    )
+) else (
+    if exist "%REPO_DIR%\run.bat" (
+        start "" "%REPO_DIR%\run.bat"
+    ) else (
+        echo WARNING: run.bat not found in %REPO_DIR%.
+    )
+)
+pause
+goto :EOF
