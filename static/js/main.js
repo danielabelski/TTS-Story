@@ -1527,6 +1527,8 @@ let lastAnalyzedText = '';
 let analyzeInFlight = false;
 let analyzeRerunRequested = false;
 let sectionReviewInFlight = false;
+let sectionReviewData = null;
+let sectionEditTarget = null;
 let inlineSampleHandlersReady = false;
 const turboSelectionState = {};
 const speakerReadyState = {};
@@ -2027,9 +2029,96 @@ function openSectionReviewModal() {
     modal.classList.remove('hidden');
 }
 
+function closeSectionEditModal() {
+    const overlay = document.getElementById('section-edit-modal-overlay');
+    const modal = document.getElementById('section-edit-modal');
+    if (overlay) overlay.classList.add('hidden');
+    if (modal) modal.classList.add('hidden');
+    sectionEditTarget = null;
+}
+
+function openSectionEditModal(target) {
+    if (!target) return;
+    sectionEditTarget = target;
+    const overlay = document.getElementById('section-edit-modal-overlay');
+    const modal = document.getElementById('section-edit-modal');
+    const input = document.getElementById('section-edit-input');
+    const original = document.getElementById('section-edit-original');
+    if (original) {
+        original.textContent = target.heading
+            ? `Current heading: ${target.heading}`
+            : 'Current heading not available.';
+    }
+    if (input) {
+        input.value = target.heading || target.title || '';
+        input.focus();
+        input.select();
+    }
+    if (overlay) overlay.classList.remove('hidden');
+    if (modal) modal.classList.remove('hidden');
+}
+
+function cleanHeadingClient(value) {
+    if (!value) return '';
+    return value.replace(/\[[^\]]+\]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function updateSectionCardTitle(target, newHeading) {
+    const card = document.querySelector(`[data-section-id="${target.sectionId}"]`);
+    if (!card) return;
+    const titleEl = card.querySelector('.section-review-title');
+    if (titleEl) {
+        const cleaned = cleanHeadingClient(newHeading);
+        titleEl.textContent = cleaned || newHeading || 'Untitled section';
+    }
+}
+
+function updateSectionDataHeading(target, newHeading) {
+    if (!sectionReviewData || !target) return;
+    if (target.kind === 'book') {
+        const book = sectionReviewData.books?.[target.bookIndex];
+        const chapter = book?.chapters?.[target.chapterIndex];
+        if (chapter) {
+            chapter.heading = newHeading;
+            chapter.title = cleanHeadingClient(newHeading) || chapter.title;
+        }
+        return;
+    }
+    const section = sectionReviewData.sections?.[target.sectionIndex];
+    if (section) {
+        section.heading = newHeading;
+        section.title = cleanHeadingClient(newHeading) || section.title;
+    }
+}
+
+function applySectionHeadingEdit(newHeading) {
+    if (!sectionEditTarget) return;
+    const input = document.getElementById('input-text');
+    if (!input) return;
+    const start = sectionEditTarget.headingStart;
+    const end = sectionEditTarget.headingEnd;
+    if (typeof start !== 'number' || typeof end !== 'number') {
+        showNotification('Heading position missing. Re-run section detection first.', 'warning');
+        return;
+    }
+    const text = input.value || '';
+    if (start < 0 || end < start || end > text.length) {
+        showNotification('Heading location is out of date. Re-run section detection first.', 'warning');
+        return;
+    }
+    const updated = `${text.slice(0, start)}${newHeading}${text.slice(end)}`;
+    input.value = updated;
+    updateSectionDataHeading(sectionEditTarget, newHeading);
+    updateSectionCardTitle(sectionEditTarget, newHeading);
+    showNotification('Heading updated in input text.', 'success');
+    closeSectionEditModal();
+}
+
 function renderSectionReview(data) {
     const body = document.getElementById('section-review-modal-body');
     if (!body) return;
+
+    sectionReviewData = data && data.success ? data : null;
 
     if (!data || !data.success) {
         const message = data?.error || 'Unable to load section preview.';
@@ -2051,12 +2140,14 @@ function renderSectionReview(data) {
     if (data.kind === 'book') {
         const bookBlocks = (data.books || []).map((book, bookIdx) => {
             const chapters = book.chapters || [];
-            const chapterCards = chapters.map(chapter => {
+            const chapterCards = chapters.map((chapter, chapterIdx) => {
                 const title = chapter.title || 'Untitled section';
+                const sectionId = `book-${bookIdx}-chapter-${chapterIdx}`;
                 return `
-                    <div class="section-review-card">
+                    <div class="section-review-card" data-section-id="${sectionId}" data-section-kind="book" data-book-index="${bookIdx}" data-chapter-index="${chapterIdx}" data-heading-start="${chapter.heading_start ?? ''}" data-heading-end="${chapter.heading_end ?? ''}" data-heading="${escapeHtml(chapter.heading || '')}" data-title="${escapeHtml(title)}">
                         <div class="section-review-title">${escapeHtml(title)}</div>
                         <div class="section-review-preview">${escapeHtml(chapter.preview || '')}</div>
+                        <button class="btn btn-secondary section-review-edit" type="button" data-section-id="${sectionId}">Edit heading</button>
                     </div>
                 `;
             }).join('');
@@ -2074,12 +2165,14 @@ function renderSectionReview(data) {
         return;
     }
 
-    const sectionCards = (data.sections || []).map(section => {
+    const sectionCards = (data.sections || []).map((section, sectionIdx) => {
         const title = section.title || 'Untitled section';
+        const sectionId = `section-${sectionIdx}`;
         return `
-            <div class="section-review-card">
+            <div class="section-review-card" data-section-id="${sectionId}" data-section-kind="section" data-section-index="${sectionIdx}" data-heading-start="${section.heading_start ?? ''}" data-heading-end="${section.heading_end ?? ''}" data-heading="${escapeHtml(section.heading || '')}" data-title="${escapeHtml(title)}">
                 <div class="section-review-title">${escapeHtml(title)}</div>
                 <div class="section-review-preview">${escapeHtml(section.preview || '')}</div>
+                <button class="btn btn-secondary section-review-edit" type="button" data-section-id="${sectionId}">Edit heading</button>
             </div>
         `;
     }).join('');
@@ -2381,6 +2474,12 @@ function setupEventListeners() {
     const sectionReviewOverlay = document.getElementById('section-review-modal-overlay');
     const sectionReviewClose = document.getElementById('section-review-modal-close');
     const sectionReviewFooterClose = document.getElementById('section-review-close-btn');
+    const sectionReviewBody = document.getElementById('section-review-modal-body');
+    const sectionEditOverlay = document.getElementById('section-edit-modal-overlay');
+    const sectionEditClose = document.getElementById('section-edit-modal-close');
+    const sectionEditCancel = document.getElementById('section-edit-cancel-btn');
+    const sectionEditSave = document.getElementById('section-edit-save-btn');
+    const sectionEditInput = document.getElementById('section-edit-input');
     const speakersList = document.getElementById('speakers-list');
     const speakerModalOverlay = document.getElementById('speaker-edit-modal-overlay');
     const speakerModalClose = document.getElementById('speaker-edit-modal-close');
@@ -2471,11 +2570,70 @@ function setupEventListeners() {
             }
         });
     }
+    if (sectionReviewBody) {
+        sectionReviewBody.addEventListener('click', event => {
+            const target = event.target instanceof HTMLElement ? event.target : null;
+            const button = target?.closest('.section-review-edit');
+            if (!button) return;
+            const sectionId = button.dataset.sectionId;
+            const card = sectionReviewBody.querySelector(`[data-section-id="${sectionId}"]`);
+            if (!card) return;
+            const headingStart = Number(card.dataset.headingStart);
+            const headingEnd = Number(card.dataset.headingEnd);
+            openSectionEditModal({
+                sectionId,
+                kind: card.dataset.sectionKind,
+                bookIndex: Number(card.dataset.bookIndex),
+                chapterIndex: Number(card.dataset.chapterIndex),
+                sectionIndex: Number(card.dataset.sectionIndex),
+                heading: card.dataset.heading || '',
+                title: card.dataset.title || '',
+                headingStart: Number.isFinite(headingStart) ? headingStart : null,
+                headingEnd: Number.isFinite(headingEnd) ? headingEnd : null,
+            });
+        });
+    }
     if (sectionReviewClose) {
         sectionReviewClose.addEventListener('click', closeSectionReviewModal);
     }
     if (sectionReviewFooterClose) {
         sectionReviewFooterClose.addEventListener('click', closeSectionReviewModal);
+    }
+    if (sectionEditOverlay) {
+        sectionEditOverlay.addEventListener('click', event => {
+            if (event.target === sectionEditOverlay) {
+                closeSectionEditModal();
+            }
+        });
+    }
+    if (sectionEditClose) {
+        sectionEditClose.addEventListener('click', closeSectionEditModal);
+    }
+    if (sectionEditCancel) {
+        sectionEditCancel.addEventListener('click', closeSectionEditModal);
+    }
+    if (sectionEditSave) {
+        sectionEditSave.addEventListener('click', () => {
+            const value = sectionEditInput?.value?.trim();
+            if (!value) {
+                showNotification('Heading text cannot be empty.', 'warning');
+                return;
+            }
+            applySectionHeadingEdit(value);
+        });
+    }
+    if (sectionEditInput) {
+        sectionEditInput.addEventListener('keydown', event => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                const value = sectionEditInput.value.trim();
+                if (!value) {
+                    showNotification('Heading text cannot be empty.', 'warning');
+                    return;
+                }
+                applySectionHeadingEdit(value);
+            }
+        });
     }
     if (speakersList) {
         speakersList.addEventListener('click', event => {

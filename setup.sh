@@ -38,17 +38,44 @@ echo
 echo "[4/6] Upgrading pip..."
 python -m pip install --upgrade pip --quiet
 
-# 5/6 Install PyTorch (CUDA if available, otherwise CPU)
+# 5/6 Install PyTorch (GPU or CPU)
 echo
 echo "[5/6] Installing PyTorch..."
 echo "This may take several minutes..."
 echo
 
-# Try CUDA 12.1 wheels first, then fall back to default (which may be CPU)
-if ! pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121; then
-  echo "PyTorch CUDA 12.1 install failed, trying default PyTorch (CPU or auto-detected CUDA)..."
-  pip install torch torchvision torchaudio
+GPU_DETECTED=0
+if command -v nvidia-smi >/dev/null 2>&1; then
+  GPU_DETECTED=1
+elif command -v lspci >/dev/null 2>&1 && lspci | grep -i nvidia >/dev/null 2>&1; then
+  GPU_DETECTED=1
+elif command -v system_profiler >/dev/null 2>&1 && system_profiler SPDisplaysDataType 2>/dev/null | grep -i nvidia >/dev/null 2>&1; then
+  GPU_DETECTED=1
 fi
+
+if [ "$GPU_DETECTED" -eq 1 ]; then
+  echo "Detected an NVIDIA GPU. You can install GPU or CPU PyTorch."
+else
+  echo "No NVIDIA GPU detected. CPU-only PyTorch is recommended."
+fi
+
+read -r -p "Do you want to install GPU-enabled PyTorch? (y/n): " HAS_GPU
+case "${HAS_GPU,,}" in
+  y|yes)
+    echo "Installing PyTorch with CUDA 12.1 support..."
+    if ! pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121; then
+      echo "PyTorch CUDA 12.1 install failed, trying CPU-only wheels..."
+      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+    fi
+    ;;
+  *)
+    echo "Installing PyTorch CPU-only build..."
+    if ! pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu; then
+      echo "PyTorch CPU install failed, trying default PyTorch wheels..."
+      pip install torch torchvision torchaudio
+    fi
+    ;;
+esac
 
 # 6/6 Install other dependencies (excluding torch packages already installed)
 echo
@@ -99,4 +126,7 @@ echo "Next steps:"
 echo "  1. Ensure espeak-ng is installed (see instructions above)."
 echo "  2. Run: ./run.sh"
 echo "  3. Open browser to: http://localhost:5000"
+echo
+echo "Need cloud processing? You can use Replicate with an API key (Kokoro/Chatterbox)."
+echo "Add your key in Settings after launch."
 echo

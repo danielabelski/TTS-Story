@@ -3,6 +3,7 @@
 const currentChapterSelection = {};
 let chunkReviewModalJobId = null;
 let chunkReviewModalData = null;
+let chapterReviewMode = false;
 let libraryChunkVoiceOverrides = {};
 let libraryChunkRegenWatchers = {};
 const LIBRARY_CHUNK_POLL_INTERVAL_MS = 2000;
@@ -22,6 +23,106 @@ function setActiveLibraryPlayer(player, updateControls) {
     }
     activeLibraryPlayer = player;
     activeLibraryUpdateControls = updateControls;
+}
+
+function ensureChunkReviewCloseHandlers() {
+    const modalOverlay = document.getElementById('chunk-review-modal-overlay');
+    const modalCloseBtn = document.getElementById('chunk-review-modal-close');
+    const modalCloseFooterBtn = document.getElementById('chunk-review-close-btn');
+    if (modalOverlay && !modalOverlay.dataset.closeBound) {
+        modalOverlay.addEventListener('click', (e) => {
+            if (e.target === modalOverlay) {
+                closeChunkReviewModal();
+            }
+        });
+        modalOverlay.dataset.closeBound = 'true';
+    }
+    if (modalCloseBtn && !modalCloseBtn.dataset.closeBound) {
+        modalCloseBtn.addEventListener('click', closeChunkReviewModal);
+        modalCloseBtn.dataset.closeBound = 'true';
+    }
+    if (modalCloseFooterBtn && !modalCloseFooterBtn.dataset.closeBound) {
+        modalCloseFooterBtn.addEventListener('click', closeChunkReviewModal);
+        modalCloseFooterBtn.dataset.closeBound = 'true';
+    }
+    if (!document.body.dataset.chunkReviewEscBound) {
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                const overlay = document.getElementById('chunk-review-modal-overlay');
+                if (overlay && !overlay.classList.contains('hidden')) {
+                    closeChunkReviewModal();
+                }
+            }
+        });
+        document.body.dataset.chunkReviewEscBound = 'true';
+    }
+}
+
+async function openChapterReviewModal(jobId, relativePath, fallbackTitle) {
+    if (!jobId) return;
+    ensureChunkReviewCloseHandlers();
+    chapterReviewMode = true;
+    chunkReviewModalJobId = jobId;
+    chunkReviewModalData = null;
+    libraryChunkVoiceOverrides = {};
+
+    const overlay = document.getElementById('chunk-review-modal-overlay');
+    const modal = document.getElementById('chunk-review-modal');
+    const body = document.getElementById('chunk-review-modal-body');
+    const titleEl = document.getElementById('chunk-review-modal-title');
+    const recompileBtn = document.getElementById('chunk-review-recompile-btn');
+    if (overlay) overlay.classList.remove('hidden');
+    if (modal) modal.classList.remove('hidden');
+    if (body) body.innerHTML = '<div class="chunk-review-loading">Loading chapter...</div>';
+    if (titleEl) titleEl.textContent = fallbackTitle || 'Chapter Review';
+    if (recompileBtn) {
+        recompileBtn.disabled = true;
+        recompileBtn.style.display = 'none';
+    }
+
+    try {
+        const response = await fetch(`/api/library/${jobId}/chunks`);
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Failed to load chapter');
+        }
+
+        const chapters = data.chapters || [];
+        const target = chapters.find(ch => ch.relative_path === relativePath)
+            || chapters.find(ch => ch.output_filename && relativePath?.endsWith(ch.output_filename))
+            || null;
+        if (!target) {
+            throw new Error('Chapter details not found');
+        }
+
+        const filtered = filterChapterReviewData(data, target);
+        chunkReviewModalData = filtered;
+        if (titleEl) {
+            titleEl.textContent = target.title || fallbackTitle || 'Chapter Review';
+        }
+        renderChunkReviewModal(filtered);
+    } catch (error) {
+        console.error('Error loading chapter review:', error);
+        if (body) body.innerHTML = '<div class="chunk-review-empty">Failed to load chapter.</div>';
+        alert(error.message || 'Failed to load chapter review');
+    }
+}
+
+function filterChapterReviewData(data, chapter) {
+    const chapterIndex = chapter?.index ?? null;
+    const chunks = (data.chunks || []).filter(chunk => {
+        if (chapterIndex === null) return false;
+        return (chunk.chapter_index ?? 0) === chapterIndex;
+    });
+    return {
+        ...data,
+        chunks,
+        chapters: [],
+        books: [],
+        has_chapters: false,
+        has_books: false,
+        full_story_available: false,
+    };
 }
 
 function clearActiveLibraryPlayer(player) {
@@ -137,6 +238,9 @@ let libraryVoiceFilters = {
 
 // Load library on tab switch
 document.addEventListener('DOMContentLoaded', () => {
+    loadLibrary();
+    setupGlobalPlayerControls();
+    setupLibraryControls();
     // Load library when Library tab is clicked
     const libraryTab = document.querySelector('[data-tab="library"]');
     if (libraryTab) {
@@ -526,6 +630,7 @@ function displayLibraryItems(items) {
                     title: button.textContent.trim()
                 };
                 currentChapterSelection[jobId] = selectedChapter;
+                openChapterReviewModal(jobId, relativePath, button.textContent.trim());
             });
         });
     });
@@ -588,16 +693,21 @@ async function restoreToReview(jobId) {
     chunkReviewModalJobId = jobId;
     chunkReviewModalData = null;
     libraryChunkVoiceOverrides = {};
+    chapterReviewMode = false;
+    ensureChunkReviewCloseHandlers();
 
     const overlay = document.getElementById('chunk-review-modal-overlay');
     const modal = document.getElementById('chunk-review-modal');
     const body = document.getElementById('chunk-review-modal-body');
     const recompileBtn = document.getElementById('chunk-review-recompile-btn');
+    const titleEl = document.getElementById('chunk-review-modal-title');
 
     if (overlay) overlay.classList.remove('hidden');
     if (modal) modal.classList.remove('hidden');
     if (body) body.innerHTML = '<div class="chunk-review-loading">Loading chunks...</div>';
     if (recompileBtn) recompileBtn.disabled = true;
+    if (recompileBtn) recompileBtn.style.display = '';
+    if (titleEl) titleEl.textContent = 'Review Chunks';
 
     try {
         const response = await fetch(`/api/library/${jobId}/chunks`);
@@ -621,6 +731,8 @@ async function restoreToReview(jobId) {
 function closeChunkReviewModal() {
     const overlay = document.getElementById('chunk-review-modal-overlay');
     const modal = document.getElementById('chunk-review-modal');
+    const titleEl = document.getElementById('chunk-review-modal-title');
+    const recompileBtn = document.getElementById('chunk-review-recompile-btn');
 
     if (overlay) overlay.classList.add('hidden');
     if (modal) modal.classList.add('hidden');
@@ -640,6 +752,13 @@ function closeChunkReviewModal() {
     chunkReviewModalJobId = null;
     chunkReviewModalData = null;
     libraryChunkVoiceOverrides = {};
+    chapterReviewMode = false;
+    if (recompileBtn) {
+        recompileBtn.style.display = '';
+        recompileBtn.disabled = false;
+        recompileBtn.textContent = 'Recompile Audio';
+    }
+    if (titleEl) titleEl.textContent = 'Review Chunks';
 }
 
 function renderChunkReviewModal(data) {
@@ -651,6 +770,7 @@ function renderChunkReviewModal(data) {
     const books = data.books || [];
     const hasChapters = data.has_chapters || false;
     const hasBooks = data.has_books || false;
+    const fullStoryAvailable = data.full_story_available || false;
     const engine = data.engine || 'kokoro';
     const jobId = data.job_id;
 
@@ -794,8 +914,14 @@ function renderChunkReviewModal(data) {
             <div class="chapter-section" data-chapter-index="${chapterIdx}">
                 <div class="chapter-header" data-chapter-index="${chapterIdx}">
                     <span class="chapter-toggle">▶</span>
+                    <label class="chapter-select">
+                        <input type="checkbox" class="chapter-rebuild-checkbox" data-chapter-index="${chapterIdx}">
+                    </label>
                     <span class="chapter-title">${escapeHtml(chapterTitle)}</span>
                     <span class="chapter-chunk-count">${chapterChunks.length} chunks</span>
+                    <button class="btn btn-xs btn-secondary chapter-rebuild-btn" data-chapter-index="${chapterIdx}" type="button">
+                        Rebuild Chapter
+                    </button>
                 </div>
                 <div class="chapter-chunks collapsed" data-chapter-index="${chapterIdx}">
                     ${chunkRows}
@@ -839,12 +965,33 @@ function renderChunkReviewModal(data) {
     const chapterInfo = hasBooks
         ? `<span><strong>Books:</strong> ${books.length}</span><span><strong>Chapters:</strong> ${chapters.length}</span>`
         : (hasChapters ? `<span><strong>Chapters:</strong> ${chapters.length}</span>` : '');
+    const fullStoryControls = fullStoryAvailable
+        ? `<button class="btn btn-sm btn-secondary" id="chunk-review-rebuild-full" type="button">Rebuild Full Story</button>`
+        : '';
+    const batchControls = hasChapters
+        ? `
+            <label class="chunk-review-select-all">
+                <input type="checkbox" id="chunk-review-select-all">
+                <span>Select all</span>
+            </label>
+            <button class="btn btn-sm btn-secondary" id="chunk-review-rebuild-selected" type="button" disabled>
+                Rebuild Selected
+            </button>
+            <button class="btn btn-sm btn-warning" id="chunk-review-rebuild-all" type="button">
+                Rebuild All
+            </button>
+        `
+        : '';
 
     body.innerHTML = `
         <div class="chunk-review-header">
             <span><strong>Original Engine:</strong> ${formatEngineName(engine)}</span>
             ${chapterInfo}
             <span><strong>Chunks:</strong> ${chunks.length}</span>
+            <div class="chunk-review-actions">
+                ${batchControls}
+                ${fullStoryControls}
+            </div>
         </div>
         <div class="bulk-speaker-section">
             <div class="bulk-speaker-header">
@@ -870,6 +1017,161 @@ function renderChunkReviewModal(data) {
     }
 
     wireChunkReviewEvents(jobId, chunks, engine);
+    wireChapterRebuildEvents(jobId);
+    wireFullStoryRebuildEvent(jobId, fullStoryAvailable);
+    wireBatchRebuildEvents(jobId);
+}
+
+function wireBatchRebuildEvents(jobId) {
+    const selectAll = document.getElementById('chunk-review-select-all');
+    const rebuildSelected = document.getElementById('chunk-review-rebuild-selected');
+    const rebuildAll = document.getElementById('chunk-review-rebuild-all');
+    const checkboxes = Array.from(document.querySelectorAll('.chapter-rebuild-checkbox'));
+
+    const updateSelectedState = () => {
+        if (!rebuildSelected) return;
+        const selected = checkboxes.filter(box => box.checked);
+        rebuildSelected.disabled = selected.length === 0;
+    };
+
+    if (selectAll) {
+        selectAll.addEventListener('change', () => {
+            checkboxes.forEach(box => {
+                box.checked = selectAll.checked;
+            });
+            updateSelectedState();
+        });
+    }
+
+    checkboxes.forEach(box => {
+        box.addEventListener('click', (event) => {
+            event.stopPropagation();
+        });
+        box.addEventListener('change', () => {
+            if (selectAll) {
+                selectAll.checked = checkboxes.every(cb => cb.checked);
+            }
+            updateSelectedState();
+        });
+    });
+
+    if (rebuildSelected) {
+        rebuildSelected.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            const selected = checkboxes.filter(box => box.checked).map(box => Number(box.dataset.chapterIndex));
+            if (!selected.length) return;
+            const originalText = rebuildSelected.textContent;
+            rebuildSelected.disabled = true;
+            rebuildSelected.textContent = 'Rebuilding...';
+            try {
+                const response = await fetch(`/api/library/${jobId}/rebuild/selected`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chapter_indices: selected })
+                });
+                const data = await response.json();
+                if (!data.success) {
+                    throw new Error(data.error || 'Failed to rebuild selected chapters');
+                }
+                alert('Selected chapters rebuilt successfully.');
+                loadLibrary();
+            } catch (error) {
+                console.error('Rebuild selected error:', error);
+                alert(error.message || 'Failed to rebuild selected chapters');
+            } finally {
+                rebuildSelected.textContent = originalText;
+                updateSelectedState();
+            }
+        });
+    }
+
+    if (rebuildAll) {
+        rebuildAll.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            const originalText = rebuildAll.textContent;
+            rebuildAll.disabled = true;
+            rebuildAll.textContent = 'Rebuilding...';
+            try {
+                const response = await fetch(`/api/library/${jobId}/rebuild/all`, { method: 'POST' });
+                const data = await response.json();
+                if (!data.success) {
+                    throw new Error(data.error || 'Failed to rebuild all outputs');
+                }
+                alert('All chapters (and full story) rebuilt successfully.');
+                loadLibrary();
+            } catch (error) {
+                console.error('Rebuild all error:', error);
+                alert(error.message || 'Failed to rebuild all outputs');
+            } finally {
+                rebuildAll.disabled = false;
+                rebuildAll.textContent = originalText;
+            }
+        });
+    }
+
+    updateSelectedState();
+}
+
+function wireChapterRebuildEvents(jobId) {
+    const buttons = document.querySelectorAll('.chapter-rebuild-btn');
+    buttons.forEach(btn => {
+        btn.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            const chapterIdx = btn.getAttribute('data-chapter-index');
+            if (chapterIdx === null) return;
+            const originalText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Rebuilding...';
+            try {
+                const response = await fetch(`/api/library/${jobId}/rebuild/chapter`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chapter_index: Number(chapterIdx) })
+                });
+                const data = await response.json();
+                if (!data.success) {
+                    throw new Error(data.error || 'Failed to rebuild chapter');
+                }
+                alert('Chapter rebuilt successfully.');
+                loadLibrary();
+            } catch (error) {
+                console.error('Rebuild chapter error:', error);
+                alert(error.message || 'Failed to rebuild chapter');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = originalText;
+            }
+        });
+    });
+}
+
+function wireFullStoryRebuildEvent(jobId, fullStoryAvailable) {
+    if (!fullStoryAvailable) return;
+    const button = document.getElementById('chunk-review-rebuild-full');
+    if (!button) return;
+    button.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Rebuilding...';
+        try {
+            const response = await fetch(`/api/library/${jobId}/rebuild/full-story`, {
+                method: 'POST'
+            });
+            const data = await response.json();
+            if (!data.success) {
+                throw new Error(data.error || 'Failed to rebuild full story');
+            }
+            alert('Full story rebuilt successfully.');
+            loadLibrary();
+        } catch (error) {
+            console.error('Rebuild full story error:', error);
+            alert(error.message || 'Failed to rebuild full story');
+        } finally {
+            button.disabled = false;
+            button.textContent = originalText;
+        }
+    });
 }
 
 function wireChapterToggleEvents() {
@@ -1452,11 +1754,68 @@ async function populateLibraryVoiceSelects(engine) {
         };
     }
 
+    let voicePromptCache = null;
+    let voicePromptRequest = null;
+    let qwenMetadataCache = null;
+    let qwenMetadataRequest = null;
+    let voicesCache = null;
+    let voicesRequest = null;
+
+    async function getVoicePromptsCached() {
+        if (voicePromptCache) return voicePromptCache;
+        if (!voicePromptRequest) {
+            voicePromptRequest = fetch('/api/voice-prompts')
+                .then(response => response.json())
+                .then(data => {
+                    voicePromptCache = data;
+                    return data;
+                })
+                .catch(err => {
+                    voicePromptRequest = null;
+                    throw err;
+                });
+        }
+        return voicePromptRequest;
+    }
+
+    async function getQwenMetadataCached() {
+        if (qwenMetadataCache) return qwenMetadataCache;
+        if (!qwenMetadataRequest) {
+            qwenMetadataRequest = fetch('/api/qwen3/metadata')
+                .then(response => response.json())
+                .then(data => {
+                    qwenMetadataCache = data;
+                    return data;
+                })
+                .catch(err => {
+                    qwenMetadataRequest = null;
+                    throw err;
+                });
+        }
+        return qwenMetadataRequest;
+    }
+
+    async function getVoicesCached() {
+        if (voicesCache) return voicesCache;
+        if (!voicesRequest) {
+            voicesRequest = fetch('/api/voices')
+                .then(response => response.json())
+                .then(data => {
+                    voicesCache = data;
+                    return data;
+                })
+                .catch(err => {
+                    voicesRequest = null;
+                    throw err;
+                });
+        }
+        return voicesRequest;
+    }
+
     async function populatePromptFilterOptions(genderSelect, languageSelect) {
         if (!genderSelect || !languageSelect) return;
         try {
-            const response = await fetch('/api/voice-prompts');
-            const data = await response.json();
+            const data = await getVoicePromptsCached();
             if (!data.success || !data.prompts) return;
             const genders = new Set();
             const languages = new Set();
@@ -1500,8 +1859,7 @@ async function populateLibraryVoiceSelects(engine) {
         
         try {
             if (usesPrompts) {
-                const response = await fetch('/api/voice-prompts');
-                const data = await response.json();
+                const data = await getVoicePromptsCached();
                 if (data.success && data.prompts) {
                     chunkVoices = data.prompts.map(p => ({
                         id: p.path || p.name,
@@ -1513,8 +1871,7 @@ async function populateLibraryVoiceSelects(engine) {
                     }));
                 }
             } else if (isQwenEngine) {
-                const response = await fetch('/api/qwen3/metadata');
-                const data = await response.json();
+                const data = await getQwenMetadataCached();
                 if (data.success && data.speakers) {
                     chunkVoices = data.speakers.map(speaker => ({
                         id: speaker,
@@ -1523,8 +1880,7 @@ async function populateLibraryVoiceSelects(engine) {
                     }));
                 }
             } else {
-                const response = await fetch('/api/voices');
-                const data = await response.json();
+                const data = await getVoicesCached();
                 if (data.success && data.voices) {
                     Object.entries(data.voices).forEach(([langKey, langConfig]) => {
                         const langLabel = langConfig.language || langKey;
@@ -1613,8 +1969,7 @@ async function populateLibraryVoiceSelects(engine) {
         
         try {
             if (usesPrompts) {
-                const response = await fetch('/api/voice-prompts');
-                const data = await response.json();
+                const data = await getVoicePromptsCached();
                 if (data.success && data.prompts) {
                     bulkVoices = data.prompts.map(p => ({
                         id: p.path || p.name,
@@ -1626,8 +1981,7 @@ async function populateLibraryVoiceSelects(engine) {
                     }));
                 }
             } else if (isQwenEngine) {
-                const response = await fetch('/api/qwen3/metadata');
-                const data = await response.json();
+                const data = await getQwenMetadataCached();
                 if (data.success && data.speakers) {
                     bulkVoices = data.speakers.map(speaker => ({
                         id: speaker,
@@ -1636,8 +1990,7 @@ async function populateLibraryVoiceSelects(engine) {
                     }));
                 }
             } else {
-                const response = await fetch('/api/voices');
-                const data = await response.json();
+                const data = await getVoicesCached();
                 if (data.success && data.voices) {
                     Object.entries(data.voices).forEach(([langKey, langConfig]) => {
                         const langLabel = langConfig.language || langKey;

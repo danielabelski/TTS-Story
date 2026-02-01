@@ -569,6 +569,14 @@ def _keyword_to_regex(keyword: str) -> str:
     return escaped.replace(r"\ ", r"\s+")
 
 
+def _clean_heading_text(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    cleaned = re.sub(r"\[[^\]]+\]", "", str(value))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 def _build_section_heading_pattern(custom_heading: Optional[Any] = None) -> re.Pattern:
     keywords = list(SECTION_HEADING_KEYWORDS)
     for custom in _normalize_custom_headings(custom_heading):
@@ -1474,17 +1482,24 @@ def _get_raw_custom_voice(identifier: str) -> Optional[dict]:
     return get_custom_voice(voice_id)
 
 
-def slugify_filename(value: str, default: str = "chapter") -> str:
+def slugify_filename(value: str, default: str = "chapter", max_length: int = 120) -> str:
     """Create a filesystem-friendly slug."""
     if not value:
         return default
     value = re.sub(r'[^A-Za-z0-9]+', '-', value)
     value = re.sub(r'-{2,}', '-', value).strip('-')
+    if max_length and len(value) > max_length:
+        value = value[:max_length].rstrip('-')
     return value or default
 
 
-def _build_sections_from_matches(text: str, matches: List[re.Match], default_label: str) -> List[Dict[str, str]]:
-    sections: List[Dict[str, str]] = []
+def _build_sections_from_matches(
+    text: str,
+    matches: List[re.Match],
+    default_label: str,
+    base_offset: int = 0
+) -> List[Dict[str, Any]]:
+    sections: List[Dict[str, Any]] = []
     if not matches:
         clean_text = text.strip()
         if clean_text:
@@ -1504,10 +1519,14 @@ def _build_sections_from_matches(text: str, matches: List[re.Match], default_lab
         content = text[start:end].strip()
         if not content:
             continue
-        title = (match.group(1) or '').strip()
+        heading_raw = (match.group(0) or "").strip()
+        title = _clean_heading_text(match.group(1) or '')
         sections.append({
             "title": title or f"{default_label} {idx + 1}",
-            "content": content
+            "content": content,
+            "heading": heading_raw,
+            "heading_start": match.start() + base_offset,
+            "heading_end": match.end() + base_offset,
         })
 
     return sections
@@ -1543,7 +1562,12 @@ def split_text_into_book_sections(text: str, custom_heading: Optional[Any] = Non
             book_content = book.get("content") or ""
             section_matches = list(section_pattern.finditer(book_content))
             if section_matches:
-                chapters = _build_sections_from_matches(book_content, section_matches, "Chapter")
+                chapters = _build_sections_from_matches(
+                    book_content,
+                    section_matches,
+                    "Chapter",
+                    base_offset=book.get("heading_start") or 0
+                )
             else:
                 clean_content = book_content.strip()
                 chapters = []
@@ -2752,6 +2776,50 @@ def _set_voice_prompt_transcript(file_path: Path, transcript: str) -> None:
     _save_voice_prompt_transcripts(transcripts)
 
 
+def _apply_voice_design_cleanup(audio_data, sample_rate: int):
+    try:
+        from src.audio_effects import AudioPostProcessor
+    except Exception:  # pragma: no cover - optional dependency
+        return audio_data
+    try:
+        sox_path = AudioPostProcessor.SOX_PATH
+    except Exception:  # pragma: no cover
+        return audio_data
+    if not sox_path.exists():
+        return audio_data
+
+    input_path = None
+    output_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_in:
+            input_path = Path(temp_in.name)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_out:
+            output_path = Path(temp_out.name)
+        sf.write(str(input_path), audio_data, int(sample_rate))
+        command = [
+            str(sox_path),
+            str(input_path),
+            str(output_path),
+            "gain",
+            "-n",
+            "fade",
+            "0.01",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "SoX cleanup failed")
+        cleaned, _ = sf.read(str(output_path), dtype='float32')
+        return cleaned
+    except Exception as exc:
+        logger.warning("SoX cleanup failed for voice design audio: %s", exc)
+        return audio_data
+    finally:
+        if input_path:
+            input_path.unlink(missing_ok=True)
+        if output_path:
+            output_path.unlink(missing_ok=True)
+
+
 def _generate_voice_design_preview(payload: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, str]:
     text = (payload.get("text") or "").strip()
     instruct = (payload.get("instruct") or "").strip()
@@ -2769,8 +2837,9 @@ def _generate_voice_design_preview(payload: Dict[str, Any], config: Dict[str, An
         )
     if not wavs:
         raise RuntimeError("No audio produced for preview.")
+    audio_data = _apply_voice_design_cleanup(wavs[0], int(sr))
     buffer = io.BytesIO()
-    sf.write(buffer, wavs[0], int(sr), format="wav")
+    sf.write(buffer, audio_data, int(sr), format="wav")
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return {
         "audio_base64": encoded,
@@ -2805,8 +2874,10 @@ def _save_voice_design_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         target_path = VOICE_PROMPT_DIR / f"{slug}_{counter}.wav"
         counter += 1
 
-    with target_path.open("wb") as handle:
-        handle.write(audio_bytes)
+    audio_stream = io.BytesIO(audio_bytes)
+    audio_data, sample_rate = sf.read(audio_stream, dtype='float32')
+    audio_data = _apply_voice_design_cleanup(audio_data, int(sample_rate))
+    sf.write(str(target_path), audio_data, int(sample_rate))
 
     duration_seconds = _measure_audio_duration(target_path)
     if not duration_seconds:
@@ -4425,8 +4496,12 @@ def preview_section_detection():
 
         hierarchy = split_text_into_book_sections(text, custom_heading)
 
-        def preview_content(content: str, limit: int = 220) -> str:
-            snippet = re.sub(r"\s+", " ", (content or "").strip())
+        def preview_content(content: str, limit: int = 220, heading: Optional[str] = None) -> str:
+            snippet = (content or "").strip()
+            if heading:
+                snippet = re.sub(rf"^\s*{re.escape(heading)}\s*", "", snippet, flags=re.IGNORECASE)
+            snippet = re.sub(r"\[/?[^\]]+\]", "", snippet)
+            snippet = re.sub(r"\s+", " ", snippet).strip()
             if len(snippet) <= limit:
                 return snippet
             return snippet[: limit - 1].rstrip() + "…"
@@ -4438,7 +4513,10 @@ def preview_section_detection():
                 for chapter in book.get("chapters") or []:
                     chapters.append({
                         "title": chapter.get("title") or "",
-                        "preview": preview_content(chapter.get("content") or ""),
+                        "preview": preview_content(chapter.get("content") or "", heading=chapter.get("heading")),
+                        "heading": chapter.get("heading"),
+                        "heading_start": chapter.get("heading_start"),
+                        "heading_end": chapter.get("heading_end"),
                     })
                 books.append({
                     "title": book.get("title") or "",
@@ -4458,7 +4536,10 @@ def preview_section_detection():
             sections = [
                 {
                     "title": section.get("title") or "",
-                    "preview": preview_content(section.get("content") or "")
+                    "preview": preview_content(section.get("content") or "", heading=section.get("heading")),
+                    "heading": section.get("heading"),
+                    "heading_start": section.get("heading_start"),
+                    "heading_end": section.get("heading_end"),
                 }
                 for section in hierarchy.get("sections") or []
             ]
@@ -5103,21 +5184,74 @@ def _build_library_listing():
                 if not rel_path:
                     continue
                 file_path = job_dir / Path(rel_path)
-                if not file_path.exists():
-                    continue
+                file_exists = file_path.exists()
 
-                stat = file_path.stat()
-                created_time = datetime.fromtimestamp(stat.st_ctime)
-                created_ts = created_ts or created_time
-                total_size += stat.st_size
+                if file_exists:
+                    stat = file_path.stat()
+                    created_time = datetime.fromtimestamp(stat.st_ctime)
+                    created_ts = created_ts or created_time
+                    total_size += stat.st_size
+                    file_size = stat.st_size
+                    file_format = file_path.suffix.lstrip('.')
+                else:
+                    file_size = None
+                    file_format = metadata.get("output_format")
+
                 chapters_data.append({
                     "index": chapter.get("index"),
                     "title": chapter.get("title"),
                     "output_file": f"/static/audio/{job_id}/{Path(rel_path).as_posix()}",
                     "relative_path": Path(rel_path).as_posix(),
-                    "file_size": stat.st_size,
-                    "format": file_path.suffix.lstrip('.')
+                    "file_size": file_size,
+                    "format": file_format,
+                    "missing_file": not file_exists,
                 })
+
+            manifest_path = job_dir / "review_manifest.json"
+            if manifest_path.exists():
+                try:
+                    with manifest_path.open("r", encoding="utf-8") as handle:
+                        manifest = json.load(handle)
+                    manifest_chapters = manifest.get("chapters") or []
+                except Exception:
+                    manifest_chapters = []
+
+                if manifest_chapters:
+                    existing_paths = {chapter.get("relative_path") for chapter in chapters_data if chapter.get("relative_path")}
+                    for chapter in manifest_chapters:
+                        output_filename = chapter.get("output_filename")
+                        if not output_filename:
+                            continue
+                        chapter_dir = chapter.get("chapter_dir") or "."
+                        rel_path = (Path(chapter_dir) / output_filename).as_posix()
+                        if rel_path.startswith("./"):
+                            rel_path = rel_path[2:]
+                        if rel_path in existing_paths:
+                            continue
+                        file_path = job_dir / Path(rel_path)
+                        file_exists = file_path.exists()
+
+                        if file_exists:
+                            stat = file_path.stat()
+                            created_time = datetime.fromtimestamp(stat.st_ctime)
+                            created_ts = created_ts or created_time
+                            total_size += stat.st_size
+                            file_size = stat.st_size
+                            file_format = file_path.suffix.lstrip(".")
+                        else:
+                            file_size = None
+                            file_format = metadata.get("output_format")
+
+                        chapters_data.append({
+                            "index": chapter.get("index"),
+                            "title": chapter.get("title"),
+                            "output_file": f"/static/audio/{job_id}/{rel_path}",
+                            "relative_path": rel_path,
+                            "file_size": file_size,
+                            "format": file_format,
+                            "missing_file": not file_exists,
+                        })
+                        existing_paths.add(rel_path)
 
             full_meta = metadata.get("full_story")
             if full_meta and full_meta.get("relative_path"):
@@ -5414,26 +5548,43 @@ def get_library_item_chunks(job_id):
         chapters = []
         books = []
         manifest_path = job_dir / "review_manifest.json"
+        full_story_available = False
         if manifest_path.exists():
             with manifest_path.open("r", encoding="utf-8") as handle:
                 manifest = json.load(handle)
                 chapter_mode = manifest.get("chapter_mode", False)
+                full_story_available = bool(manifest.get("all_full_story_chunks"))
                 if chapter_mode:
                     for ch in manifest.get("chapters", []):
+                        output_filename = ch.get("output_filename")
+                        chapter_dir = ch.get("chapter_dir") or "."
+                        rel_path = None
+                        if output_filename:
+                            rel_path = (Path(chapter_dir) / output_filename).as_posix()
+                            if rel_path.startswith("./"):
+                                rel_path = rel_path[2:]
                         chapters.append({
                             "index": ch.get("index"),
                             "title": ch.get("title"),
                             "output_filename": ch.get("output_filename"),
+                            "relative_path": rel_path,
                             "book_index": ch.get("book_index"),
                             "book_title": ch.get("book_title"),
                             "book_order": ch.get("book_order"),
                         })
                 if manifest.get("book_mode"):
                     for book in manifest.get("books", []):
+                        output_filename = book.get("output_filename")
+                        rel_path = None
+                        if output_filename:
+                            rel_path = (Path(book.get("book_dir") or ".") / output_filename).as_posix()
+                            if rel_path.startswith("./"):
+                                rel_path = rel_path[2:]
                         books.append({
                             "index": book.get("index"),
                             "title": book.get("title"),
                             "output_filename": book.get("output_filename"),
+                            "relative_path": rel_path,
                             "chapter_indices": book.get("chapter_indices") or [],
                         })
 
@@ -5448,11 +5599,347 @@ def get_library_item_chunks(job_id):
             "books": books,
             "has_chapters": len(chapters) > 1,
             "has_books": len(books) > 0,
+            "full_story_available": full_story_available,
         })
 
     except Exception as exc:
         logger.error("Failed to get chunks for library item %s: %s", job_id, exc, exc_info=True)
         return jsonify({"success": False, "error": "Failed to load chunk data"}), 500
+
+
+def _build_review_merger(config_snapshot: Optional[Dict[str, Any]] = None) -> AudioMerger:
+    config_snapshot = config_snapshot or load_config()
+    crossfade_seconds = float(config_snapshot.get("crossfade_duration") or 0)
+    return AudioMerger(
+        crossfade_ms=int(max(0.0, crossfade_seconds) * 1000),
+        intro_silence_ms=int(max(0, config_snapshot.get("intro_silence_ms") or 0)),
+        inter_chunk_silence_ms=int(max(0, config_snapshot.get("inter_chunk_silence_ms") or 0)),
+        bitrate_kbps=int(config_snapshot.get("output_bitrate_kbps") or 0),
+    )
+
+
+def _update_metadata_chapter(job_id: str, job_dir: Path, chapter_entry: Dict[str, Any]) -> None:
+    metadata = load_job_metadata(job_dir) or {}
+    chapters = metadata.get("chapters") or []
+    rel_path = chapter_entry.get("relative_path")
+    chapter_index = chapter_entry.get("index")
+    updated = False
+    for entry in chapters:
+        if rel_path and entry.get("relative_path") == rel_path:
+            entry.update(chapter_entry)
+            updated = True
+            break
+        if chapter_index is not None and entry.get("index") == chapter_index:
+            entry.update(chapter_entry)
+            updated = True
+            break
+    if not updated:
+        chapters.append(chapter_entry)
+    metadata["chapters"] = chapters
+    metadata["chapter_count"] = len(chapters)
+    if chapter_entry.get("format") and not metadata.get("output_format"):
+        metadata["output_format"] = chapter_entry.get("format")
+    save_job_metadata(job_dir, metadata)
+
+
+def _update_metadata_full_story(job_id: str, job_dir: Path, full_story_entry: Dict[str, Any]) -> None:
+    metadata = load_job_metadata(job_dir) or {}
+    metadata["full_story"] = full_story_entry
+    if full_story_entry.get("format") and not metadata.get("output_format"):
+        metadata["output_format"] = full_story_entry.get("format")
+    save_job_metadata(job_dir, metadata)
+
+
+def _remove_existing_output(file_path: Path) -> None:
+    try:
+        if file_path.exists():
+            file_path.unlink()
+    except Exception as exc:
+        logger.warning("Unable to remove existing output %s: %s", file_path, exc)
+
+
+def _resolve_chapter_output_path(job_dir: Path, target: Dict[str, Any], output_format: str, chapter_index: int) -> Path:
+    output_filename = target.get("output_filename") or f"chapter_{chapter_index + 1:02d}.{output_format}"
+    chapter_dir = job_dir / (target.get("chapter_dir") or ".")
+    chapter_dir.mkdir(parents=True, exist_ok=True)
+    return chapter_dir / output_filename
+
+
+@app.route('/api/library/<job_id>/rebuild/chapter', methods=['POST'])
+def rebuild_library_chapter(job_id):
+    """Rebuild a single chapter output from review chunks."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        if "chapter_index" not in payload:
+            return jsonify({"success": False, "error": "chapter_index is required"}), 400
+        chapter_index = int(payload.get("chapter_index"))
+
+        job_dir = OUTPUT_DIR / job_id
+        if not job_dir.exists():
+            return jsonify({"success": False, "error": "Item not found"}), 404
+
+        manifest_path = job_dir / "review_manifest.json"
+        if not manifest_path.exists():
+            return jsonify({"success": False, "error": "Review manifest not found"}), 404
+
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+
+        chapters = manifest.get("chapters") or []
+        target = next((ch for ch in chapters if ch.get("index") == chapter_index), None)
+        if not target and chapters:
+            target = chapters[min(max(chapter_index, 0), len(chapters) - 1)]
+        if not target:
+            return jsonify({"success": False, "error": "Chapter not found"}), 404
+
+        chunk_files = target.get("chunk_files") or []
+        if not chunk_files:
+            return jsonify({"success": False, "error": "No chunk files available for this chapter"}), 400
+
+        chunk_paths = [str(job_dir / rel_path) for rel_path in chunk_files]
+        missing = [p for p in chunk_paths if not Path(p).exists()]
+        if missing:
+            return jsonify({"success": False, "error": "Missing chunk files for this chapter"}), 409
+
+        config_snapshot = load_config()
+        output_format = manifest.get("output_format") or config_snapshot.get("output_format") or "mp3"
+        output_path = _resolve_chapter_output_path(job_dir, target, output_format, chapter_index)
+        _remove_existing_output(output_path)
+
+        merger = _build_review_merger(config_snapshot)
+        merger.merge_wav_files(
+            input_files=chunk_paths,
+            output_path=str(output_path),
+            format=output_format,
+            cleanup_chunks=False,
+        )
+
+        rel_path = (Path(target.get("chapter_dir") or ".") / output_path.name).as_posix()
+        if rel_path.startswith("./"):
+            rel_path = rel_path[2:]
+        chapter_entry = {
+            "index": target.get("index"),
+            "title": target.get("title"),
+            "file_url": f"/static/audio/{job_id}/{rel_path}",
+            "relative_path": rel_path,
+            "format": output_format,
+        }
+        _update_metadata_chapter(job_id, job_dir, chapter_entry)
+        invalidate_library_cache()
+
+        return jsonify({"success": True, "chapter": chapter_entry})
+    except Exception as exc:
+        logger.error("Failed to rebuild chapter for %s: %s", job_id, exc, exc_info=True)
+        return jsonify({"success": False, "error": "Failed to rebuild chapter"}), 500
+
+
+@app.route('/api/library/<job_id>/rebuild/full-story', methods=['POST'])
+def rebuild_library_full_story(job_id):
+    """Rebuild full story output from review chunks."""
+    try:
+        job_dir = OUTPUT_DIR / job_id
+        if not job_dir.exists():
+            return jsonify({"success": False, "error": "Item not found"}), 404
+
+        manifest_path = job_dir / "review_manifest.json"
+        if not manifest_path.exists():
+            return jsonify({"success": False, "error": "Review manifest not found"}), 404
+
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+
+        chunk_files = manifest.get("all_full_story_chunks") or []
+        if not chunk_files:
+            return jsonify({"success": False, "error": "No full story chunks available"}), 400
+
+        chunk_paths = [str(job_dir / rel_path) for rel_path in chunk_files]
+        missing = [p for p in chunk_paths if not Path(p).exists()]
+        if missing:
+            return jsonify({"success": False, "error": "Missing chunk files for full story"}), 409
+
+        config_snapshot = load_config()
+        output_format = manifest.get("output_format") or config_snapshot.get("output_format") or "mp3"
+        full_story_name = f"full_story.{output_format}"
+        full_story_path = job_dir / full_story_name
+        _remove_existing_output(full_story_path)
+
+        merger = _build_review_merger(config_snapshot)
+        merger.merge_wav_files(
+            input_files=chunk_paths,
+            output_path=str(full_story_path),
+            format=output_format,
+            cleanup_chunks=False,
+        )
+
+        full_story_entry = {
+            "title": "Full Story",
+            "file_url": f"/static/audio/{job_id}/{full_story_name}",
+            "relative_path": full_story_name,
+            "format": output_format,
+        }
+        _update_metadata_full_story(job_id, job_dir, full_story_entry)
+        invalidate_library_cache()
+
+        return jsonify({"success": True, "full_story": full_story_entry})
+    except Exception as exc:
+        logger.error("Failed to rebuild full story for %s: %s", job_id, exc, exc_info=True)
+        return jsonify({"success": False, "error": "Failed to rebuild full story"}), 500
+
+
+@app.route('/api/library/<job_id>/rebuild/selected', methods=['POST'])
+def rebuild_library_selected_chapters(job_id):
+    """Rebuild selected chapter outputs from review chunks."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        indices = payload.get("chapter_indices") or []
+        if not isinstance(indices, list) or not indices:
+            return jsonify({"success": False, "error": "chapter_indices is required"}), 400
+
+        job_dir = OUTPUT_DIR / job_id
+        if not job_dir.exists():
+            return jsonify({"success": False, "error": "Item not found"}), 404
+
+        manifest_path = job_dir / "review_manifest.json"
+        if not manifest_path.exists():
+            return jsonify({"success": False, "error": "Review manifest not found"}), 404
+
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+
+        chapters = manifest.get("chapters") or []
+        index_set = {int(idx) for idx in indices}
+        targets = [ch for ch in chapters if ch.get("index") in index_set]
+        if not targets:
+            return jsonify({"success": False, "error": "No matching chapters found"}), 404
+
+        config_snapshot = load_config()
+        output_format = manifest.get("output_format") or config_snapshot.get("output_format") or "mp3"
+        merger = _build_review_merger(config_snapshot)
+        rebuilt = []
+
+        for target in targets:
+            chunk_files = target.get("chunk_files") or []
+            if not chunk_files:
+                continue
+            chunk_paths = [str(job_dir / rel_path) for rel_path in chunk_files]
+            missing = [p for p in chunk_paths if not Path(p).exists()]
+            if missing:
+                continue
+
+            chapter_index = int(target.get("index") or 0)
+            output_path = _resolve_chapter_output_path(job_dir, target, output_format, chapter_index)
+            _remove_existing_output(output_path)
+            merger.merge_wav_files(
+                input_files=chunk_paths,
+                output_path=str(output_path),
+                format=output_format,
+                cleanup_chunks=False,
+            )
+            rel_path = (Path(target.get("chapter_dir") or ".") / output_path.name).as_posix()
+            if rel_path.startswith("./"):
+                rel_path = rel_path[2:]
+            chapter_entry = {
+                "index": target.get("index"),
+                "title": target.get("title"),
+                "file_url": f"/static/audio/{job_id}/{rel_path}",
+                "relative_path": rel_path,
+                "format": output_format,
+            }
+            _update_metadata_chapter(job_id, job_dir, chapter_entry)
+            rebuilt.append(chapter_entry)
+
+        invalidate_library_cache()
+        return jsonify({"success": True, "chapters": rebuilt})
+    except Exception as exc:
+        logger.error("Failed to rebuild selected chapters for %s: %s", job_id, exc, exc_info=True)
+        return jsonify({"success": False, "error": "Failed to rebuild selected chapters"}), 500
+
+
+@app.route('/api/library/<job_id>/rebuild/all', methods=['POST'])
+def rebuild_library_all(job_id):
+    """Rebuild all chapter outputs and full story from review chunks."""
+    try:
+        job_dir = OUTPUT_DIR / job_id
+        if not job_dir.exists():
+            return jsonify({"success": False, "error": "Item not found"}), 404
+
+        manifest_path = job_dir / "review_manifest.json"
+        if not manifest_path.exists():
+            return jsonify({"success": False, "error": "Review manifest not found"}), 404
+
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+
+        chapters = manifest.get("chapters") or []
+        all_full_story_chunks = manifest.get("all_full_story_chunks") or []
+
+        config_snapshot = load_config()
+        output_format = config_snapshot.get("output_format") or manifest.get("output_format") or "mp3"
+        merger = _build_review_merger(config_snapshot)
+        rebuilt_chapters = []
+
+        for target in chapters:
+            chunk_files = target.get("chunk_files") or []
+            if not chunk_files:
+                continue
+            chunk_paths = [str(job_dir / rel_path) for rel_path in chunk_files]
+            missing = [p for p in chunk_paths if not Path(p).exists()]
+            if missing:
+                continue
+
+            chapter_index = int(target.get("index") or 0)
+            output_path = _resolve_chapter_output_path(job_dir, target, output_format, chapter_index)
+            _remove_existing_output(output_path)
+            merger.merge_wav_files(
+                input_files=chunk_paths,
+                output_path=str(output_path),
+                format=output_format,
+                cleanup_chunks=False,
+            )
+            rel_path = (Path(target.get("chapter_dir") or ".") / output_path.name).as_posix()
+            if rel_path.startswith("./"):
+                rel_path = rel_path[2:]
+            chapter_entry = {
+                "index": target.get("index"),
+                "title": target.get("title"),
+                "file_url": f"/static/audio/{job_id}/{rel_path}",
+                "relative_path": rel_path,
+                "format": output_format,
+            }
+            _update_metadata_chapter(job_id, job_dir, chapter_entry)
+            rebuilt_chapters.append(chapter_entry)
+
+        full_story_entry = None
+        if all_full_story_chunks:
+            chunk_paths = [str(job_dir / rel_path) for rel_path in all_full_story_chunks]
+            missing = [p for p in chunk_paths if not Path(p).exists()]
+            if not missing:
+                full_story_name = f"full_story.{output_format}"
+                full_story_path = job_dir / full_story_name
+                _remove_existing_output(full_story_path)
+                merger.merge_wav_files(
+                    input_files=chunk_paths,
+                    output_path=str(full_story_path),
+                    format=output_format,
+                    cleanup_chunks=False,
+                )
+                full_story_entry = {
+                    "title": "Full Story",
+                    "file_url": f"/static/audio/{job_id}/{full_story_name}",
+                    "relative_path": full_story_name,
+                    "format": output_format,
+                }
+                _update_metadata_full_story(job_id, job_dir, full_story_entry)
+
+        invalidate_library_cache()
+        return jsonify({
+            "success": True,
+            "chapters": rebuilt_chapters,
+            "full_story": full_story_entry,
+        })
+    except Exception as exc:
+        logger.error("Failed to rebuild all outputs for %s: %s", job_id, exc, exc_info=True)
+        return jsonify({"success": False, "error": "Failed to rebuild all outputs"}), 500
 
 
 @app.route('/api/library/<job_id>', methods=['DELETE'])
