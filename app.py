@@ -1160,6 +1160,19 @@ def _ensure_qwen3_model(model_id: str) -> Path:
                 return True
         return False
 
+    def _resolve_model_root(path: Path) -> Path:
+        if (path / "config.json").exists() and _has_weights(path):
+            return path
+        candidates = []
+        for config_file in path.rglob("config.json"):
+            candidate_dir = config_file.parent
+            if _has_weights(candidate_dir):
+                candidates.append(candidate_dir)
+        if candidates:
+            candidates.sort(key=lambda p: len(p.parts))
+            return candidates[0]
+        return path
+
     local_model_dir = Path(__file__).parent / "models" / "qwen3"
     local_model_dir.mkdir(parents=True, exist_ok=True)
     model_path = local_model_dir / model_id.replace("/", "_")
@@ -1222,7 +1235,10 @@ def _ensure_qwen3_model(model_id: str) -> Path:
                     "Qwen3 VoiceDesign model download completed but no weights were found in %s. "
                     "Ensure the repo access is valid (HF_TOKEN if required), then retry." % model_path
                 )
-    return model_path
+    resolved_path = _resolve_model_root(model_path)
+    if resolved_path != model_path:
+        logger.info("Resolved Qwen3 model root to %s", resolved_path)
+    return resolved_path
 
 
 def _qwen3_voice_design_signature(config: Dict[str, Any]) -> str:
