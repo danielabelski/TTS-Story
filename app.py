@@ -1146,16 +1146,19 @@ def _ensure_qwen3_model(model_id: str) -> Path:
 
     def _has_weights(path: Path) -> bool:
         patterns = (
-            "**/*.safetensors",
-            "**/pytorch_model*.bin",
-            "**/model.safetensors",
-            "**/model.bin",
-            "**/model.ckpt.index",
-            "**/*.msgpack",
-            "**/*.pt",
-            "**/*.pth",
+            "*.safetensors",
+            "pytorch_model*.bin",
+            "model.safetensors",
+            "model.bin",
+            "model.ckpt.index",
+            "*.msgpack",
+            "*.pt",
+            "*.pth",
         )
-        return any(path.rglob(pattern.lstrip("**/")) if pattern.startswith("**/") else path.rglob(pattern) for pattern in patterns)
+        for pattern in patterns:
+            if any(path.rglob(pattern)):
+                return True
+        return False
 
     local_model_dir = Path(__file__).parent / "models" / "qwen3"
     local_model_dir.mkdir(parents=True, exist_ok=True)
