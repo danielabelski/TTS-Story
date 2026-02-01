@@ -1275,6 +1275,7 @@ def _get_qwen3_voice_design_model(config: Dict[str, Any]):
             str(model_path),
             device_map=device,
             dtype=dtype,
+            trust_remote_code=True,
             attn_implementation=attn or None,
         )
         qwen3_voice_design_signature = signature
