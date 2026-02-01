@@ -15,7 +15,7 @@ echo Checking Git installation...
 where git >nul 2>&1
 if errorlevel 1 (
     echo Git not found. Downloading and installing Git for Windows...
-    powershell -NoLogo -NoProfile -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13; Invoke-WebRequest -Uri '%GIT_INSTALLER_URL%' -OutFile '%GIT_INSTALLER%' -UseBasicParsing -ErrorAction Stop; } catch { Write-Error $_.Exception.Message; exit 1 }"
+    powershell -NoLogo -NoProfile -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -Uri '%GIT_INSTALLER_URL%' -OutFile '%GIT_INSTALLER%' -UseBasicParsing -ErrorAction Stop } catch { try { Start-BitsTransfer -Source '%GIT_INSTALLER_URL%' -Destination '%GIT_INSTALLER%' -ErrorAction Stop } catch { Write-Error $_.Exception.Message; exit 1 } }"
     if errorlevel 1 (
         echo ERROR: Failed to download Git installer.
         pause
