@@ -4040,11 +4040,6 @@ def _merge_review_job(job_id: str, job_entry: Dict[str, Any], manifest: Dict[str
             output_path=str(output_path),
             format=output_format,
             cleanup_chunks=False,
-            progress_callback=lambda ratio, idx=len(chapter_outputs) + 1: _update_review_post_progress(
-                job_id,
-                idx,
-                ratio,
-            ),
         )
         with queue_lock:
             entry = jobs.get(job_id)
