@@ -56,6 +56,16 @@ if errorlevel 1 (
 for /f "tokens=2" %%i in ('python --version 2^>^&1') do set PYTHON_VERSION=%%i
 echo Found Python %PYTHON_VERSION%
 
+set "HAS_NVIDIA=0"
+set "GPU_NAME="
+for /f "delims=" %%G in ('powershell -NoLogo -NoProfile -Command "$g=(Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA' } | Select-Object -First 1).Name; if ($g) { $g }"') do set "GPU_NAME=%%G"
+if defined GPU_NAME (
+    set "HAS_NVIDIA=1"
+    echo NVIDIA GPU detected: !GPU_NAME!
+) else (
+    echo No NVIDIA GPU detected. Using CPU-only installs.
+)
+
 REM Create virtual environment
 echo.
 echo [2/10] Creating virtual environment...
@@ -94,14 +104,24 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Install PyTorch with CUDA 12.1 (most compatible)
-echo Installing PyTorch with CUDA 12.1 support...
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+if "%HAS_NVIDIA%"=="1" (
+    REM Install PyTorch with CUDA 12.1 (most compatible)
+    echo Installing PyTorch with CUDA 12.1 support...
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
-if errorlevel 1 (
-    echo.
-    echo PyTorch installation failed, trying CPU version...
-    pip install torch torchvision torchaudio
+    if errorlevel 1 (
+        echo.
+        echo PyTorch installation failed, trying CPU version...
+        pip install torch torchvision torchaudio
+    )
+) else (
+    echo Installing CPU-only PyTorch...
+    pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+    if errorlevel 1 (
+        echo.
+        echo CPU-only PyTorch install failed, trying default index...
+        pip install --upgrade --force-reinstall torch torchvision torchaudio
+    )
 )
 
 REM Install other dependencies (excluding torch + chatterbox runtime handled separately)
@@ -148,72 +168,76 @@ echo.
 echo [9/10] Installing optional performance extras...
 echo - flash-attn (Qwen3 speedup)
 echo - hf_xet (faster Hugging Face downloads)
-python -c "import torch" >nul 2>&1
-if errorlevel 1 (
-    echo WARNING: torch not available in this environment. Skipping flash-attn install.
+if "%HAS_NVIDIA%"=="0" (
+    echo CPU-only system detected. Skipping flash-attn install.
 ) else (
-    if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat" (
-        echo Using MSVC 2019 toolchain for CUDA compatibility...
-        call "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
-    )
-    where cl >nul 2>&1
+    python -c "import torch" >nul 2>&1
     if errorlevel 1 (
-        set "VS_INSTALL_DIR="
-        set "VSWHERE_EXE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-        if exist "%VSWHERE_EXE%" (
-            for /f "usebackq delims=" %%I in (`"%VSWHERE_EXE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -version "[16.0,17.0)" -property installationPath`) do (
-                set "VS_INSTALL_DIR=%%I"
-            )
-            if "!VS_INSTALL_DIR!"=="" (
-                for /f "usebackq delims=" %%I in (`"%VSWHERE_EXE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+        echo WARNING: torch not available in this environment. Skipping flash-attn install.
+    ) else (
+        if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat" (
+            echo Using MSVC 2019 toolchain for CUDA compatibility...
+            call "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+        )
+        where cl >nul 2>&1
+        if errorlevel 1 (
+            set "VS_INSTALL_DIR="
+            set "VSWHERE_EXE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+            if exist "%VSWHERE_EXE%" (
+                for /f "usebackq delims=" %%I in (`"%VSWHERE_EXE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -version "[16.0,17.0)" -property installationPath`) do (
                     set "VS_INSTALL_DIR=%%I"
                 )
+                if "!VS_INSTALL_DIR!"=="" (
+                    for /f "usebackq delims=" %%I in (`"%VSWHERE_EXE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+                        set "VS_INSTALL_DIR=%%I"
+                    )
+                )
             )
-        )
-        if "!VS_INSTALL_DIR!"=="" (
-            for %%D in (
-                "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\BuildTools"
-                "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools"
-                "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Community"
-                "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Professional"
-                "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Enterprise"
-                "%ProgramFiles(x86)%\Microsoft Visual Studio\2026\BuildTools"
-                "%ProgramFiles(x86)%\Microsoft Visual Studio\2026\Community"
-                "%ProgramFiles(x86)%\Microsoft Visual Studio\2026\Professional"
-                "%ProgramFiles(x86)%\Microsoft Visual Studio\2026\Enterprise"
-                "%ProgramFiles%\Microsoft Visual Studio\18\Community"
-                "%ProgramFiles%\Microsoft Visual Studio\18\BuildTools"
-            ) do (
-                if exist "%%~D\VC\Auxiliary\Build\vcvars64.bat" (
-                    set "VS_INSTALL_DIR=%%~D"
+            if "!VS_INSTALL_DIR!"=="" (
+                for %%D in (
+                    "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\BuildTools"
+                    "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools"
+                    "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Community"
+                    "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Professional"
+                    "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Enterprise"
+                    "%ProgramFiles(x86)%\Microsoft Visual Studio\2026\BuildTools"
+                    "%ProgramFiles(x86)%\Microsoft Visual Studio\2026\Community"
+                    "%ProgramFiles(x86)%\Microsoft Visual Studio\2026\Professional"
+                    "%ProgramFiles(x86)%\Microsoft Visual Studio\2026\Enterprise"
+                    "%ProgramFiles%\Microsoft Visual Studio\18\Community"
+                    "%ProgramFiles%\Microsoft Visual Studio\18\BuildTools"
+                ) do (
+                    if exist "%%~D\VC\Auxiliary\Build\vcvars64.bat" (
+                        set "VS_INSTALL_DIR=%%~D"
+                    )
+                )
+            )
+            if not "!VS_INSTALL_DIR!"=="" (
+                if exist "!VS_INSTALL_DIR!\VC\Auxiliary\Build\vcvars64.bat" (
+                    echo Found MSVC Build Tools. Initializing build environment...
+                    call "!VS_INSTALL_DIR!\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
                 )
             )
         )
-        if not "!VS_INSTALL_DIR!"=="" (
-            if exist "!VS_INSTALL_DIR!\VC\Auxiliary\Build\vcvars64.bat" (
-                echo Found MSVC Build Tools. Initializing build environment...
-                call "!VS_INSTALL_DIR!\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
-            )
-        )
-    )
-    where cl >nul 2>&1
-    if errorlevel 1 (
-        echo WARNING: MSVC build tools not found. Skipping flash-attn install.
-        echo To install MSVC Build Tools manually, download:
-        echo https://aka.ms/vs/17/release/vs_buildtools.exe
-        echo Then select "Desktop development with C++" and install.
-    ) else (
-        pip install wheel
+        where cl >nul 2>&1
         if errorlevel 1 (
-            echo WARNING: Failed to install wheel. Skipping flash-attn install.
+            echo WARNING: MSVC build tools not found. Skipping flash-attn install.
+            echo To install MSVC Build Tools manually, download:
+            echo https://aka.ms/vs/17/release/vs_buildtools.exe
+            echo Then select "Desktop development with C++" and install.
         ) else (
-        set "DISTUTILS_USE_SDK=1"
-        set "MSSdk=1"
-        REM flash-attn needs torch available; disable build isolation to avoid missing torch in build env
-        pip install flash-attn --no-build-isolation
-        if errorlevel 1 (
-            echo WARNING: flash-attn install failed. Qwen3 will use eager attention ^(slower^).
-        )
+            pip install wheel
+            if errorlevel 1 (
+                echo WARNING: Failed to install wheel. Skipping flash-attn install.
+            ) else (
+            set "DISTUTILS_USE_SDK=1"
+            set "MSSdk=1"
+            REM flash-attn needs torch available; disable build isolation to avoid missing torch in build env
+            pip install flash-attn --no-build-isolation
+            if errorlevel 1 (
+                echo WARNING: flash-attn install failed. Qwen3 will use eager attention ^(slower^).
+            )
+            )
         )
     )
 )
