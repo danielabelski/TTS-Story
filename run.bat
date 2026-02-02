@@ -4,6 +4,14 @@ echo ========================================
 echo Starting TTS-Story
 echo ========================================
 echo.
+echo NOTE: First startup can pause while models initialize and caches build.
+echo Subsequent runs should be faster.
+echo.
+echo Quick Troubleshooting:
+echo  - If startup fails, delete the "venv" folder and re-run install-update.bat
+echo  - GPU users: update to the latest NVIDIA drivers
+echo  - Run install-update.bat to pull the latest updates
+echo.
 
 REM Check if venv exists
 if not exist "venv\Scripts\activate.bat" (

@@ -6,6 +6,13 @@ echo ========================================
 echo TTS-Story Setup
 echo ========================================
 echo.
+echo IMPORTANT: Initial setup can take several minutes (large downloads + builds).
+echo Please be patient and report any errors you encounter.
+echo.
+echo Quick Troubleshooting:
+echo  - If setup fails, delete the "venv" folder and re-run install-update.bat
+echo  - GPU users: update to the latest NVIDIA drivers
+echo.
 
 set "PYTHON_INSTALLER_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
 set "PYTHON_INSTALLER=%TEMP%\python-installer.exe"
