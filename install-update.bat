@@ -70,6 +70,13 @@ if exist "%REPO_DIR%" (
 )
 
 echo.
+choice /C YN /M "Run setup.bat to update dependencies/components?"
+if errorlevel 2 (
+    echo Skipping setup. Git update complete.
+    goto :Done
+)
+
+echo.
 echo Running setup.bat...
 if exist "%REPO_DIR%\setup.bat" (
     pushd "%REPO_DIR%"
@@ -83,4 +90,5 @@ if exist "%REPO_DIR%\setup.bat" (
 
 echo.
 echo ✅ Install/update complete.
+:Done
 pause
