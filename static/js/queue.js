@@ -19,6 +19,7 @@ let queueTabButton = null;
 const openReviewPanels = new Set();
 const reviewPanelContentCache = new Map();
 const chunkPanelLoadingJobs = new Set();
+const completedJobIds = new Set();
 const reviewPanelScrollPositions = new Map();
 let activeVoiceSelects = 0;
 const reviewPanelEditorState = new Map();
@@ -779,6 +780,17 @@ function displayQueue(data) {
         return;
     }
 
+    let hasNewCompletion = false;
+    data.jobs.forEach(job => {
+        if (job.status === 'completed' && !completedJobIds.has(job.job_id)) {
+            completedJobIds.add(job.job_id);
+            hasNewCompletion = true;
+        }
+    });
+    if (hasNewCompletion) {
+        document.dispatchEvent(new CustomEvent('library:refresh'));
+    }
+
     let html = `
         <div style="margin-bottom: 15px;">
             <strong>Queue Size:</strong> ${data.queue_size} pending |
@@ -877,6 +889,20 @@ function renderJobProgress(job) {
     const chapterLabel = job.chapter_mode
         ? `${job.chapter_count || '?'} chapter${(job.chapter_count || 0) === 1 ? '' : 's'} (per chapter merge)`
         : 'Single output file';
+    const postTotal = Number(job.post_process_total || 0);
+    const postDone = Math.min(Number(job.post_process_done || 0), postTotal || Infinity);
+    const postPercent = Number.isFinite(Number(job.post_process_percent))
+        ? Math.max(0, Math.min(Math.round(Number(job.post_process_percent)), 100))
+        : (postTotal > 0 ? Math.round((postDone / postTotal) * 100) : 0);
+    const isFinishing = job.status === 'processing'
+        && total > 0
+        && processed >= total
+        && (job.eta_seconds === 0 || job.eta_seconds === null || typeof job.eta_seconds !== 'number');
+    const showPost = (postTotal > 0 && (job.post_process_active || postDone > 0)) || isFinishing;
+    const postLabel = postTotal > 0
+        ? `Post-processing ${postDone} / ${postTotal}`
+        : 'Post-processing…';
+    const postFillClass = postTotal > 0 ? 'progress-bar-fill' : 'progress-bar-fill indeterminate';
 
     return `
         <div class="queue-progress">
@@ -891,6 +917,17 @@ function renderJobProgress(job) {
                 <span>${chapterLabel}</span>
                 <span>${job.status === 'completed' ? 'Done' : job.status}</span>
             </div>
+            ${showPost ? `
+                <div class="queue-post-progress">
+                    <div class="queue-progress-header">
+                        <span>${postLabel}</span>
+                        <span>${postPercent}%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="${postFillClass}" style="width: ${Math.min(Math.max(postPercent, 0), 100)}%;"></div>
+                    </div>
+                </div>
+            ` : ''}
         </div>
     `;
 }

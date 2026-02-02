@@ -285,6 +285,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
+document.addEventListener('library:refresh', () => {
+    loadLibrary();
+});
+
 // Load library items
 async function loadLibrary() {
     try {
