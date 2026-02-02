@@ -116,6 +116,7 @@ if "%HAS_NVIDIA%"=="1" (
     )
 ) else (
     echo Installing CPU-only PyTorch...
+    pip uninstall -y torch torchvision torchaudio >nul 2>&1
     pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
     if errorlevel 1 (
         echo.
@@ -279,7 +280,14 @@ echo ========================================
 echo Verifying Installation
 echo ========================================
 echo.
-python -c "import torch; print('PyTorch Version:', torch.__version__); print('CUDA Available:', torch.cuda.is_available()); print('CUDA Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU-only')"
+python -c "import torch; print('PyTorch Version:', torch.__version__); print('CUDA Available:', torch.cuda.is_available()); print('CUDA Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU-only')" >nul 2>&1
+if errorlevel 1 (
+    echo WARNING: PyTorch verification failed.
+    echo If this is a CPU-only system, rerun setup.bat to reinstall the CPU-only torch build.
+    echo If you have an NVIDIA GPU, ensure the NVIDIA driver is installed and rerun setup.bat.
+) else (
+    python -c "import torch; print('PyTorch Version:', torch.__version__); print('CUDA Available:', torch.cuda.is_available()); print('CUDA Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU-only')"
+)
 
 echo.
 echo ========================================
@@ -317,8 +325,9 @@ echo.
 echo Installing espeak-ng...
 set "ESPEAK_URL="
 set "ESPEAK_FALLBACK_URL=https://github.com/espeak-ng/espeak-ng/releases/latest/download/espeak-ng-X64.msi"
+set "ESPEAK_FALLBACK_URL_2=https://github.com/espeak-ng/espeak-ng/releases/download/1.51/espeak-ng-1.51-X64.msi"
 set "ESPEAK_MSI=%TEMP%\espeak-ng-X64.msi"
-powershell -NoLogo -NoProfile -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $api='https://api.github.com/repos/espeak-ng/espeak-ng/releases/latest'; $headers=@{ 'User-Agent'='TTS-Story-Installer' }; try { $release=Invoke-RestMethod -Uri $api -Headers $headers -ErrorAction Stop; $asset=$release.assets | Where-Object { $_.name -match 'x64\.msi$' -or $_.name -match 'X64\.msi$' } | Select-Object -First 1; if ($asset) { $url=$asset.browser_download_url } else { $url='%ESPEAK_FALLBACK_URL%' } } catch { $url='%ESPEAK_FALLBACK_URL%' } try { Invoke-WebRequest -Uri $url -OutFile '%ESPEAK_MSI%' -UseBasicParsing -ErrorAction Stop } catch { try { Start-BitsTransfer -Source $url -Destination '%ESPEAK_MSI%' -ErrorAction Stop } catch { Write-Error $_.Exception.Message; exit 1 } }" >nul 2>&1
+powershell -NoLogo -NoProfile -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $api='https://api.github.com/repos/espeak-ng/espeak-ng/releases/latest'; $headers=@{ 'User-Agent'='TTS-Story-Installer' }; $urls=@(); try { $release=Invoke-RestMethod -Uri $api -Headers $headers -ErrorAction Stop; $asset=$release.assets | Where-Object { $_.name -match 'x64\.msi$' -or $_.name -match 'X64\.msi$' } | Select-Object -First 1; if ($asset) { $urls += $asset.browser_download_url } } catch { } $urls += '%ESPEAK_FALLBACK_URL%'; $urls += '%ESPEAK_FALLBACK_URL_2%'; $ok=$false; foreach ($u in $urls) { try { Invoke-WebRequest -Uri $u -OutFile '%ESPEAK_MSI%' -UseBasicParsing -ErrorAction Stop; $ok=$true; break } catch { try { Start-BitsTransfer -Source $u -Destination '%ESPEAK_MSI%' -ErrorAction Stop; $ok=$true; break } catch { } } } if (-not $ok) { Write-Error 'Failed to download espeak-ng.'; exit 1 }" >nul 2>&1
 if errorlevel 1 (
     echo WARNING: Failed to download espeak-ng.
     echo Please install manually from: https://github.com/espeak-ng/espeak-ng/releases
