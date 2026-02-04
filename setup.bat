@@ -187,15 +187,17 @@ echo [6/12] Installing other Python dependencies...
 findstr /v /i "torch" requirements.txt > temp_requirements.txt
 findstr /v /i "pyopenjtalk" temp_requirements.txt > temp_requirements_filtered.txt
 findstr /v /i "spacy-pkuseg" temp_requirements_filtered.txt > temp_requirements_filtered2.txt
+findstr /v /i "s3tokenizer" temp_requirements_filtered2.txt > temp_requirements_filtered3.txt
 del temp_requirements.txt
 del temp_requirements_filtered.txt
-pip install -r temp_requirements_filtered2.txt
+del temp_requirements_filtered2.txt
+pip install -r temp_requirements_filtered3.txt
 if errorlevel 1 (
     echo ERROR: Failed to install dependencies
     pause
     exit /b 1
 )
-del temp_requirements_filtered2.txt
+del temp_requirements_filtered3.txt
 
 echo.
 echo Installing optional spacy-pkuseg (Chinese segmentation)...
