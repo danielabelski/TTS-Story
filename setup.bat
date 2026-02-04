@@ -103,7 +103,7 @@ python -m pip install --upgrade pip --quiet
 REM Preinstall numpy + wheel to avoid build isolation issues (spacy-pkuseg)
 echo.
 echo Preinstalling numpy and wheel...
-pip install --upgrade "numpy<1.26.0" wheel
+pip install --upgrade "numpy>=2.0.0" wheel
 
 REM Preinstall pandas from wheels to avoid source builds on Windows
 echo.
@@ -159,6 +159,14 @@ if "%SKIP_TORCH_INSTALL%"=="1" (
     )
 )
 
+echo.
+echo Installing Pocket TTS (requires numpy>=2)...
+pip install "numpy>=2" "pocket-tts==1.0.3"
+if errorlevel 1 (
+    echo WARNING: pocket-tts failed to install. Pocket TTS engine will be unavailable.
+    echo You can retry later with: pip install "numpy>=2" "pocket-tts==1.0.3"
+)
+
 if "%NEED_TORCH_INSTALL%"=="0" (
     echo Skipping torch install - compatible build already present.
 ) else (
@@ -182,7 +190,7 @@ if "%NEED_TORCH_INSTALL%"=="0" (
             echo CPU-only PyTorch install failed, trying default index...
             pip install --upgrade --force-reinstall torch torchvision torchaudio
         )
-        pip install --upgrade "numpy<1.26.0" "pillow<12.0" "fsspec<=2025.3.0" "filelock>=3.20.1,<4"
+        pip install --upgrade "pillow<12.0" "fsspec<=2025.3.0" "filelock>=3.20.1,<4"
     )
 )
 
