@@ -100,6 +100,11 @@ echo.
 echo [4/12] Upgrading pip...
 python -m pip install --upgrade pip --quiet
 
+REM Preinstall numpy + wheel to avoid build isolation issues (spacy-pkuseg)
+echo.
+echo Preinstalling numpy and wheel...
+pip install --upgrade "numpy<1.26.0" wheel
+
 REM Install PyTorch (let pip/PyTorch auto-detect CUDA)
 echo.
 echo [5/12] Installing PyTorch...
@@ -181,14 +186,28 @@ echo.
 echo [6/12] Installing other Python dependencies...
 findstr /v /i "torch" requirements.txt > temp_requirements.txt
 findstr /v /i "pyopenjtalk" temp_requirements.txt > temp_requirements_filtered.txt
+findstr /v /i "spacy-pkuseg" temp_requirements_filtered.txt > temp_requirements_filtered2.txt
 del temp_requirements.txt
-pip install -r temp_requirements_filtered.txt
+del temp_requirements_filtered.txt
+pip install -r temp_requirements_filtered2.txt
 if errorlevel 1 (
     echo ERROR: Failed to install dependencies
     pause
     exit /b 1
 )
-del temp_requirements_filtered.txt
+del temp_requirements_filtered2.txt
+
+echo.
+echo Installing optional spacy-pkuseg (Chinese segmentation)...
+if "%SKIP_PKUSEG%"=="1" (
+    echo SKIP_PKUSEG=1 set. Skipping spacy-pkuseg.
+) else (
+    pip install --no-build-isolation spacy-pkuseg
+    if errorlevel 1 (
+        echo WARNING: spacy-pkuseg failed to install. Chinese segmentation will be unavailable.
+        echo You can retry later with: pip install --no-build-isolation spacy-pkuseg
+    )
+)
 
 echo.
 echo Installing optional pyopenjtalk (Japanese text support)...
