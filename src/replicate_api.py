@@ -75,8 +75,7 @@ class ReplicateAPI:
             # Download if output path specified
             if output_path:
                 self._download_audio(audio_url, output_path)
-                if fx_settings:
-                    self._apply_fx_to_file(output_path, fx_settings)
+                self._apply_fx_to_file(output_path, fx_settings)
                 return output_path
             else:
                 return audio_url
@@ -104,9 +103,9 @@ class ReplicateAPI:
                 
         logging.debug(f"Audio downloaded to {output_path}")
 
-    def _apply_fx_to_file(self, file_path: str, fx_settings: VoiceFXSettings):
+    def _apply_fx_to_file(self, file_path: str, fx_settings: Optional[VoiceFXSettings]):
         audio, sample_rate = sf.read(file_path, dtype='float32')
-        processed = self.post_processor.apply(audio, sample_rate, fx_settings)
+        processed = self.post_processor.apply_post_pipeline(audio, sample_rate, fx_settings)
         sf.write(file_path, processed, sample_rate)
         
     def generate_batch(
@@ -261,8 +260,7 @@ class ReplicateAPI:
                     self._download_audio(audio_url, str(output_path))
                     
                     # Apply FX if needed
-                    if chunk_info["fx_settings"]:
-                        self._apply_fx_to_file(str(output_path), chunk_info["fx_settings"])
+                    self._apply_fx_to_file(str(output_path), chunk_info["fx_settings"])
                     
                     results[global_idx] = str(output_path)
                     del active_predictions[global_idx]

@@ -29,6 +29,85 @@ function updateLLMSettingsUI(provider = 'gemini') {
     if (localSettings) localSettings.style.display = isLocal ? '' : 'none';
 }
 
+async function fetchLocalLlmModels(buttonEl) {
+    const providerSelect = document.getElementById('llm-local-provider');
+    const baseUrlInput = document.getElementById('llm-local-base-url');
+    const apiKeyInput = document.getElementById('llm-local-api-key');
+    const timeoutInput = document.getElementById('llm-local-timeout');
+    const modelSelect = document.getElementById('llm-local-model');
+    const statusEl = document.getElementById('local-llm-models-status');
+
+    if (!providerSelect || !baseUrlInput || !modelSelect) return;
+
+    const provider = providerSelect.value || 'lmstudio';
+    const baseUrl = baseUrlInput.value.trim();
+    const apiKey = apiKeyInput?.value?.trim() || '';
+    const timeout = parseInt(timeoutInput?.value, 10) || 30;
+
+    const originalLabel = buttonEl ? buttonEl.textContent : '';
+    if (buttonEl) {
+        buttonEl.disabled = true;
+        buttonEl.textContent = 'Fetching local models...';
+    }
+    if (statusEl) {
+        statusEl.textContent = 'Contacting local LLM server...';
+    }
+
+    try {
+        const response = await fetch('/api/local-llm/models', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                provider,
+                base_url: baseUrl,
+                api_key: apiKey,
+                timeout
+            })
+        });
+
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Unable to fetch local models');
+        }
+
+        const models = data.models || [];
+        if (!models.length) {
+            throw new Error('No local models were returned. Verify the server is running.');
+        }
+
+        const previousValue = (modelSelect.value || '').trim();
+        modelSelect.innerHTML = '';
+        models.forEach(modelName => {
+            const option = document.createElement('option');
+            option.value = modelName;
+            option.textContent = modelName;
+            modelSelect.appendChild(option);
+        });
+
+        if (previousValue && models.includes(previousValue)) {
+            modelSelect.value = previousValue;
+        } else {
+            modelSelect.value = models[0];
+        }
+
+        if (statusEl) {
+            statusEl.textContent = `Loaded ${models.length} local models.`;
+        }
+    } catch (error) {
+        console.error('Failed to fetch local LLM models:', error);
+        if (statusEl) {
+            statusEl.textContent = error.message || 'Unable to fetch local models.';
+        }
+    } finally {
+        if (buttonEl) {
+            buttonEl.disabled = false;
+            buttonEl.textContent = originalLabel || 'Fetch Local Models';
+        }
+    }
+}
+
 function setupLlmProviderHandlers() {
     const providerSelect = document.getElementById('llm-provider');
     const localProviderSelect = document.getElementById('llm-local-provider');
@@ -327,6 +406,10 @@ function setupSettingsListeners() {
     if (fetchGeminiModelsBtn) {
         fetchGeminiModelsBtn.addEventListener('click', () => fetchGeminiModels(fetchGeminiModelsBtn));
     }
+    const fetchLocalModelsBtn = document.getElementById('fetch-local-llm-models-btn');
+    if (fetchLocalModelsBtn) {
+        fetchLocalModelsBtn.addEventListener('click', () => fetchLocalLlmModels(fetchLocalModelsBtn));
+    }
 
     const ttsEngineSelect = document.getElementById('settings-tts-engine');
     if (ttsEngineSelect) {
@@ -582,6 +665,16 @@ function applySettings(settings) {
     setElementValue('llm-local-model', settings.llm_local_model || '');
     setElementValue('llm-local-api-key', settings.llm_local_api_key || '');
     setElementValue('llm-local-timeout', settings.llm_local_timeout ?? 120, 120);
+    setElementValue('llm-local-temperature', settings.llm_local_temperature ?? 0.2, 0.2);
+    setElementValue('llm-local-top-p', settings.llm_local_top_p ?? 1.0, 1.0);
+    setElementValue('llm-local-top-k', settings.llm_local_top_k ?? 0, 0);
+    setElementValue('llm-local-repeat-penalty', settings.llm_local_repeat_penalty ?? 1.0, 1.0);
+    setElementValue('llm-local-max-tokens', settings.llm_local_max_tokens ?? 0, 0);
+    setCheckboxValue('llm-local-disable-reasoning', settings.llm_local_disable_reasoning ?? false, false);
+    setElementValue('llm-gemini-chunk-size', settings.llm_gemini_chunk_size ?? 500, 500);
+    setElementValue('llm-local-chunk-size', settings.llm_local_chunk_size ?? 500, 500);
+    setCheckboxValue('llm-gemini-chunk-chapters', settings.llm_gemini_chunk_chapters ?? true, true);
+    setCheckboxValue('llm-local-chunk-chapters', settings.llm_local_chunk_chapters ?? true, true);
     updateLLMSettingsUI(llmProvider);
 
     // Engine + Chatterbox settings
@@ -808,6 +901,18 @@ async function saveSettings() {
     const defaultFormat = defaultFormatSelect ? defaultFormatSelect.value : 'mp3';
     const defaultBitrate = defaultBitrateSelect ? parseInt(defaultBitrateSelect.value, 10) || 128 : 128;
 
+    const parseSilenceInput = (inputId) => {
+        const rawValue = document.getElementById(inputId)?.value?.trim() || '';
+        const parsed = parseFloat(rawValue);
+        if (!Number.isFinite(parsed)) {
+            return 0;
+        }
+        if (parsed <= 20) {
+            return Math.round(parsed * 1000);
+        }
+        return Math.round(parsed);
+    };
+
     const kokoroReplicateKeyEl = document.getElementById('kokoro-replicate-api-key');
     const settings = {
         replicate_api_key: kokoroReplicateKeyEl ? kokoroReplicateKeyEl.value : '',
@@ -816,8 +921,8 @@ async function saveSettings() {
         speed: parseFloat(document.getElementById('speed').value),
         output_format: defaultFormat,
         crossfade_duration: parseFloat(document.getElementById('crossfade').value),
-        intro_silence_ms: parseInt(document.getElementById('intro-silence').value, 10) || 0,
-        inter_chunk_silence_ms: parseInt(document.getElementById('inter-silence').value, 10) || 0,
+        intro_silence_ms: parseSilenceInput('intro-silence'),
+        inter_chunk_silence_ms: parseSilenceInput('inter-silence'),
         parallel_chunks: Math.min(8, Math.max(1, parseInt(document.getElementById('parallel-chunks')?.value, 10) || 3)),
         group_chunks_by_speaker: document.getElementById('group-chunks-by-speaker')?.checked ?? false,
         cleanup_vram_after_job: document.getElementById('cleanup-vram-after-job')?.checked ?? false,
@@ -832,6 +937,16 @@ async function saveSettings() {
         llm_local_model: document.getElementById('llm-local-model')?.value || '',
         llm_local_api_key: document.getElementById('llm-local-api-key')?.value || '',
         llm_local_timeout: parseInt(document.getElementById('llm-local-timeout')?.value, 10) || 120,
+        llm_local_temperature: parseFloat(document.getElementById('llm-local-temperature')?.value) || 0.2,
+        llm_local_top_p: parseFloat(document.getElementById('llm-local-top-p')?.value) || 1.0,
+        llm_local_top_k: parseInt(document.getElementById('llm-local-top-k')?.value, 10) || 0,
+        llm_local_repeat_penalty: parseFloat(document.getElementById('llm-local-repeat-penalty')?.value) || 1.0,
+        llm_local_max_tokens: parseInt(document.getElementById('llm-local-max-tokens')?.value, 10) || 0,
+        llm_local_disable_reasoning: document.getElementById('llm-local-disable-reasoning')?.checked ?? false,
+        llm_gemini_chunk_size: Math.max(50, parseInt(document.getElementById('llm-gemini-chunk-size')?.value, 10) || 500),
+        llm_local_chunk_size: Math.max(50, parseInt(document.getElementById('llm-local-chunk-size')?.value, 10) || 500),
+        llm_gemini_chunk_chapters: document.getElementById('llm-gemini-chunk-chapters')?.checked ?? true,
+        llm_local_chunk_chapters: document.getElementById('llm-local-chunk-chapters')?.checked ?? true,
         tts_engine: document.getElementById('settings-tts-engine').value,
         chatterbox_turbo_local_device: document.getElementById('chatterbox-turbo-local-device').value,
         chatterbox_turbo_local_default_prompt: document.getElementById('chatterbox-turbo-local-prompt').value,

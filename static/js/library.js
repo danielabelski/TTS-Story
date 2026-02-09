@@ -25,6 +25,58 @@ function setActiveLibraryPlayer(player, updateControls) {
     activeLibraryUpdateControls = updateControls;
 }
 
+function closeChapterActionMenus(root = document) {
+    root.querySelectorAll('.chapter-action-menu').forEach(menu => {
+        menu.classList.add('hidden');
+        menu.innerHTML = '';
+        menu.style.left = '';
+        menu.style.top = '';
+    });
+}
+
+function ensureChapterActionMenu(container) {
+    if (!container) return null;
+    let menu = container.querySelector('.chapter-action-menu');
+    if (!menu) {
+        menu = document.createElement('div');
+        menu.className = 'chapter-action-menu hidden';
+        container.appendChild(menu);
+    }
+    return menu;
+}
+
+function showChapterActionMenu({ menu, button, container, items }) {
+    if (!menu || !button || !container) return;
+    menu.innerHTML = '';
+    items.forEach(({ label, onClick }) => {
+        const itemButton = document.createElement('button');
+        itemButton.type = 'button';
+        itemButton.className = 'chapter-action-menu-item';
+        itemButton.textContent = label;
+        itemButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            onClick();
+            closeChapterActionMenus(container);
+        });
+        menu.appendChild(itemButton);
+    });
+
+    menu.classList.remove('hidden');
+    const containerRect = container.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    const left = buttonRect.left - containerRect.left;
+    const top = buttonRect.bottom - containerRect.top + 6;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+
+    requestAnimationFrame(() => {
+        const maxLeft = container.clientWidth - menu.offsetWidth - 8;
+        if (menu.offsetWidth && left > maxLeft) {
+            menu.style.left = `${Math.max(8, maxLeft)}px`;
+        }
+    });
+}
+
 function ensureChunkReviewCloseHandlers() {
     const modalOverlay = document.getElementById('chunk-review-modal-overlay');
     const modalCloseBtn = document.getElementById('chunk-review-modal-close');
@@ -122,6 +174,7 @@ function filterChapterReviewData(data, chapter) {
         has_chapters: false,
         has_books: false,
         full_story_available: false,
+        review_chapter_index: chapterIndex,
     };
 }
 
@@ -135,6 +188,16 @@ function clearActiveLibraryPlayer(player) {
 // Audio playback state for chunk review modal
 let libraryActiveAudio = null;
 let libraryActivePlayButton = null;
+
+// Continuous chunk playback state
+let chunkSequenceAudio = null;
+let chunkSequenceItems = [];
+let chunkSequenceIndex = -1;
+let chunkSequenceButton = null;
+let chunkSequenceLabel = null;
+let chunkSequenceLastCard = null;
+let chunkSequenceStartIndex = null;
+let chunkSequenceResumeIndex = null;
 
 // Preview audio state
 let previewAudio = null;
@@ -228,6 +291,10 @@ function wireBookToggleEvents() {
             }
         });
     });
+
+    if (typeof initHelpSystem === 'function') {
+        initHelpSystem();
+    }
 }
 
 // Library voice dropdown filter state
@@ -239,8 +306,12 @@ let libraryVoiceFilters = {
 // Load library on tab switch
 document.addEventListener('DOMContentLoaded', () => {
     loadLibrary();
-    setupGlobalPlayerControls();
-    setupLibraryControls();
+    if (typeof setupGlobalPlayerControls === 'function') {
+        setupGlobalPlayerControls();
+    }
+    if (typeof setupLibraryControls === 'function') {
+        setupLibraryControls();
+    }
     // Load library when Library tab is clicked
     const libraryTab = document.querySelector('[data-tab="library"]');
     if (libraryTab) {
@@ -345,6 +416,20 @@ function renderChapterControls(item) {
     const label = item.book_mode ? 'Books' : 'Chapters';
     const fallbackLabel = item.book_mode ? 'Book' : 'Chapter';
 
+    const reviewAllButton = item.has_chunks
+        ? `
+            <button
+                class="btn btn-secondary btn-xs chapter-pill chapter-review-all"
+                type="button"
+                data-review-all="true"
+                data-job-id="${item.job_id}"
+                data-full-story-path="${item.full_story?.relative_path || ''}"
+            >
+                Full Story
+            </button>
+        `
+        : '';
+
     return `
         <div class="chapter-controls" data-job-id="${item.job_id}">
             <div class="chapter-controls-header">
@@ -357,38 +442,19 @@ function renderChapterControls(item) {
                         data-job-id="${item.job_id}"
                         data-relative-path="${section.relative_path}"
                         data-src="${section.output_file}"
-                        data-index="${section.index || idx + 1}"
+                        data-index="${(section.index ?? (idx + 1))}"
                     >
                         ${formatSectionLabel(section, fallbackLabel)}
                     </button>
                 `).join('')}
+                ${reviewAllButton}
             </div>
         </div>
     `;
 }
 
-function renderFullStoryBanner(item) {
-    if (!item.full_story) {
-        return '';
-    }
-
-    const full = item.full_story;
-    return `
-        <div class="full-story-banner" data-job-id="${item.job_id}">
-            <div>
-                <strong>Full Story Audiobook</strong>
-                <p class="help-text">One continuous file combining every section.</p>
-            </div>
-            <div class="full-story-actions">
-                <button class="btn btn-secondary btn-xs" onclick="playFullStory('${item.job_id}', '${full.output_file}', '${full.relative_path}')">
-                    Play
-                </button>
-                <button class="btn btn-primary btn-xs" onclick="downloadFullStory('${item.job_id}', '${full.relative_path}')">
-                    Download Full Story
-                </button>
-            </div>
-        </div>
-    `;
+function renderFullStoryBanner() {
+    return '';
 }
 
 function displayLibraryItems(items) {
@@ -414,7 +480,13 @@ function displayLibraryItems(items) {
         const sectionList = item.book_mode && item.books?.length ? item.books : item.chapters;
         const initialChapter = (sectionList && sectionList.length > 0) ? sectionList[0] : null;
         if (initialChapter) {
-            currentChapterSelection[item.job_id] = initialChapter;
+            const initialIndex = Number.isFinite(initialChapter.index)
+                ? initialChapter.index
+                : (sectionList ? sectionList.indexOf(initialChapter) : 0);
+            currentChapterSelection[item.job_id] = {
+                ...initialChapter,
+                chapter_number: Number.isFinite(initialIndex) ? initialIndex + 1 : 1,
+            };
         }
 
         // Format engine name for display
@@ -423,6 +495,8 @@ function displayLibraryItems(items) {
         const defaultTitle = item.book_mode ? 'Book Collection' : (item.chapter_mode ? 'Chapter Collection' : 'Generated Audio');
         const displayTitle = item.collection_title || defaultTitle;
 
+        const hasBooks = item.book_mode && Array.isArray(item.books) && item.books.length > 0;
+        const hasChapters = Array.isArray(item.chapters) && item.chapters.length > 0;
         itemCard.innerHTML = `
             <div class="library-item-header library-item-summary" data-job-id="${item.job_id}">
                 <button class="library-item-toggle" aria-expanded="false" aria-label="Toggle details">▶</button>
@@ -439,6 +513,9 @@ function displayLibraryItems(items) {
                     ${engineLabel ? `<span class="library-item-engine">${engineLabel}</span>` : ''}
                     <span class="library-item-size">${fileSizeMB} MB</span>
                     <span class="library-item-format">${item.format.toUpperCase()}</span>
+                    <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="repairLibraryItem('${item.job_id}', this)">Repair</button>
+                    <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="deleteLibraryItem('${item.job_id}')">Delete</button>
+                    <button type="button" class="help-icon library-item-meta-action" data-help-id="audio-library-actions" aria-label="Help: Audio Library Actions">?</button>
                 </div>
             </div>
             <div class="library-item-details collapsed" data-job-id="${item.job_id}">
@@ -447,24 +524,6 @@ function displayLibraryItems(items) {
                 </div>
                 ${renderChapterControls(item)}
                 ${renderFullStoryBanner(item)}
-                <div class="library-item-actions">
-                    <button class="btn btn-primary btn-sm" onclick="downloadLibraryItem('${item.job_id}')">
-                        Download ${item.book_mode ? 'Selected Book' : (item.chapter_mode ? 'Selected Chapter' : '')}
-                    </button>
-                    ${item.chapter_mode && item.chapters && item.chapters.length > 1 ? `
-                        <button class="btn btn-secondary btn-sm" onclick="downloadChapterZip('${item.job_id}')">
-                            Download All (ZIP)
-                        </button>
-                    ` : ''}
-                    ${item.has_chunks ? `
-                        <button class="btn btn-secondary btn-sm" onclick="restoreToReview('${item.job_id}')">
-                            Review Chunks
-                        </button>
-                    ` : ''}
-                    <button class="btn btn-secondary btn-sm" onclick="deleteLibraryItem('${item.job_id}')">
-                        Delete
-                    </button>
-                </div>
             </div>
         `;
         
@@ -490,7 +549,7 @@ function displayLibraryItems(items) {
 
         if (summaryHeader && details && toggleBtn) {
             summaryHeader.addEventListener('click', (event) => {
-                if (event.target.closest('.library-item-controls') || event.target.closest('.library-title-edit')) {
+                if (event.target.closest('.library-item-controls') || event.target.closest('.library-title-edit') || event.target.closest('.library-item-meta-action')) {
                     return;
                 }
                 const isCollapsed = details.classList.contains('collapsed');
@@ -614,9 +673,15 @@ function displayLibraryItems(items) {
         }
 
         // Wire chapter buttons
+        const chapterControls = itemCard.querySelector('.chapter-controls');
         const chapterButtons = itemCard.querySelectorAll(`.chapter-pill[data-job-id="${item.job_id}"]`);
+        const reviewAllButton = itemCard.querySelector('.chapter-review-all');
+        const menu = ensureChapterActionMenu(chapterControls);
+
         chapterButtons.forEach(button => {
-            button.addEventListener('click', () => {
+            if (button === reviewAllButton) return;
+            button.addEventListener('click', (event) => {
+                event.stopPropagation();
                 const relativePath = button.getAttribute('data-relative-path');
                 const src = button.getAttribute('data-src');
                 const jobId = button.getAttribute('data-job-id');
@@ -630,23 +695,122 @@ function displayLibraryItems(items) {
                     playerEl.load();
                 }
 
+                const chapterNumber = Number(button.getAttribute('data-index')) || null;
                 const selectedChapter = (sectionList || []).find(ch => ch.relative_path === relativePath) || {
                     output_file: src,
                     relative_path: relativePath,
-                    title: button.textContent.trim()
+                    title: button.textContent.trim(),
+                    index: chapterNumber ? chapterNumber - 1 : null,
                 };
-                currentChapterSelection[jobId] = selectedChapter;
-                openChapterReviewModal(jobId, relativePath, button.textContent.trim());
+                currentChapterSelection[jobId] = {
+                    ...selectedChapter,
+                    chapter_number: chapterNumber || (Number.isFinite(selectedChapter.index) ? selectedChapter.index + 1 : null),
+                };
+                const anchorId = relativePath || button.textContent.trim();
+                if (menu && !menu.classList.contains('hidden') && menu.dataset.anchorId === anchorId) {
+                    closeChapterActionMenus(chapterControls);
+                    return;
+                }
+                if (menu) {
+                    menu.dataset.anchorId = anchorId;
+                }
+                showChapterActionMenu({
+                    menu,
+                    button,
+                    container: chapterControls,
+                    items: [
+                        {
+                            label: 'Review Chunks',
+                            onClick: () => openChapterReviewModal(jobId, relativePath, button.textContent.trim())
+                        },
+                        {
+                            label: 'Download Chapter',
+                            onClick: () => downloadLibraryItem(jobId)
+                        }
+                    ]
+                });
             });
         });
+
+        if (reviewAllButton) {
+            reviewAllButton.addEventListener('click', (event) => {
+                event.stopPropagation();
+                const jobId = reviewAllButton.getAttribute('data-job-id');
+                const fullStoryPath = reviewAllButton.getAttribute('data-full-story-path');
+                const anchorId = 'review-all';
+                if (menu && !menu.classList.contains('hidden') && menu.dataset.anchorId === anchorId) {
+                    closeChapterActionMenus(chapterControls);
+                    return;
+                }
+                if (menu) {
+                    menu.dataset.anchorId = anchorId;
+                }
+                const menuItems = [
+                    {
+                        label: 'Review Chunks',
+                        onClick: () => restoreToReview(jobId)
+                    }
+                ];
+                if (fullStoryPath) {
+                    menuItems.push({
+                        label: 'Download Full Story',
+                        onClick: () => downloadFullStory(jobId, fullStoryPath)
+                    });
+                }
+                showChapterActionMenu({
+                    menu,
+                    button: reviewAllButton,
+                    container: chapterControls,
+                    items: menuItems
+                });
+            });
+        }
     });
+
+    if (!document.body.dataset.chapterMenuBound) {
+        document.addEventListener('click', (event) => {
+            if (!event.target.closest('.chapter-pill') && !event.target.closest('.chapter-action-menu')) {
+                closeChapterActionMenus();
+            }
+        });
+        document.body.dataset.chapterMenuBound = 'true';
+    }
+
+    if (typeof initHelpSystem === 'function') {
+        initHelpSystem();
+    }
 }
 
 // Download library item
 function downloadLibraryItem(jobId) {
     const selected = currentChapterSelection[jobId];
-    const query = selected ? `?file=${encodeURIComponent(selected.relative_path)}` : '';
-    window.location.href = `/api/download/${jobId}${query}`;
+    if (!selected || !selected.relative_path) {
+        window.location.href = `/api/download/${jobId}`;
+        return;
+    }
+
+    const queryParts = [`file=${encodeURIComponent(selected.relative_path)}`];
+    const downloadName = buildChapterDownloadName(selected);
+    if (downloadName) {
+        queryParts.push(`download_name=${encodeURIComponent(downloadName)}`);
+    }
+    window.location.href = `/api/download/${jobId}?${queryParts.join('&')}`;
+}
+
+function buildChapterDownloadName(selected) {
+    if (!selected || !selected.relative_path) return '';
+    const rawTitle = selected.title || 'Chapter';
+    const sanitizedTitle = rawTitle.replace(/[^a-z0-9\-_. ]/gi, '').trim().replace(/\s+/g, ' ');
+    const extension = selected.relative_path.split('.').pop() || 'mp3';
+    const chapterNumber = Number.isFinite(selected.chapter_number)
+        ? selected.chapter_number
+        : (Number.isFinite(selected.index) ? selected.index + 1 : null);
+    const displayNumber = chapterNumber ? String(chapterNumber).padStart(2, '0') : '';
+    const prefix = displayNumber ? `Chapter-${displayNumber}` : 'Chapter';
+    const titlePart = sanitizedTitle && sanitizedTitle.toLowerCase() !== 'full story'
+        ? `_${sanitizedTitle.replace(/\s+/g, '-')}`
+        : '';
+    return `${prefix}${titlePart}.${extension}`;
 }
 
 function downloadChapterZip(jobId) {
@@ -691,6 +855,44 @@ async function deleteLibraryItem(jobId) {
     } catch (error) {
         console.error('Error deleting item:', error);
         alert('Failed to delete item');
+    }
+}
+
+async function repairLibraryItem(jobId, trigger) {
+    if (!confirm('Repair this library item? This will rebuild chapter metadata and missing outputs.')) {
+        return;
+    }
+    const button = trigger instanceof HTMLElement ? trigger : null;
+    const originalLabel = button ? button.innerHTML : null;
+    if (button) {
+        button.disabled = true;
+        button.classList.add('is-busy');
+        button.innerHTML = 'Repairing <span class="library-action-spinner" aria-hidden="true"></span>';
+    }
+    try {
+        const response = await fetch(`/api/library/${jobId}/repair`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ force_rebuild: true })
+        });
+        const data = await response.json();
+        if (!data.success) {
+            alert(`Repair failed: ${data.error || 'Unknown error'}`);
+            return;
+        }
+        alert('Repair completed. Reloading library...');
+        loadLibrary();
+    } catch (error) {
+        console.error('Repair library item error:', error);
+        alert('Repair failed. Check the console for details.');
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.classList.remove('is-busy');
+            button.innerHTML = originalLabel || 'Repair';
+        }
     }
 }
 
@@ -972,30 +1174,42 @@ function renderChunkReviewModal(data) {
         ? `<span><strong>Books:</strong> ${books.length}</span><span><strong>Chapters:</strong> ${chapters.length}</span>`
         : (hasChapters ? `<span><strong>Chapters:</strong> ${chapters.length}</span>` : '');
     const fullStoryControls = fullStoryAvailable
-        ? `<button class="btn btn-sm btn-secondary" id="chunk-review-rebuild-full" type="button">Rebuild Full Story</button>`
+        ? `
+            <div class="chunk-review-full-story">
+                <button class="btn btn-sm btn-secondary" id="chunk-review-rebuild-full" type="button">Rebuild Full Story</button>
+                <button type="button" class="help-icon" data-help-id="audio-library-rebuild-full-story" aria-label="Help: Rebuild Full Story">?</button>
+            </div>
+        `
         : '';
-    const batchControls = hasChapters
+    const chapterRebuildControls = chapterReviewMode && data.review_chapter_index !== null
+        ? `
+            <button class="btn btn-sm btn-secondary" id="chunk-review-rebuild-chapter" type="button">
+                Rebuild Chapter Audio File
+            </button>
+        `
+        : '';
+    const batchControls = chunks.length
         ? `
             <label class="chunk-review-select-all">
                 <input type="checkbox" id="chunk-review-select-all">
                 <span>Select all</span>
             </label>
             <button class="btn btn-sm btn-secondary" id="chunk-review-rebuild-selected" type="button" disabled>
-                Rebuild Selected
-            </button>
-            <button class="btn btn-sm btn-warning" id="chunk-review-rebuild-all" type="button">
-                Rebuild All
+                Regen Selected Speakers
             </button>
         `
         : '';
 
     body.innerHTML = `
         <div class="chunk-review-header">
-            <span><strong>Original Engine:</strong> ${formatEngineName(engine)}</span>
-            ${chapterInfo}
-            <span><strong>Chunks:</strong> ${chunks.length}</span>
+            <div class="chunk-review-meta">
+                <span><strong>Original Engine:</strong> ${formatEngineName(engine)}</span>
+                ${chapterInfo}
+                <span><strong>Chunks:</strong> ${chunks.length}</span>
+            </div>
             <div class="chunk-review-actions">
                 ${batchControls}
+                ${chapterRebuildControls}
                 ${fullStoryControls}
             </div>
         </div>
@@ -1005,6 +1219,12 @@ function renderChunkReviewModal(data) {
                 <span class="bulk-speaker-hint">Select speakers and choose a voice to regenerate all their chunks</span>
             </div>
             ${speakerRows}
+        </div>
+        <div class="chunk-review-sequence">
+            <button class="btn btn-sm btn-secondary chunk-review-play-icon" id="chunk-review-play-all" type="button" aria-label="Start audio review">
+                ▶
+            </button>
+            <span class="chunk-review-play-label" id="chunk-review-play-all-label">Start Audio Review</span>
         </div>
         <div class="chunk-review-table">
             ${chunkContent}
@@ -1025,14 +1245,49 @@ function renderChunkReviewModal(data) {
     wireChunkReviewEvents(jobId, chunks, engine);
     wireChapterRebuildEvents(jobId);
     wireFullStoryRebuildEvent(jobId, fullStoryAvailable);
-    wireBatchRebuildEvents(jobId);
+    wireChapterReviewRebuildEvent(jobId, data.review_chapter_index);
+    wireBatchRebuildEvents(jobId, chunks, engine);
+    if (typeof initHelpSystem === 'function') {
+        initHelpSystem();
+    }
 }
 
-function wireBatchRebuildEvents(jobId) {
+function wireChapterReviewRebuildEvent(jobId, chapterIndex) {
+    const button = document.getElementById('chunk-review-rebuild-chapter');
+    if (!button || chapterIndex === null || chapterIndex === undefined) {
+        return;
+    }
+    button.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Rebuilding...';
+        try {
+            const response = await fetch(`/api/library/${jobId}/rebuild/chapter`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chapter_index: Number(chapterIndex) })
+            });
+            const data = await response.json();
+            if (!data.success) {
+                throw new Error(data.error || 'Failed to rebuild chapter');
+            }
+            alert('Chapter rebuilt successfully.');
+            loadLibrary();
+        } catch (error) {
+            console.error('Rebuild chapter error:', error);
+            alert(error.message || 'Failed to rebuild chapter');
+        } finally {
+            button.disabled = false;
+            button.textContent = originalText;
+        }
+    });
+}
+
+function wireBatchRebuildEvents(jobId, chunks, engine) {
     const selectAll = document.getElementById('chunk-review-select-all');
     const rebuildSelected = document.getElementById('chunk-review-rebuild-selected');
-    const rebuildAll = document.getElementById('chunk-review-rebuild-all');
-    const checkboxes = Array.from(document.querySelectorAll('.chapter-rebuild-checkbox'));
+    const checkboxes = Array.from(document.querySelectorAll('.bulk-speaker-checkbox'));
 
     const updateSelectedState = () => {
         if (!rebuildSelected) return;
@@ -1064,53 +1319,42 @@ function wireBatchRebuildEvents(jobId) {
     if (rebuildSelected) {
         rebuildSelected.addEventListener('click', async (event) => {
             event.stopPropagation();
-            const selected = checkboxes.filter(box => box.checked).map(box => Number(box.dataset.chapterIndex));
+            const selected = checkboxes.filter(box => box.checked);
             if (!selected.length) return;
+
+            const missingVoices = [];
+            const selectedCards = selected.map(box => box.closest('.bulk-speaker-card')).filter(Boolean);
+            selectedCards.forEach(card => {
+                const speaker = card.getAttribute('data-speaker') || 'default';
+                const voiceSelect = card.querySelector('.bulk-speaker-voice-select');
+                if (!voiceSelect || !voiceSelect.value) {
+                    missingVoices.push(speaker);
+                }
+            });
+            if (missingVoices.length) {
+                alert(`Select a voice for: ${missingVoices.join(', ')}`);
+                return;
+            }
+
             const originalText = rebuildSelected.textContent;
             rebuildSelected.disabled = true;
-            rebuildSelected.textContent = 'Rebuilding...';
+            rebuildSelected.textContent = 'Regenerating...';
             try {
-                const response = await fetch(`/api/library/${jobId}/rebuild/selected`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chapter_indices: selected })
-                });
-                const data = await response.json();
-                if (!data.success) {
-                    throw new Error(data.error || 'Failed to rebuild selected chapters');
+                for (const card of selectedCards) {
+                    const speaker = card.getAttribute('data-speaker') || 'default';
+                    const engineSelect = card.querySelector('.bulk-speaker-engine-select');
+                    const engineOverride = engineSelect?.value || engine;
+                    const button = card.querySelector('.bulk-speaker-regen');
+                    if (button) {
+                        await triggerBulkSpeakerRegen(jobId, speaker, chunks, engineOverride, button);
+                    }
                 }
-                alert('Selected chapters rebuilt successfully.');
-                loadLibrary();
             } catch (error) {
-                console.error('Rebuild selected error:', error);
-                alert(error.message || 'Failed to rebuild selected chapters');
+                console.error('Bulk regen selected error:', error);
+                alert(error.message || 'Failed to regenerate selected speakers');
             } finally {
                 rebuildSelected.textContent = originalText;
                 updateSelectedState();
-            }
-        });
-    }
-
-    if (rebuildAll) {
-        rebuildAll.addEventListener('click', async (event) => {
-            event.stopPropagation();
-            const originalText = rebuildAll.textContent;
-            rebuildAll.disabled = true;
-            rebuildAll.textContent = 'Rebuilding...';
-            try {
-                const response = await fetch(`/api/library/${jobId}/rebuild/all`, { method: 'POST' });
-                const data = await response.json();
-                if (!data.success) {
-                    throw new Error(data.error || 'Failed to rebuild all outputs');
-                }
-                alert('All chapters (and full story) rebuilt successfully.');
-                loadLibrary();
-            } catch (error) {
-                console.error('Rebuild all error:', error);
-                alert(error.message || 'Failed to rebuild all outputs');
-            } finally {
-                rebuildAll.disabled = false;
-                rebuildAll.textContent = originalText;
             }
         });
     }
@@ -1341,6 +1585,7 @@ function handleLibraryChunkPlayClick(btn) {
     if (libraryActiveAudio) {
         stopLibraryChunkAudio();
     }
+    stopChunkSequence(false);
     stopPreviewAudio();
 
     // Start playing
@@ -1392,9 +1637,152 @@ function resetLibraryPlayButton(btn) {
     }
 }
 
+function resetChunkSequenceHighlight() {
+    chunkSequenceItems.forEach(({ card }) => {
+        card.classList.remove('is-playing-sequence');
+        card.classList.remove('is-playing-sequence-stopped');
+    });
+}
+
+function stopChunkSequence(keepHighlight = false, preserveResume = false) {
+    const lastIndex = chunkSequenceIndex;
+    if (chunkSequenceAudio) {
+        chunkSequenceAudio.pause();
+        chunkSequenceAudio.currentTime = 0;
+    }
+    chunkSequenceAudio = null;
+    chunkSequenceItems = [];
+    chunkSequenceIndex = -1;
+    if (keepHighlight && chunkSequenceLastCard) {
+        if (lastIndex >= 0) {
+            chunkSequenceResumeIndex = lastIndex;
+        }
+        resetChunkSequenceHighlight();
+        chunkSequenceLastCard.classList.add('is-playing-sequence-stopped');
+        chunkSequenceStartIndex = null;
+    } else {
+        resetChunkSequenceHighlight();
+        if (!preserveResume) {
+            chunkSequenceResumeIndex = null;
+        }
+    }
+    if (chunkSequenceButton) {
+        chunkSequenceButton.textContent = '▶';
+        chunkSequenceButton.classList.remove('playing');
+    }
+    if (chunkSequenceLabel) {
+        chunkSequenceLabel.textContent = 'Start Audio Review';
+    }
+    chunkSequenceButton = null;
+    chunkSequenceLabel = null;
+}
+
+function setChunkSequenceStartFromCard(card) {
+    if (!card) return;
+    const rawIndex = card.getAttribute('data-idx');
+    const index = rawIndex === null ? NaN : Number(rawIndex);
+    if (!Number.isNaN(index)) {
+        chunkSequenceStartIndex = index;
+        chunkSequenceResumeIndex = index;
+    }
+}
+
+function highlightManualChunkSelection(card) {
+    if (!card) return;
+    document.querySelectorAll('.library-chunk-card').forEach(item => {
+        item.classList.remove('is-playing-sequence');
+        item.classList.remove('is-playing-sequence-stopped');
+    });
+    card.classList.add('is-playing-sequence-stopped');
+}
+
+function startChunkSequence(items, startIndex = 0) {
+    if (!items.length) return;
+    const currentButton = chunkSequenceButton;
+    const currentLabel = chunkSequenceLabel;
+    stopChunkSequence(false, true);
+    chunkSequenceButton = currentButton;
+    chunkSequenceLabel = currentLabel;
+    chunkSequenceItems = items;
+    chunkSequenceIndex = Math.max(0, startIndex);
+    chunkSequenceAudio = new Audio();
+    const playIndex = (index) => {
+        if (!chunkSequenceAudio) return;
+        if (index >= chunkSequenceItems.length) {
+            stopChunkSequence();
+            return;
+        }
+        const item = chunkSequenceItems[index];
+        if (!item || !item.url) {
+            playIndex(index + 1);
+            return;
+        }
+        chunkSequenceIndex = index;
+        chunkSequenceResumeIndex = index;
+        resetChunkSequenceHighlight();
+        item.card.classList.add('is-playing-sequence');
+        chunkSequenceLastCard = item.card;
+        chunkSequenceAudio.src = item.url;
+        chunkSequenceAudio.play().catch(() => {
+            playIndex(index + 1);
+        });
+    };
+
+    chunkSequenceAudio.addEventListener('ended', () => {
+        playIndex(chunkSequenceIndex + 1);
+    });
+    chunkSequenceAudio.addEventListener('error', () => {
+        playIndex(chunkSequenceIndex + 1);
+    });
+    playIndex(chunkSequenceIndex);
+    if (chunkSequenceButton) {
+        chunkSequenceButton.textContent = '■';
+        chunkSequenceButton.classList.add('playing');
+    }
+    if (chunkSequenceLabel) {
+        chunkSequenceLabel.textContent = 'Stop Audio Review';
+    }
+}
+
 function wireChunkReviewEvents(jobId, chunks, engine) {
     const body = document.getElementById('chunk-review-modal-body');
     if (!body) return;
+
+    const playAllButton = body.querySelector('#chunk-review-play-all');
+    const playAllLabel = body.querySelector('#chunk-review-play-all-label');
+    if (playAllButton) {
+        playAllButton.addEventListener('click', () => {
+            if (chunkSequenceAudio) {
+                stopChunkSequence(true);
+                return;
+            }
+            const cards = Array.from(body.querySelectorAll('.library-chunk-card'));
+            const items = cards.map(card => {
+                const playButton = card.querySelector('.library-chunk-play');
+                return {
+                    card,
+                    url: playButton?.getAttribute('data-audio-url') || '',
+                    index: Number(card.getAttribute('data-idx'))
+                };
+            }).filter(item => item.url);
+            let startIndex = 0;
+            const preferredIndex = chunkSequenceStartIndex ?? chunkSequenceResumeIndex;
+            if (preferredIndex !== null && preferredIndex !== undefined) {
+                const preferredPos = items.findIndex(item => item.index === preferredIndex);
+                if (preferredPos >= 0) {
+                    startIndex = preferredPos;
+                } else {
+                    const nextPos = items.findIndex(item => item.index > preferredIndex);
+                    if (nextPos >= 0) {
+                        startIndex = nextPos;
+                    }
+                }
+            }
+            chunkSequenceButton = playAllButton;
+            chunkSequenceLabel = playAllLabel || null;
+            startChunkSequence(items, startIndex);
+        });
+    }
 
     // Chunk card expand/collapse toggle
     body.querySelectorAll('.library-chunk-summary').forEach(summary => {
@@ -1411,6 +1799,9 @@ function wireChunkReviewEvents(jobId, chunks, engine) {
                 if (isCollapsed) {
                     details.classList.remove('collapsed');
                     if (toggle) toggle.textContent = '▼';
+                    const card = summary.closest('.library-chunk-card');
+                    setChunkSequenceStartFromCard(card);
+                    highlightManualChunkSelection(card);
                 } else {
                     details.classList.add('collapsed');
                     if (toggle) toggle.textContent = '▶';
@@ -1423,6 +1814,9 @@ function wireChunkReviewEvents(jobId, chunks, engine) {
     body.querySelectorAll('.library-chunk-play').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation(); // Prevent triggering expand/collapse
+            const card = btn.closest('.library-chunk-card');
+            setChunkSequenceStartFromCard(card);
+            highlightManualChunkSelection(card);
             handleLibraryChunkPlayClick(btn);
         });
     });

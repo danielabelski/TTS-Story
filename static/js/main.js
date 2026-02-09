@@ -96,6 +96,28 @@ const HELP_TOPICS = {
             </ul>
         `
     },
+    'audio-library-rebuild-full-story': {
+        title: 'Rebuild Full Story',
+        body: `
+            <p>Rebuilds the audio in two stages:</p>
+            <ol>
+                <li><strong>Recombine chunks → chapters:</strong> All chunk audio is merged back into each chapter file.</li>
+                <li><strong>Recombine chapters → full story:</strong> The chapter files are then merged into the final full-story audio.</li>
+            </ol>
+            <p>Use this after updating speakers/chunks so the final full-story file matches the latest edits.</p>
+        `
+    },
+    'audio-library-actions': {
+        title: 'Audio Library Actions',
+        body: `
+            <ul>
+                <li><strong>Chapter chips:</strong> Click any chapter to open a quick menu with <em>Review Chunks</em> or <em>Download Chapter</em>.</li>
+                <li><strong>Full Story chip:</strong> Opens the same menu, but the download option becomes <em>Download Full Story</em>.</li>
+                <li><strong>Top-row play:</strong> Uses the player controls next to the title to play or stop the full story.</li>
+                <li><strong>Delete:</strong> Permanently removes the entire audiobook (top-right).</li>
+            </ul>
+        `
+    },
     'available-voices': {
         title: 'Available Voices',
         body: `
@@ -549,6 +571,23 @@ function openHelpModal(helpId) {
     modal.classList.remove('hidden');
 }
 
+function stopSpeakerPreviewAudio() {
+    if (currentFxPreviewAudio) {
+        currentFxPreviewAudio.pause();
+        currentFxPreviewAudio.currentTime = 0;
+        currentFxPreviewAudio = null;
+    }
+    if (currentFxPreviewButton) {
+        currentFxPreviewButton.classList.remove('is-playing');
+        currentFxPreviewButton.textContent = currentFxPreviewButton.dataset.labelPlay || 'Quick Test';
+        currentFxPreviewButton.disabled = false;
+        currentFxPreviewButton = null;
+    }
+    if (window.chatterboxPreviewController) {
+        window.chatterboxPreviewController.stop();
+    }
+}
+
 function closeHelpModal() {
     const overlay = document.getElementById('help-modal-overlay');
     const modal = document.getElementById('help-modal');
@@ -685,11 +724,11 @@ function buildHelpTopicsList() {
 function initHelpSystem() {
     document.querySelectorAll('.help-icon').forEach(icon => {
         icon.addEventListener('click', event => {
+            event.stopPropagation();
+            event.preventDefault();
             const target = event.currentTarget;
             const helpId = target.dataset.helpId;
-            if (helpId) {
-                openHelpModal(helpId);
-            }
+            openHelpModal(helpId);
         });
     });
     const overlay = document.getElementById('help-modal-overlay');
@@ -3544,6 +3583,7 @@ function closeSpeakerEditModal() {
     if (profileSummary && modalBody && modalAnchor) {
         modalBody.insertBefore(profileSummary, modalAnchor);
     }
+    stopSpeakerPreviewAudio();
     if (body) {
         body.innerHTML = '';
     }
@@ -4318,6 +4358,9 @@ function populateDefaultVoiceSelect() {
 }
 
 function appendVoiceOptions(selectElement) {
+    if (!window.availableVoices) {
+        return;
+    }
     Object.values(window.availableVoices).forEach(voiceConfig => {
         if (!voiceConfig) return;
         const baseOptgroup = document.createElement('optgroup');

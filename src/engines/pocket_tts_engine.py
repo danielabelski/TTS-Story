@@ -221,8 +221,11 @@ class PocketTTSEngine(TtsEngineBase):
             copy_state=True,
         )
         audio = audio_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
-        if task["fx_settings"]:
-            audio = self.post_processor.apply(audio, self.sample_rate, task["fx_settings"])
+        audio = self.post_processor.apply_post_pipeline(
+            audio,
+            self.sample_rate,
+            task["fx_settings"],
+        )
         sf.write(str(output_path), audio, self.sample_rate)
         output_path_str = str(output_path)
         if callable(progress_cb):
@@ -261,9 +264,7 @@ class PocketTTSEngine(TtsEngineBase):
         voice_state = self._get_voice_state(prompt_path)
         audio_tensor = self.model.generate_audio(voice_state, text)
         audio = audio_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
-        if fx_settings:
-            audio = self.post_processor.apply(audio, self.sample_rate, fx_settings)
-        return audio
+        return self.post_processor.apply_post_pipeline(audio, self.sample_rate, fx_settings)
 
     def _voice_assignment_for(self, voice_config: Dict[str, Dict], speaker: Optional[str]) -> VoiceAssignment:
         speaker_key = (speaker or "").strip().lower()

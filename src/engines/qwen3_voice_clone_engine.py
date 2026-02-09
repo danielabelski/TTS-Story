@@ -190,8 +190,7 @@ class Qwen3VoiceCloneEngine(TtsEngineBase):
                     )
                     audio = np.asarray(wavs[0], dtype=np.float32)
                     self._sample_rate = int(sr)
-                    if fx_settings:
-                        audio = self.post_processor.apply(audio, int(sr), fx_settings)
+                    audio = self.post_processor.apply_post_pipeline(audio, int(sr), fx_settings)
                     sf.write(str(output_path), audio, int(sr))
                     files.append(str(output_path))
                     chunk_index += 1

@@ -1060,6 +1060,30 @@
                                     <option value="local">Local (LM Studio / Ollama)</option>
                                 </select>
                             </div>
+                            <div class="form-group" id="llm-gemini-chunk-group">
+                                <label for="llm-gemini-chunk-size">Gemini chunk size (words)</label>
+                                <input type="number" id="llm-gemini-chunk-size" min="50" max="5000" step="50" value="500">
+                                <small>Applies when Gemini is the prep provider.</small>
+                            </div>
+                            <div class="form-group" id="llm-gemini-chunk-chapters-group">
+                                <label style="display:flex;align-items:center;gap:8px;">
+                                    <input type="checkbox" id="llm-gemini-chunk-chapters" checked>
+                                    Chunk Gemini chapters into smaller sections
+                                </label>
+                                <small>Disable to process full chapters in one request.</small>
+                            </div>
+                            <div class="form-group" id="llm-local-chunk-group">
+                                <label for="llm-local-chunk-size">Local LLM chunk size (words)</label>
+                                <input type="number" id="llm-local-chunk-size" min="50" max="5000" step="50" value="500">
+                                <small>Applies when LM Studio/Ollama is the prep provider.</small>
+                            </div>
+                            <div class="form-group" id="llm-local-chunk-chapters-group">
+                                <label style="display:flex;align-items:center;gap:8px;">
+                                    <input type="checkbox" id="llm-local-chunk-chapters" checked>
+                                    Chunk local LLM chapters into smaller sections
+                                </label>
+                                <small>Disable to process full chapters in one request.</small>
+                            </div>
                             <div class="form-group" id="gemini-credentials">
                                 <label for="gemini-api-key">Gemini API Key</label>
                                 <input type="password" id="gemini-api-key" placeholder="AIza...">
@@ -1093,7 +1117,9 @@
                             </div>
                             <div class="form-group">
                                 <label for="llm-local-model">Model</label>
-                                <input type="text" id="llm-local-model" placeholder="e.g., qwen2.5:7b-instruct">
+                                <select id="llm-local-model" class="select-compact">
+                                    <option value="">Select a model</option>
+                                </select>
                             </div>
                             <div class="form-group">
                                 <label for="llm-local-api-key">API Key (optional)</label>
@@ -1102,6 +1128,42 @@
                             <div class="form-group">
                                 <label for="llm-local-timeout">Timeout (seconds)</label>
                                 <input type="number" id="llm-local-timeout" min="10" max="600" step="10" value="120">
+                            </div>
+                        </div>
+                        <div class="button-group" style="margin-top: 10px;" id="local-llm-models-actions">
+                            <button type="button" id="fetch-local-llm-models-btn" class="btn btn-secondary btn-sm">Fetch Local Models</button>
+                            <span id="local-llm-models-status" class="help-text" style="margin-left:10px;"></span>
+                        </div>
+                        <div class="settings-subsection" style="margin-top:16px;">
+                            <h4>Local LLM Response Tuning</h4>
+                            <div class="settings-form-grid">
+                                <div class="form-group">
+                                    <label for="llm-local-temperature">Temperature</label>
+                                    <input type="number" id="llm-local-temperature" min="0" max="2" step="0.05" value="0.2">
+                                </div>
+                                <div class="form-group">
+                                    <label for="llm-local-top-p">Top P</label>
+                                    <input type="number" id="llm-local-top-p" min="0" max="1" step="0.01" value="1">
+                                </div>
+                                <div class="form-group">
+                                    <label for="llm-local-top-k">Top K</label>
+                                    <input type="number" id="llm-local-top-k" min="0" max="2000" step="1" value="0">
+                                </div>
+                                <div class="form-group">
+                                    <label for="llm-local-repeat-penalty">Repeat Penalty</label>
+                                    <input type="number" id="llm-local-repeat-penalty" min="0.5" max="2" step="0.05" value="1">
+                                </div>
+                                <div class="form-group">
+                                    <label for="llm-local-max-tokens">Max Tokens</label>
+                                    <input type="number" id="llm-local-max-tokens" min="0" max="8192" step="1" value="0">
+                                </div>
+                                <div class="form-group">
+                                    <label style="display:flex;align-items:center;gap:8px;">
+                                        <input type="checkbox" id="llm-local-disable-reasoning">
+                                        Disable reasoning mode
+                                    </label>
+                                    <small>Reduces latency on models that support reasoning toggles.</small>
+                                </div>
                             </div>
                         </div>
                         <div class="form-group" style="margin-top:16px;">

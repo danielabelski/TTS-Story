@@ -86,9 +86,30 @@
 
 .job-detail-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
     margin-bottom: 16px;
+}
+
+.job-detail-grid > div {
+    background: rgba(15, 18, 32, 0.55);
+    border: 1px solid rgba(99, 102, 241, 0.18);
+    border-radius: 10px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.job-detail-grid strong {
+    font-size: 0.85rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.job-detail-speakers {
+    grid-column: 1 / -1;
 }
 
 .job-detail-text label {
@@ -103,8 +124,8 @@
     resize: vertical;
     padding: 10px 12px;
     border-radius: 10px;
-    border: 1px solid var(--border-color);
-    background: var(--input-bg);
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    background: rgba(15, 18, 32, 0.6);
     color: var(--text-color);
 }
 
@@ -904,6 +925,45 @@ input[type="range"] {
 .btn-secondary:hover {
     background: rgba(99, 102, 241, 0.35);
     border-color: rgba(99, 102, 241, 0.8);
+}
+
+.chunk-review-sequence {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    justify-content: flex-start;
+    margin: 10px 0 18px;
+}
+
+.chunk-review-play-icon {
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    font-size: 0.95rem;
+}
+
+.chunk-review-play-icon.playing {
+    background: rgba(99, 102, 241, 0.4);
+    border-color: rgba(99, 102, 241, 0.6);
+}
+
+.chunk-review-play-label {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.library-chunk-card.is-playing-sequence .library-chunk-summary {
+    background: rgba(99, 102, 241, 0.12);
+    border-left-color: var(--primary-color);
+}
+
+.library-chunk-card.is-playing-sequence-stopped .library-chunk-summary {
+    background: rgba(34, 197, 94, 0.14);
+    border-left-color: rgba(34, 197, 94, 0.7);
 }
 
 .btn:disabled {
@@ -2387,10 +2447,42 @@ audio {
 /* Chunk Review Modal */
 .chunk-review-header {
     display: flex;
-    gap: 20px;
+    gap: 16px;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
     padding: 10px 0;
     border-bottom: 1px solid var(--border-color);
     margin-bottom: 15px;
+}
+
+.chunk-review-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    font-size: 0.95rem;
+}
+
+.chunk-review-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+.chunk-review-full-story {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+#help-modal-overlay {
+    z-index: 1400;
+}
+
+#help-modal {
+    z-index: 1401;
 }
 
 /* Chapter Sections */
@@ -3170,6 +3262,27 @@ audio {
     display: flex;
     gap: 15px;
     color: var(--text-muted);
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.library-item-meta-action {
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    height: auto;
+    line-height: 1.2;
+}
+
+.library-action-spinner {
+    display: inline-block;
+    width: 0.75rem;
+    height: 0.75rem;
+    margin-left: 6px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: button-spinner 0.8s linear infinite;
+    vertical-align: middle;
 }
 
 .chapter-controls {
@@ -3178,6 +3291,7 @@ audio {
     background: rgba(99, 102, 241, 0.06);
     border-radius: 8px;
     border: 1px solid rgba(99, 102, 241, 0.2);
+    position: relative;
 }
 
 .chapter-controls-header {
@@ -3200,6 +3314,40 @@ audio {
     background: var(--primary-color);
     color: #fff;
     border-color: transparent;
+}
+
+.chapter-action-menu {
+    position: absolute;
+    z-index: 5;
+    min-width: 180px;
+    padding: 8px;
+    background: rgba(15, 17, 32, 0.95);
+    border: 1px solid rgba(99, 102, 241, 0.35);
+    border-radius: 10px;
+    box-shadow: 0 12px 24px rgba(10, 12, 24, 0.35);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.chapter-action-menu.hidden {
+    display: none;
+}
+
+.chapter-action-menu-item {
+    width: 100%;
+    text-align: left;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: rgba(99, 102, 241, 0.18);
+    color: var(--text-color);
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.chapter-action-menu-item:hover {
+    background: rgba(99, 102, 241, 0.35);
 }
 
 .library-item-size,
@@ -3237,6 +3385,14 @@ audio {
     display: flex;
     gap: 10px;
     margin-top: 15px;
+    flex-wrap: nowrap;
+    align-items: center;
+}
+
+@media (max-width: 1100px) {
+    .library-item-actions {
+        flex-wrap: wrap;
+    }
 }
 
 .btn-sm {

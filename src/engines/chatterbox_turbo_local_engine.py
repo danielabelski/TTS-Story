@@ -431,8 +431,7 @@ class ChatterboxTurboLocalEngine(TtsEngineBase):
                 temp_prompt.unlink(missing_ok=True)
 
         audio = wav.squeeze(0).detach().cpu().numpy().astype("float32")
-        if fx_settings:
-            audio = self.post_processor.apply(audio, self.sample_rate, fx_settings)
+        audio = self.post_processor.apply_post_pipeline(audio, self.sample_rate, fx_settings)
 
         return audio, self.sample_rate
 

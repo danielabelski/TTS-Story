@@ -201,8 +201,11 @@ class KokoroEngine(TtsEngineBase):
         if max_samples and full_audio.shape[0] > max_samples:
             full_audio = full_audio[:max_samples]
 
-        if fx_settings:
-            full_audio = self.post_processor.apply(full_audio, sample_rate, fx_settings)
+        full_audio = self.post_processor.apply_post_pipeline(
+            full_audio,
+            sample_rate,
+            fx_settings,
+        )
 
         if output_path:
             sf.write(str(output_path), full_audio, sample_rate)

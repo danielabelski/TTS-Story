@@ -72,6 +72,52 @@ class AudioPostProcessor:
 
     SOX_PATH = (Path(__file__).resolve().parents[2] / "tools" / "sox" / "sox.exe")
 
+    def apply_sox_post(
+        self,
+        audio: np.ndarray,
+        sample_rate: int,
+        *,
+        normalize: bool = True,
+        fade_seconds: float = 0.01,
+    ) -> np.ndarray:
+        """Apply a lightweight SoX post-processing pass to audio output."""
+        if audio is None:
+            return audio
+        if not self.SOX_PATH.exists():
+            return audio
+
+        is_stereo = audio.ndim == 2 and audio.shape[1] == 2
+        if is_stereo:
+            audio = np.mean(audio, axis=1)
+
+        input_path = None
+        output_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_in:
+                input_path = Path(temp_in.name)
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_out:
+                output_path = Path(temp_out.name)
+
+            sf.write(str(input_path), audio, int(sample_rate))
+            command = [str(self.SOX_PATH), str(input_path), str(output_path)]
+            if normalize:
+                command += ["gain", "-n"]
+            if fade_seconds and fade_seconds > 0:
+                command += ["fade", f"{fade_seconds:.2f}"]
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or "SoX post-processing failed")
+            processed, _ = sf.read(str(output_path), dtype="float32")
+            return processed.astype(np.float32, copy=False)
+        except Exception as exc:  # pragma: no cover - fallback to raw audio
+            logger.warning("SoX post-processing failed: %s", exc)
+            return audio
+        finally:
+            if input_path:
+                input_path.unlink(missing_ok=True)
+            if output_path:
+                output_path.unlink(missing_ok=True)
+
     def apply(self, audio: np.ndarray, sample_rate: int, fx: Optional[VoiceFXSettings], blend_override: Optional[float] = None) -> np.ndarray:
         """
         Apply audio effects to the input audio.
@@ -116,6 +162,27 @@ class AudioPostProcessor:
             processed = self._blend_with_original(base_audio, processed, mix=blend_mix)
 
         return np.clip(processed, -1.0, 1.0)
+
+    def apply_post_pipeline(
+        self,
+        audio: np.ndarray,
+        sample_rate: int,
+        fx: Optional[VoiceFXSettings],
+        *,
+        normalize: bool = True,
+        fade_seconds: float = 0.01,
+        blend_override: Optional[float] = None,
+    ) -> np.ndarray:
+        """Apply optional VFX first, then SoX post-processing."""
+        processed = audio
+        if fx is not None:
+            processed = self.apply(processed, sample_rate, fx, blend_override=blend_override)
+        return self.apply_sox_post(
+            processed,
+            sample_rate,
+            normalize=normalize,
+            fade_seconds=fade_seconds,
+        )
 
     def prepare_prompt_audio(self, prompt_path: str, fx: Optional[VoiceFXSettings]) -> Optional[Path]:
         """Apply pitch/speed FX to a prompt audio file and return a temp WAV path."""

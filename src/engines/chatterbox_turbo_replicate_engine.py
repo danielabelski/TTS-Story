@@ -202,8 +202,11 @@ class ChatterboxTurboReplicateEngine(TtsEngineBase):
                     # Download and process audio
                     audio = self._download_audio(audio_url)
                     
-                    if output_fx:
-                        audio = self.post_processor.apply(audio, self.sample_rate, output_fx)
+                    audio = self.post_processor.apply_post_pipeline(
+                        audio,
+                        self.sample_rate,
+                        output_fx,
+                    )
                     
                     sf.write(str(output_path), audio, self.sample_rate)
                     results[global_idx] = str(output_path)
@@ -315,8 +318,11 @@ class ChatterboxTurboReplicateEngine(TtsEngineBase):
             raise RuntimeError(f"Chatterbox Turbo (Replicate) request failed: {exc}") from exc
 
         audio_array = self._download_audio(output_url)
-        if output_fx:
-            audio_array = self.post_processor.apply(audio_array, self.sample_rate, output_fx)
+        audio_array = self.post_processor.apply_post_pipeline(
+            audio_array,
+            self.sample_rate,
+            output_fx,
+        )
         return audio_array, self.sample_rate
 
     # ------------------------------------------------------------------ #

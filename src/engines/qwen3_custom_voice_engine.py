@@ -132,6 +132,7 @@ class Qwen3CustomVoiceEngine(TtsEngineBase):
             speaker = segment["speaker"]
             chunks = segment["chunks"]
             assignment = self._voice_assignment_for(voice_config, speaker)
+            fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
             voice_name = assignment.voice or self._fallback_speaker()
             language = (assignment.extra.get("language") if assignment.extra else None) or self.default_language
             # Emotion from segment takes priority, then user-provided instruct, then default
@@ -159,6 +160,7 @@ class Qwen3CustomVoiceEngine(TtsEngineBase):
                 output_path = output_dir / f"chunk_{chunk_index:04d}.wav"
                 audio, sr = self._synthesize(chunk_text, voice_name, language, instruct)
                 self._sample_rate = sr
+                audio = self.post_processor.apply_post_pipeline(audio, int(sr), fx_settings)
                 sf.write(str(output_path), audio, sr)
                 files.append(str(output_path))
                 chunk_index += 1
@@ -201,7 +203,7 @@ class Qwen3CustomVoiceEngine(TtsEngineBase):
         language = lang_code or self.default_language
         wav, sr = self._synthesize(text, voice, language, self.default_instruct)
         self._sample_rate = sr
-        return wav
+        return self.post_processor.apply_post_pipeline(wav, int(sr), fx_settings)
 
     def _voice_assignment_for(self, voice_config: Dict[str, Dict], speaker: str) -> VoiceAssignment:
         payload = voice_config.get(speaker) or voice_config.get("default") or {}

@@ -368,7 +368,7 @@ class VoxCPMLocalEngine(TtsEngineBase):
             # Normalize to 0.95 to leave headroom and prevent clipping
             audio = audio / max_val * 0.95
         
-        return audio
+        return self.post_processor.apply_sox_post(audio, self.sample_rate)
 
     def _resolve_device(self, device: str) -> str:
         device = (device or "auto").strip().lower()

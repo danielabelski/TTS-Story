@@ -843,7 +843,7 @@ function displayQueue(data) {
                         `<button class="btn-small btn-danger" onclick="cancelQueueJob('${job.job_id}')">Cancel</button>` :
                         ''}
                     ${canDelete ?
-                        `<button class="btn-small btn-outline" onclick="deleteQueueJob('${job.job_id}')">Delete</button>` :
+                        `<button class="btn-small btn-outline" onclick="deleteQueueJob('${job.job_id}')">Remove</button>` :
                         ''}
                     ${job.status === 'failed' ?
                         `<span class="error-text" title="${job.error || 'Unknown error'}">Failed</span>` :
@@ -971,7 +971,7 @@ async function openJobDetailsModal(jobId) {
                         <strong>Created:</strong> ${job.created_at ? new Date(job.created_at).toLocaleString() : 'N/A'}
                     </div>
                     ${resumeLine}
-                    <div>
+                    <div class="job-detail-speakers">
                         <strong>Speakers:</strong>
                         <div class="speaker-tags-wrap">${speakerList}</div>
                     </div>
@@ -1018,7 +1018,7 @@ async function resumeQueueJob(jobId) {
 
 async function deleteQueueJob(jobId) {
     if (!jobId) return;
-    if (!confirm('Delete this job and all its files?')) {
+    if (!confirm('Remove this job from the queue? (Audio files will be kept)')) {
         return;
     }
     try {

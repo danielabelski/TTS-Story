@@ -13,6 +13,7 @@ import requests
 import soundfile as sf
 
 from .base import EngineCapabilities, TtsEngineBase, VoiceAssignment
+from ..audio_effects import AudioPostProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class ChatterboxEngine(TtsEngineBase):
         self.default_language = default_language
         self.timeout = request_timeout
         self.watermark_audio = watermark_audio
+        self.post_processor = AudioPostProcessor()
 
         self.session = requests.Session()
         self.session.headers.update(
@@ -98,7 +100,7 @@ class ChatterboxEngine(TtsEngineBase):
             speed=speed,
             sample_rate=target_sr,
         )
-        return audio_array
+        return self.post_processor.apply_post_pipeline(audio_array, target_sr, None)
 
     # ------------------------------------------------------------------
     def generate_batch(
@@ -141,6 +143,7 @@ class ChatterboxEngine(TtsEngineBase):
                     speed=speed,
                     sample_rate=target_sample_rate,
                 )
+                audio_array = self.post_processor.apply_post_pipeline(audio_array, sr, None)
                 sf.write(str(output_path), audio_array, sr)
                 output_files.append(str(output_path))
                 chunk_index += 1

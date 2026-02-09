@@ -5,7 +5,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 from pydub import AudioSegment
 import soundfile as sf
 import numpy as np
@@ -94,7 +94,8 @@ class AudioMerger:
         input_files: List[str],
         output_path: str,
         format: str = "mp3",
-        cleanup_chunks: bool = True
+        cleanup_chunks: bool = True,
+        progress_callback: Optional[Callable[[float], None]] = None,
     ) -> str:
         """
         Merge WAV files using pydub
@@ -120,66 +121,152 @@ class AudioMerger:
             file_size = os.path.getsize(f)
             logging.info(f"Input file: {f} ({file_size} bytes)")
         
-        # Load first file
-        combined = AudioSegment.from_wav(input_files[0])
-        logging.info(f"Loaded first file: duration={len(combined)}ms, channels={combined.channels}")
-        if self.intro_silence_ms > 0:
-            combined = AudioSegment.silent(duration=self.intro_silence_ms) + combined
-        
-        # Add remaining files with crossfade
-        total_files = len(input_files)
-        for i, file_path in enumerate(input_files[1:], 1):
-            logging.debug(f"Adding file {i}/{len(input_files) - 1}")
-            next_audio = AudioSegment.from_wav(file_path)
-            
-            if self.crossfade_ms > 0:
-                combined = combined.append(next_audio, crossfade=self.crossfade_ms)
-            else:
-                combined = combined + next_audio
-            
-            if self.inter_chunk_silence_ms > 0 and i < total_files - 1:
-                combined += AudioSegment.silent(duration=self.inter_chunk_silence_ms)
-                
-        # Export
+        expanded_files = list(input_files)
+        silence_files: List[str] = []
+        output_path = Path(output_path)
+
+        try:
+            for stale_path in output_path.parent.glob(f"{output_path.stem}.*_silence*.wav"):
+                try:
+                    stale_path.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        def _make_silence_wav(duration_ms: int, label: str) -> Optional[str]:
+            if duration_ms <= 0:
+                return None
+            try:
+                info = sf.info(str(input_files[0]))
+                sample_rate = int(info.samplerate or 24000)
+            except Exception:
+                sample_rate = 24000
+            total_samples = int(sample_rate * (duration_ms / 1000.0))
+            if total_samples <= 0:
+                return None
+            silence = np.zeros(total_samples, dtype=np.float32)
+            silence_path = output_path.with_suffix(f".{label}_silence_{duration_ms}ms.wav")
+            sf.write(str(silence_path), silence, sample_rate)
+            silence_files.append(str(silence_path))
+            return str(silence_path)
+
+        intro_silence = _make_silence_wav(self.intro_silence_ms, "intro")
+        segment_silence = _make_silence_wav(self.inter_chunk_silence_ms, "segment")
+
+        if intro_silence:
+            expanded_files = [intro_silence] + expanded_files
+
+        if segment_silence and len(expanded_files) > 1:
+            interleaved: List[str] = []
+            for idx, file_path in enumerate(expanded_files):
+                interleaved.append(file_path)
+                if idx < len(expanded_files) - 1:
+                    interleaved.append(segment_silence)
+            expanded_files = interleaved
+
+        try:
+            if not self._merge_with_ffmpeg(expanded_files, output_path, format, progress_callback):
+                raise RuntimeError("ffmpeg merge failed; ensure ffmpeg is installed and accessible")
+
+            output_size = output_path.stat().st_size if output_path.exists() else 0
+            logging.info(f"Merged audio saved to {output_path} ({output_size} bytes)")
+            if cleanup_chunks:
+                logging.info(f"Cleaning up {len(input_files)} WAV chunks")
+                for file_path in input_files:
+                    try:
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                            logging.debug(f"Deleted chunk: {file_path}")
+                    except Exception as e:
+                        logging.warning(f"Failed to delete chunk {file_path}: {e}")
+                logging.info("Cleanup complete")
+            return str(output_path)
+        finally:
+            for silence_path in silence_files:
+                try:
+                    if os.path.exists(silence_path):
+                        os.remove(silence_path)
+                except Exception:
+                    pass
+
+    def _merge_with_ffmpeg(
+        self,
+        input_files: List[str],
+        output_path: str,
+        format: str,
+        progress_callback: Optional[Callable[[float], None]] = None,
+    ) -> bool:
+        ffmpeg_path = _find_ffmpeg()
+        if not ffmpeg_path:
+            logging.warning("ffmpeg not found; falling back to pydub merge")
+            return False
+
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        logging.info(f"Exporting {len(combined)}ms audio to {output_path} (format={format})")
-        
-        # Ensure ffmpeg path is set (may not be set if module was cached)
-        if not AudioSegment.converter or "pinokio" not in str(AudioSegment.converter).lower():
-            ffmpeg_path = _find_ffmpeg()
-            if ffmpeg_path:
-                AudioSegment.converter = ffmpeg_path
-                ffprobe_path = ffmpeg_path.replace("ffmpeg", "ffprobe")
-                if os.path.exists(ffprobe_path):
-                    AudioSegment.ffprobe = ffprobe_path
-        
-        logging.info(f"Using ffmpeg: {AudioSegment.converter}")
-        
-        export_kwargs = {}
-        if format.lower() == "mp3":
-            # Force libmp3lame encoder - Windows MF encoder (mp3_mf) produces empty files
-            export_kwargs["codec"] = "libmp3lame"
-            if self.bitrate_kbps:
-                export_kwargs["bitrate"] = f"{self.bitrate_kbps}k"
-        combined.export(str(output_path), format=format, **export_kwargs)
-        output_size = output_path.stat().st_size if output_path.exists() else 0
-        logging.info(f"Merged audio saved to {output_path} ({output_size} bytes)")
-        
-        # Cleanup WAV chunks if requested
-        if cleanup_chunks:
-            logging.info(f"Cleaning up {len(input_files)} WAV chunks")
-            for file_path in input_files:
+
+        list_file = output_path.with_suffix(".concat.txt")
+        try:
+            with list_file.open("w", encoding="utf-8") as handle:
+                for file_path in input_files:
+                    handle.write(f"file '{Path(file_path).as_posix()}'\n")
+
+            codec_args = []
+            fmt = format.lower()
+            if fmt == "mp3":
+                codec_args = ["-c:a", "libmp3lame"]
+                if self.bitrate_kbps:
+                    codec_args += ["-b:a", f"{self.bitrate_kbps}k"]
+            elif fmt == "ogg":
+                codec_args = ["-c:a", "libvorbis"]
+            elif fmt == "wav":
+                codec_args = ["-c:a", "pcm_s16le"]
+            else:
+                codec_args = ["-c:a", "aac"]
+
+            cmd = [
+                ffmpeg_path,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(list_file),
+                *codec_args,
+                "-y",
+                str(output_path),
+            ]
+
+            logging.info(f"Merging with ffmpeg concat: {output_path}")
+            if progress_callback:
                 try:
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                        logging.debug(f"Deleted chunk: {file_path}")
-                except Exception as e:
-                    logging.warning(f"Failed to delete chunk {file_path}: {e}")
-            logging.info("Cleanup complete")
-        
-        return str(output_path)
+                    progress_callback(0.0)
+                except Exception:
+                    pass
+
+            import subprocess
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                logging.error("ffmpeg concat failed: %s", result.stderr.strip())
+                return False
+            if progress_callback:
+                try:
+                    progress_callback(1.0)
+                except Exception:
+                    pass
+            return True
+        except Exception as exc:
+            logging.error("ffmpeg concat failed with error: %s", exc, exc_info=True)
+            return False
+        finally:
+            try:
+                if list_file.exists():
+                    list_file.unlink()
+            except Exception:
+                pass
         
     def merge_numpy_arrays(
         self,

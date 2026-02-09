@@ -4,9 +4,11 @@ TTS-Story - Web-based TTS application
 from flask import Flask, render_template, request, jsonify, send_file
 from flask_cors import CORS
 import base64
-import hashlib
+import asyncio
+import webbrowser
 import copy
 import inspect
+import hashlib
 import io
 import json
 import concurrent.futures
@@ -134,6 +136,16 @@ DEFAULT_CONFIG = {
     "llm_local_model": "",
     "llm_local_api_key": "",
     "llm_local_timeout": 120,
+    "llm_local_temperature": 0.2,
+    "llm_local_top_p": 1.0,
+    "llm_local_top_k": 0,
+    "llm_local_repeat_penalty": 1.0,
+    "llm_local_max_tokens": 0,
+    "llm_local_disable_reasoning": False,
+    "llm_gemini_chunk_size": 500,
+    "llm_local_chunk_size": 500,
+    "llm_gemini_chunk_chapters": True,
+    "llm_local_chunk_chapters": True,
     "tts_engine": "kokoro",
     "chatterbox_turbo_local_default_prompt": "",
     "chatterbox_turbo_local_temperature": 0.8,
@@ -2077,11 +2089,104 @@ def split_text_into_book_sections(text: str, custom_heading: Optional[Any] = Non
     return {"kind": "none", "books": [], "sections": sections}
 
 
+def _resolve_llm_chunk_size(config: Dict[str, Any]) -> int:
+    provider = (config.get("llm_provider") or DEFAULT_LLM_PROVIDER).lower().strip()
+    key = "llm_gemini_chunk_size" if provider == "gemini" else "llm_local_chunk_size"
+    raw_value = config.get(key, 500)
+    try:
+        resolved = int(raw_value)
+    except (TypeError, ValueError):
+        resolved = 500
+    return max(50, resolved)
+
+
+def _resolve_llm_chunk_chapters(config: Dict[str, Any]) -> bool:
+    provider = (config.get("llm_provider") or DEFAULT_LLM_PROVIDER).lower().strip()
+    key = "llm_gemini_chunk_chapters" if provider == "gemini" else "llm_local_chunk_chapters"
+    return bool(config.get(key, True))
+
+
+def _chunk_text_by_paragraph_words(text: str, max_words: int) -> List[str]:
+    content = (text or "").strip()
+    if not content:
+        return []
+    try:
+        max_words = int(max_words)
+    except (TypeError, ValueError):
+        max_words = 500
+    max_words = max(50, max_words)
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", content) if part.strip()]
+    if not paragraphs:
+        return [content]
+
+    chunks: List[str] = []
+    current_parts: List[str] = []
+    current_words = 0
+
+    for paragraph in paragraphs:
+        paragraph_words = len(paragraph.split())
+        if not current_parts:
+            current_parts = [paragraph]
+            current_words = paragraph_words
+            continue
+
+        if current_words >= max_words:
+            chunks.append("\n\n".join(current_parts).strip())
+            current_parts = [paragraph]
+            current_words = paragraph_words
+            continue
+
+        if current_words + paragraph_words > max_words:
+            current_parts.append(paragraph)
+            chunks.append("\n\n".join(current_parts).strip())
+            current_parts = []
+            current_words = 0
+            continue
+
+        current_parts.append(paragraph)
+        current_words += paragraph_words
+
+    if current_parts:
+        chunks.append("\n\n".join(current_parts).strip())
+    return chunks
+
+
+def _append_llm_chunks(
+    sections: List[Dict[str, Any]],
+    content: str,
+    title: Optional[str],
+    source: str,
+    max_words: int,
+) -> None:
+    clean_content = (content or "").strip()
+    if not clean_content:
+        return
+    chunks = _chunk_text_by_paragraph_words(clean_content, max_words)
+    if not chunks:
+        chunks = [clean_content]
+    if len(chunks) == 1:
+        sections.append({
+            "title": title,
+            "content": chunks[0],
+            "source": source,
+        })
+        return
+    for idx, chunk in enumerate(chunks):
+        sections.append({
+            "title": title if idx == 0 else None,
+            "content": chunk,
+            "source": source,
+        })
+
+
 def build_gemini_sections(text: str, prefer_chapters: bool, config: dict, custom_heading: Optional[Any] = None):
     """Create sections for Gemini processing based on detected sections or chunks."""
     sections = []
     if not text:
         return sections
+
+    llm_chunk_size = _resolve_llm_chunk_size(config)
+    llm_chunk_chapters = _resolve_llm_chunk_chapters(config)
 
     book_matches = list(BOOK_HEADING_PATTERN.finditer(text))
     section_pattern = _build_section_heading_pattern(custom_heading)
@@ -2094,29 +2199,64 @@ def build_gemini_sections(text: str, prefer_chapters: bool, config: dict, custom
             for chapter in book.get("chapters") or []:
                 chapter_title = (chapter.get("title") or "").strip()
                 title = f"{book_title} — {chapter_title}".strip(" —") if chapter_title else book_title
-                sections.append({
-                    "title": title,
-                    "content": (chapter.get("content") or "").strip(),
-                    "source": "section"
-                })
+                if llm_chunk_chapters:
+                    _append_llm_chunks(
+                        sections,
+                        chapter.get("content") or "",
+                        title,
+                        "section",
+                        llm_chunk_size,
+                    )
+                else:
+                    sections.append({
+                        "title": title,
+                        "content": (chapter.get("content") or "").strip(),
+                        "source": "section",
+                    })
     elif prefer_chapters and section_matches:
         for chapter in split_text_into_sections(text, custom_heading):
-            sections.append({
-                "title": chapter.get("title"),
-                "content": (chapter.get("content") or "").strip(),
-                "source": "section"
-            })
+            if llm_chunk_chapters:
+                _append_llm_chunks(
+                    sections,
+                    chapter.get("content") or "",
+                    chapter.get("title"),
+                    "section",
+                    llm_chunk_size,
+                )
+            else:
+                sections.append({
+                    "title": chapter.get("title"),
+                    "content": (chapter.get("content") or "").strip(),
+                    "source": "section",
+                })
     elif prefer_chapters:
         clean_text = text.strip()
         if clean_text:
-            sections.append({
-                "title": "Full Story",
-                "content": clean_text,
-                "source": "full"
-            })
+            if llm_chunk_chapters:
+                chunks = _chunk_text_by_paragraph_words(clean_text, llm_chunk_size)
+                if not chunks:
+                    chunks = [clean_text]
+                if len(chunks) == 1:
+                    sections.append({
+                        "title": "Full Story",
+                        "content": chunks[0],
+                        "source": "full"
+                    })
+                else:
+                    for chunk in chunks:
+                        sections.append({
+                            "title": None,
+                            "content": chunk,
+                            "source": "chunk"
+                        })
+            else:
+                sections.append({
+                    "title": "Full Story",
+                    "content": clean_text,
+                    "source": "full"
+                })
     else:
-        processor = _create_text_processor_for_engine(config.get("tts_engine"), config.get('chunk_size', 500), config)
-        chunks = processor.chunk_text(text)
+        chunks = _chunk_text_by_paragraph_words(text, llm_chunk_size)
         if not chunks:
             chunks = [text]
         for chunk in chunks:
@@ -2169,6 +2309,12 @@ def _run_llm_prompt(prompt: str, config: Dict[str, Any]) -> str:
     model_name = (config.get("llm_local_model") or "").strip()
     api_key = (config.get("llm_local_api_key") or "").strip()
     timeout = int(config.get("llm_local_timeout") or 120)
+    temperature = config.get("llm_local_temperature")
+    top_p = config.get("llm_local_top_p")
+    top_k = config.get("llm_local_top_k")
+    repeat_penalty = config.get("llm_local_repeat_penalty")
+    max_tokens = config.get("llm_local_max_tokens")
+    disable_reasoning = bool(config.get("llm_local_disable_reasoning", False))
 
     processor = LocalLLMProcessor(
         provider=local_provider,
@@ -2176,6 +2322,12 @@ def _run_llm_prompt(prompt: str, config: Dict[str, Any]) -> str:
         model_name=model_name,
         api_key=api_key,
         timeout=timeout,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        repeat_penalty=repeat_penalty,
+        max_tokens=max_tokens,
+        disable_reasoning=disable_reasoning,
     )
     return processor.generate_text(prompt)
 
@@ -2630,9 +2782,11 @@ def process_audio_job(job_data):
                 if job_entry is not None:
                     job_entry.setdefault("chunks", []).append(record)
 
-        def make_chunk_callback(chapter_idx: int):
+        def make_chunk_callback(chapter_idx: int, output_files: Optional[List[str]] = None):
             def chunk_cb(chunk_idx: int, segment: Dict[str, Any], file_path: str):
                 register_chunk(chapter_idx, chunk_idx, segment, file_path)
+                if output_files is not None:
+                    output_files.append(file_path)
                 update_progress(0)  # keep progress logic centralized
             return chunk_cb
 
@@ -2674,7 +2828,8 @@ def process_audio_job(job_data):
                 if not segments:
                     return []
             output_dir.mkdir(parents=True, exist_ok=True)
-            chunk_cb = make_chunk_callback(chapter_idx)
+            generated_files: List[str] = []
+            chunk_cb = make_chunk_callback(chapter_idx, generated_files)
             supports_chunk_cb = False
             flat_segments: List[Dict[str, Any]] = []
             order_index = 0
@@ -2711,6 +2866,8 @@ def process_audio_job(job_data):
             if "group_by_speaker" in sig_params:
                 engine_kwargs["group_by_speaker"] = bool(config.get("group_chunks_by_speaker", False))
             audio_files = run_with_cancel(lambda: engine.generate_batch(**engine_kwargs))
+            if not audio_files and generated_files:
+                audio_files = list(generated_files)
 
             if not supports_chunk_cb and audio_files:
                 for order_idx, file_path in enumerate(audio_files):
@@ -5006,6 +5163,46 @@ def list_gemini_models():
         }), 500
 
 
+@app.route('/api/local-llm/models', methods=['POST'])
+def list_local_llm_models():
+    """List available local LLM models for LM Studio/Ollama."""
+    try:
+        data = request.json or {}
+        config = load_config()
+
+        provider = (data.get("provider") or config.get("llm_local_provider") or "").strip()
+        base_url = (data.get("base_url") or config.get("llm_local_base_url") or "").strip()
+        api_key = (data.get("api_key") or config.get("llm_local_api_key") or "").strip()
+        timeout = int(data.get("timeout") or config.get("llm_local_timeout") or 30)
+
+        models = LocalLLMProcessor.list_available_models(
+            provider=provider,
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout,
+        )
+        return jsonify({
+            "success": True,
+            "models": models,
+        })
+    except (ValueError, TypeError):
+        return jsonify({
+            "success": False,
+            "error": "Invalid timeout value"
+        }), 400
+    except (GeminiProcessorError, LocalLLMProcessorError) as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc)
+        }), 400
+    except Exception as exc:  # pragma: no cover - general failure
+        logger.error("Error listing local LLM models: %s", exc, exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": "Failed to list local LLM models"
+        }), 500
+
+
 @app.route('/api/analyze', methods=['POST'])
 def analyze_text():
     """Analyze text and return statistics"""
@@ -5088,7 +5285,7 @@ def analyze_text():
 
 @app.route('/api/jobs/<job_id>/delete', methods=['DELETE'])
 def delete_job(job_id: str):
-    """Delete a job from the queue and remove its files."""
+    """Remove a job from the queue without deleting its output files."""
     try:
         with queue_lock:
             job_entry = jobs.get(job_id)
@@ -5105,20 +5302,12 @@ def delete_job(job_id: str):
             pause_flags.pop(job_id, None)
             cancel_events.pop(job_id, None)
 
-        job_dir = _job_dir_from_entry(job_id, job_entry)
-        job_data_dir = JOBS_DATA_DIR / job_id
-        archive_dir = JOBS_ARCHIVE_DIR / job_id
-        for path in [job_dir, job_data_dir, archive_dir]:
-            if path.exists():
-                shutil.rmtree(path, onerror=handle_remove_readonly)
-
         with _get_jobs_db_connection() as conn:
             conn.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
             conn.commit()
 
         with queue_lock:
             jobs.pop(job_id, None)
-        invalidate_library_cache()
         return jsonify({"success": True})
     except Exception as e:
         logger.error("Error deleting job %s: %s", job_id, e, exc_info=True)
@@ -5153,6 +5342,17 @@ def resume_job(job_id: str):
             job_entry = jobs.get(job_id)
             if not job_entry:
                 return jsonify({"success": False, "error": "Job not found"}), 404
+            total_chunks = int(job_entry.get("total_chunks") or 0)
+            processed_chunks = int(job_entry.get("processed_chunks") or 0)
+            post_total = int(job_entry.get("post_process_total") or 0)
+            post_done = int(job_entry.get("post_process_done") or 0)
+            if total_chunks and processed_chunks >= total_chunks and (post_total == 0 or post_done >= post_total):
+                job_entry["status"] = "completed"
+                job_entry["progress"] = 100
+                job_entry["eta_seconds"] = 0
+                job_entry["interrupted_at"] = None
+                _persist_job_state(job_id, force=True)
+                return jsonify({"success": True, "message": "Job already completed"})
             if job_entry.get("status") not in {"paused", "interrupted"}:
                 return jsonify({"success": False, "error": "Job is not paused"}), 409
             pause_flags.pop(job_id, None)
@@ -5793,6 +5993,7 @@ def download_audio(job_id):
         config = load_config()
         output_format = config.get('output_format', 'mp3')
         requested_file = request.args.get('file') if request else None
+        requested_name = request.args.get('download_name') if request else None
 
         # Try to find the file - check both mp3 and wav
         file_path = None
@@ -5811,6 +6012,17 @@ def download_audio(job_id):
                 output_format = candidate_path.suffix.lstrip('.')
 
         if file_path is None:
+            metadata = load_job_metadata(job_dir)
+            full_story = (metadata or {}).get("full_story") if metadata else None
+            if full_story:
+                rel_path = full_story.get("relative_path") or full_story.get("output_file")
+                if rel_path:
+                    candidate = job_dir / Path(rel_path)
+                    if candidate.exists():
+                        file_path = candidate
+                        output_format = candidate.suffix.lstrip('.')
+
+        if file_path is None:
             for ext in [output_format, 'mp3', 'wav', 'ogg']:
                 test_path = job_dir / f"output.{ext}"
                 if test_path.exists():
@@ -5825,11 +6037,17 @@ def download_audio(job_id):
                 "error": f"Audio file not found for job {job_id}"
             }), 404
 
+        download_name = f"kokoro_story_{job_id}.{output_format}"
+        if requested_name:
+            safe_name = Path(requested_name).name
+            if safe_name:
+                download_name = safe_name
+
         logger.info(f"Sending file: {file_path}")
         return send_file(
             file_path,
             as_attachment=True,
-            download_name=f"kokoro_story_{job_id}.{output_format}"
+            download_name=download_name
         )
         
     except Exception as e:
@@ -6428,6 +6646,292 @@ def _resolve_chapter_output_path(job_dir: Path, target: Dict[str, Any], output_f
     return chapter_dir / output_filename
 
 
+def _sorted_chunk_files(chunk_dir: Path) -> List[Path]:
+    def chunk_sort_key(path: Path) -> Tuple[int, str]:
+        match = re.search(r"(\d+)", path.stem)
+        return (int(match.group(1)) if match else 0, path.name)
+
+    return sorted(chunk_dir.glob("chunk_*.wav"), key=chunk_sort_key)
+
+
+def _scan_chunk_folders(job_dir: Path) -> List[Dict[str, Any]]:
+    sources: List[Dict[str, Any]] = []
+    title_chunk_dir = job_dir / "title" / "chunks"
+    if title_chunk_dir.exists():
+        title_chunks = _sorted_chunk_files(title_chunk_dir)
+        if title_chunks:
+            sources.append({
+                "chapter_number": 0,
+                "chapter_dir": "title",
+                "chunk_dir": "title/chunks",
+                "chunk_files": [path for path in title_chunks],
+                "is_title": True,
+            })
+
+    chapter_dirs = []
+    for chapter_dir in job_dir.glob("chapter_*"):
+        match = re.match(r"chapter_(\d+)", chapter_dir.name)
+        if not match:
+            continue
+        chapter_dirs.append((int(match.group(1)), chapter_dir))
+
+    for chapter_number, chapter_dir in sorted(chapter_dirs, key=lambda item: item[0]):
+        chunk_dir = chapter_dir / "chunks"
+        if not chunk_dir.exists():
+            continue
+        chunks = _sorted_chunk_files(chunk_dir)
+        if not chunks:
+            continue
+        sources.append({
+            "chapter_number": chapter_number,
+            "chapter_dir": chapter_dir.name,
+            "chunk_dir": f"{chapter_dir.name}/chunks",
+            "chunk_files": [path for path in chunks],
+            "is_title": False,
+        })
+
+    return sources
+
+
+def _rebuild_review_manifest_from_chunks(job_id: str, job_dir: Path, force_rebuild: bool = False) -> Dict[str, Any]:
+    chunks_meta_path = job_dir / "chunks_metadata.json"
+    if not chunks_meta_path.exists():
+        raise FileNotFoundError("chunks_metadata.json not found")
+
+    with chunks_meta_path.open("r", encoding="utf-8") as handle:
+        chunks_meta = json.load(handle)
+
+    chunks = [dict(item) for item in (chunks_meta.get("chunks") or []) if isinstance(item, dict)]
+    chunk_sources = _scan_chunk_folders(job_dir)
+    has_title_section = any(source.get("is_title") for source in chunk_sources)
+    if not chunks and not chunk_sources:
+        raise ValueError("No chunks found for this job")
+
+    existing_manifest = None
+    manifest_path = job_dir / "review_manifest.json"
+    if manifest_path.exists():
+        try:
+            with manifest_path.open("r", encoding="utf-8") as handle:
+                existing_manifest = json.load(handle)
+        except Exception:
+            existing_manifest = None
+
+    title_by_index = {}
+    if existing_manifest:
+        for entry in existing_manifest.get("chapters") or []:
+            if entry.get("index") is not None and entry.get("title"):
+                title_by_index[int(entry["index"])] = entry["title"]
+
+    output_format = None
+    metadata = load_job_metadata(job_dir) or {}
+    if metadata.get("output_format"):
+        output_format = metadata.get("output_format")
+    if not output_format:
+        config = load_config()
+        output_format = config.get("output_format") or "mp3"
+
+    chapter_map: Dict[int, Dict[str, Any]] = {}
+    all_full_story_chunks: List[str] = []
+
+    if chunk_sources:
+        rebuilt_chunks = []
+        order_index = 0
+        for source in chunk_sources:
+            chapter_number = int(source["chapter_number"])
+            chapter_index = 0 if source.get("is_title") else (chapter_number if has_title_section else chapter_number - 1)
+            chunk_files = []
+            for chunk_path in source["chunk_files"]:
+                rel_file = chunk_path.relative_to(job_dir).as_posix()
+                chunk_files.append(rel_file)
+                chunk_match = re.search(r"(\d+)", chunk_path.stem)
+                chunk_index = int(chunk_match.group(1)) if chunk_match else 0
+                rebuilt_chunks.append({
+                    "id": f"{chapter_index}-{chunk_index}-{order_index}",
+                    "order_index": order_index,
+                    "chapter_index": chapter_index,
+                    "chunk_index": chunk_index,
+                    "relative_file": rel_file,
+                })
+                order_index += 1
+
+            all_full_story_chunks.extend(chunk_files)
+            chapter_map[chapter_index] = {
+                "chunk_files": chunk_files,
+                "chunk_dir": source["chunk_dir"],
+                "chapter_dir": source["chapter_dir"],
+                "chapter_number": chapter_number,
+                "is_title": source.get("is_title", False),
+            }
+
+        if force_rebuild:
+            chunks_meta_path = job_dir / "chunks_metadata.json"
+            chunks_meta = {
+                "engine": chunks_meta.get("engine"),
+                "created_at": chunks_meta.get("created_at", datetime.now().isoformat()),
+                "updated_at": datetime.now().isoformat(),
+                "chunks": rebuilt_chunks,
+            }
+            with chunks_meta_path.open("w", encoding="utf-8") as handle:
+                json.dump(chunks_meta, handle, indent=2)
+            chunks = rebuilt_chunks
+    else:
+        sorted_chunks = sorted(chunks, key=lambda c: (c.get("chapter_index") or 0, c.get("order_index") or 0))
+
+        for chunk in sorted_chunks:
+            chapter_index = chunk.get("chapter_index")
+            if chapter_index is None:
+                continue
+            rel_file = chunk.get("relative_file")
+            if not rel_file:
+                file_path = chunk.get("file_path")
+                if file_path:
+                    rel_file = os.path.relpath(file_path, job_dir)
+            if not rel_file:
+                continue
+            rel_file = rel_file.replace("\\", "/")
+
+            all_full_story_chunks.append(rel_file)
+
+            entry = chapter_map.setdefault(int(chapter_index), {
+                "chunk_files": [],
+                "chunk_dir": None,
+                "chapter_dir": None,
+            })
+            entry["chunk_files"].append(rel_file)
+
+            rel_path = Path(rel_file)
+            parts = list(rel_path.parts)
+            if "chunks" in parts:
+                chunk_idx = parts.index("chunks")
+                entry["chunk_dir"] = Path(*parts[:chunk_idx + 1]).as_posix()
+                entry["chapter_dir"] = Path(*parts[:chunk_idx]).as_posix() or "."
+            else:
+                entry["chunk_dir"] = rel_path.parent.as_posix()
+                entry["chapter_dir"] = rel_path.parent.parent.as_posix() if rel_path.parent.parent else "."
+
+    if not chapter_map:
+        raise ValueError("No chapter data could be derived from chunks")
+
+    merger = _build_review_merger(load_config())
+    chapter_entries = []
+    chapter_outputs = []
+
+    for chapter_index in sorted(chapter_map.keys()):
+        data = chapter_map[chapter_index]
+        chunk_files = data.get("chunk_files") or []
+        if not chunk_files:
+            continue
+
+        chapter_number = data.get("chapter_number")
+        is_title_section = bool(data.get("is_title"))
+        chapter_dir = data.get("chapter_dir") or "."
+        if is_title_section:
+            title = title_by_index.get(chapter_index) or "Title"
+            output_filename = f"title.{output_format}"
+        else:
+            display_number = chapter_number if isinstance(chapter_number, int) else (chapter_index + 1)
+            title = title_by_index.get(chapter_index) or f"Chapter {display_number}"
+            output_filename = f"chapter_{display_number:02d}.{output_format}"
+
+        target = {
+            "chapter_dir": chapter_dir,
+            "output_filename": output_filename,
+        }
+        output_path = _resolve_chapter_output_path(job_dir, target, output_format, chapter_index)
+        if force_rebuild:
+            output_dir = output_path.parent
+            if output_dir.exists():
+                for item in output_dir.iterdir():
+                    if item.is_file():
+                        _remove_existing_output(item)
+        if force_rebuild or not output_path.exists():
+            chunk_paths = [str(job_dir / Path(rel_path)) for rel_path in chunk_files]
+            missing = [p for p in chunk_paths if not Path(p).exists()]
+            if missing:
+                logger.warning("Missing chunk files for chapter %s: %s", chapter_index, missing)
+            else:
+                merger.merge_wav_files(
+                    input_files=chunk_paths,
+                    output_path=str(output_path),
+                    format=output_format,
+                    cleanup_chunks=False,
+                )
+
+        rel_output = (Path(chapter_dir) / output_path.name).as_posix()
+        if rel_output.startswith("./"):
+            rel_output = rel_output[2:]
+
+        chapter_entries.append({
+            "index": chapter_index,
+            "title": title,
+            "chunk_dir": data.get("chunk_dir"),
+            "chunk_files": chunk_files,
+            "chapter_dir": chapter_dir,
+            "output_filename": output_path.name,
+        })
+        chapter_outputs.append({
+            "index": chapter_index,
+            "title": title,
+            "file_url": f"/static/audio/{job_id}/{rel_output}",
+            "relative_path": rel_output,
+            "format": output_format,
+        })
+
+    full_story_entry = None
+    full_story_path = job_dir / f"full_story.{output_format}"
+    if all_full_story_chunks:
+        if force_rebuild:
+            _remove_existing_output(full_story_path)
+        if force_rebuild or not full_story_path.exists():
+            chunk_paths = [str(job_dir / Path(rel_path)) for rel_path in all_full_story_chunks]
+            missing = [p for p in chunk_paths if not Path(p).exists()]
+            if not missing:
+                merger.merge_wav_files(
+                    input_files=chunk_paths,
+                    output_path=str(full_story_path),
+                    format=output_format,
+                    cleanup_chunks=False,
+                )
+        if full_story_path.exists():
+            full_story_entry = {
+                "title": "Full Story",
+                "file_url": f"/static/audio/{job_id}/{full_story_path.name}",
+                "relative_path": full_story_path.name,
+                "format": output_format,
+            }
+
+    review_manifest = {
+        "chapter_mode": True,
+        "book_mode": False,
+        "chapters": chapter_entries,
+        "books": [],
+        "full_story_requested": bool(all_full_story_chunks),
+        "output_format": output_format,
+        "chunk_dirs_to_cleanup": [c.get("chunk_dir") for c in chapter_entries if c.get("chunk_dir")],
+        "all_full_story_chunks": all_full_story_chunks,
+    }
+    with manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(review_manifest, handle, indent=2)
+
+    metadata.update({
+        "chapter_mode": True,
+        "book_mode": False,
+        "output_format": output_format,
+        "chapters": chapter_outputs,
+        "chapter_count": len(chapter_outputs),
+        "books": [],
+        "book_count": 0,
+        "full_story": full_story_entry,
+    })
+    save_job_metadata(job_dir, metadata)
+
+    return {
+        "chapters": chapter_outputs,
+        "full_story": full_story_entry,
+        "manifest": review_manifest,
+    }
+
+
 @app.route('/api/library/<job_id>/rebuild/chapter', methods=['POST'])
 def rebuild_library_chapter(job_id):
     """Rebuild a single chapter output from review chunks."""
@@ -6702,7 +7206,33 @@ def rebuild_library_all(job_id):
         })
     except Exception as exc:
         logger.error("Failed to rebuild all outputs for %s: %s", job_id, exc, exc_info=True)
-        return jsonify({"success": False, "error": "Failed to rebuild all outputs"}), 500
+        return jsonify({"success": False, "error": "Failed to rebuild outputs"}), 500
+
+
+@app.route('/api/library/<job_id>/repair', methods=['POST'])
+def repair_library_job(job_id):
+    """Rebuild missing review manifest/metadata from existing chunk files."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        force_rebuild = bool(payload.get("force_rebuild"))
+        job_dir = OUTPUT_DIR / job_id
+        if not job_dir.exists():
+            return jsonify({"success": False, "error": "Item not found"}), 404
+
+        result = _rebuild_review_manifest_from_chunks(job_id, job_dir, force_rebuild=force_rebuild)
+        invalidate_library_cache()
+        return jsonify({
+            "success": True,
+            "chapters": result.get("chapters"),
+            "full_story": result.get("full_story"),
+        })
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        logger.error("Failed to repair library job %s: %s", job_id, exc, exc_info=True)
+        return jsonify({"success": False, "error": "Failed to repair library item"}), 500
 
 
 @app.route('/api/library/<job_id>', methods=['DELETE'])
@@ -7111,4 +7641,5 @@ if __name__ == '__main__':
     _archive_old_jobs()
     _cleanup_orphaned_chatterbox_voices()
     _cleanup_orphaned_regen_folders()
+    threading.Timer(1.0, lambda: webbrowser.open("http://localhost:5000")).start()
     app.run(host='0.0.0.0', port=5000, debug=True)
