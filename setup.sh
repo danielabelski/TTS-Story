@@ -135,6 +135,11 @@ fi
 # 6/12 Install other dependencies
 echo
 echo "[6/12] Installing other Python dependencies..."
+# Add scipy if not in requirements (needed for pocket-tts)
+if ! grep -qi "^scipy" requirements.txt 2>/dev/null; then
+    echo "Adding scipy to requirements..."
+    echo "scipy>=1.11.0" >> requirements.txt
+fi
 # Filter out torch packages (already installed) and pyopenjtalk (needs special handling)
 grep -vi "^torch" requirements.txt > temp_requirements.txt 2>/dev/null || true
 grep -vi "^pyopenjtalk" temp_requirements.txt > temp_requirements_filtered.txt 2>/dev/null || true
@@ -155,12 +160,50 @@ fi
 # 7/12 Install Chatterbox Turbo runtime
 echo
 echo "[7/12] Installing Chatterbox Turbo runtime..."
-pip install chatterbox-tts --no-deps || echo "WARNING: Failed to install chatterbox-tts"
+# First try with deps to get torchaudio and other required packages
+if pip install chatterbox-tts; then
+    echo "Chatterbox Turbo installed with dependencies!"
+else
+    # If that fails, try without deps but install torchaudio manually
+    echo "Installing chatterbox-tts without auto-deps, installing key dependencies manually..."
+    pip install chatterbox-tts --no-deps || true
+fi
 
-# 8/12 Install VoxCPM runtime
+# Ensure torchaudio is installed (required for Chatterbox)
 echo
-echo "[8/12] Installing VoxCPM 1.5 runtime..."
+echo "Ensuring torchaudio is installed (required for Chatterbox)..."
+pip install torchaudio --quiet || echo "WARNING: torchaudio install failed"
+
+# Install scipy (needed by pocket-tts and other TTS engines)
+echo
+echo "Installing scipy (required for Pocket TTS and audio processing)..."
+pip install scipy --quiet || echo "WARNING: scipy install failed"
+
+# 8/12 Install Pocket TTS runtime
+echo
+echo "[8/12] Installing Pocket TTS runtime..."
+# Install pocket-tts with deps to get all required packages
+if pip install pocket-tts; then
+    echo "Pocket TTS installed with dependencies!"
+else
+    echo "WARNING: pocket-tts install failed - Pocket TTS engine will not be available"
+fi
+
+# 8b/12 Install VoxCPM runtime (after pocket-tts so numpy version is set)
+echo
+echo "[8b/12] Installing VoxCPM 1.5 runtime..."
 pip install voxcpm --no-deps || echo "WARNING: Failed to install voxcpm - VoxCPM engine will not be available"
+
+# Ensure numpy is at a compatible version for all TTS engines
+echo
+echo "Ensuring numpy version compatibility..."
+if [ "$HAS_NVIDIA" -eq 0 ]; then
+    # CPU-only systems need numpy<1.26.0 for older PyTorch compatibility
+    pip install "numpy<1.26.0" --quiet || echo "WARNING: numpy version adjustment failed"
+else
+    # GPU systems can use newer numpy
+    pip install "numpy>=2.0.0" --quiet || echo "WARNING: numpy version adjustment failed"
+fi
 
 # 9/12 Install optional performance extras
 echo
