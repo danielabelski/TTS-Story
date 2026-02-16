@@ -59,6 +59,26 @@ else
 fi
 fi
 
+# Check and install python3-venv if not present
+echo
+echo "[1c/12] Checking python3-venv installation..."
+if ! python3 -m venv --help >/dev/null 2>&1; then
+    echo "python3-venv not found. Installing..."
+    if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq python3-venv python3-pip
+    elif command -v brew >/dev/null 2>&1; then
+        brew install python@3.10
+    elif command -v pacman >/dev/null 2>&1; then
+        sudo pacman -Sy --noconfirm python-pythonz
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y python3.10-venv
+    else
+        echo "WARNING: Could not detect package manager to install python3-venv."
+    fi
+fi
+echo "python3-venv is available."
+
 # 2/12 Create virtual environment
 echo
 echo "[2/12] Creating virtual environment..."
