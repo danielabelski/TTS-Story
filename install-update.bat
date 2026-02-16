@@ -11,6 +11,29 @@ echo TTS-Story Windows Install/Update
 echo ========================================
 echo.
 
+REM Check if already in the repository (running from within the project folder)
+if exist ".git" (
+    if exist "setup.bat" (
+        echo Running from within TTS-Story repository.
+        echo Updating in-place...
+        git pull
+        if errorlevel 1 (
+            echo ERROR: Git pull failed.
+            pause
+            exit /b 1
+        )
+        echo.
+        echo Running setup.bat...
+        call setup.bat
+        echo.
+        echo ✅ Update complete.
+        pause
+        exit /b 0
+    )
+)
+
+REM Not in repo - clone/update from outside
+
 echo Checking Git installation...
 where git >nul 2>&1
 if errorlevel 1 (
@@ -70,13 +93,6 @@ if exist "%REPO_DIR%" (
 )
 
 echo.
-choice /C YN /M "Run setup.bat to update dependencies/components?"
-if errorlevel 2 (
-    echo Skipping setup. Git update complete.
-    goto :Done
-)
-
-echo.
 echo Running setup.bat...
 if exist "%REPO_DIR%\setup.bat" (
     pushd "%REPO_DIR%"
@@ -90,5 +106,4 @@ if exist "%REPO_DIR%\setup.bat" (
 
 echo.
 echo ✅ Install/update complete.
-:Done
 pause

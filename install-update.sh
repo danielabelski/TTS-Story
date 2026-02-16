@@ -9,8 +9,32 @@ echo "TTS-Story Linux/macOS Install/Update"
 echo "========================================"
 echo
 
-# Fix git safe.directory warning (allows git operations in any directory)
+# Fix git safe.directory warning
 git config --global --add safe.directory "*" 2>/dev/null || true
+
+# Check if already in the repository (running from within the project folder)
+if [ -d ".git" ] && [ -f "setup.sh" ]; then
+    echo "Running from within TTS-Story repository."
+    echo "Updating in-place..."
+    git pull
+    echo
+    
+    # Fix incomplete venv if exists
+    if [ -d "venv" ] && [ ! -f "venv/bin/activate" ]; then
+        echo "Removing incomplete virtual environment..."
+        rm -rf venv
+    fi
+    
+    echo "Running setup.sh..."
+    chmod +x setup.sh
+    ./setup.sh
+    
+    echo
+    echo "✅ Update complete."
+    exit 0
+fi
+
+# Not in repo - clone/update from outside
 
 # Check if git is installed
 echo "Checking Git installation..."
@@ -32,13 +56,11 @@ if ! command -v git >/dev/null 2>&1; then
         sudo apk add git
     else
         echo "ERROR: Could not detect package manager to install git."
-        echo "Please install git manually and re-run this script."
         exit 1
     fi
     
-    # Verify git is now installed
     if ! command -v git >/dev/null 2>&1; then
-        echo "ERROR: Git installation failed. Please install git manually."
+        echo "ERROR: Git installation failed."
         exit 1
     fi
 fi
@@ -48,7 +70,6 @@ echo
 
 # Pre-check: Install python3-venv with ensurepip if needed
 echo "Checking Python venv support..."
-# Test if we can actually create a venv (not just check --help)
 TEST_VENV="/tmp/venv_test_$$"
 if ! python3 -m venv "$TEST_VENV" >/dev/null 2>&1; then
     echo "venv creation failed. Installing python3-venv..."
@@ -68,7 +89,6 @@ echo "Cloning or updating repository..."
 if [ -d "$REPO_DIR" ]; then
     if [ -d "$REPO_DIR/.git" ]; then
         echo "Repository found. Pulling latest updates..."
-        # Fix permissions in case repo was cloned with sudo
         if [ -O "$REPO_DIR" ]; then
             echo "Repository owned by current user."
         else
@@ -80,7 +100,6 @@ if [ -d "$REPO_DIR" ]; then
         cd ..
     else
         echo "ERROR: $REPO_DIR exists but is not a Git repository."
-        echo "Please rename or remove the folder and re-run this script."
         exit 1
     fi
 else
@@ -98,7 +117,7 @@ if [ -f "$REPO_DIR/setup.sh" ]; then
     cd "$REPO_DIR"
     chmod +x setup.sh
     
-    # Remove incomplete venv if exists (caused by failed/missing python3-venv)
+    # Remove incomplete venv if exists
     if [ -d "venv" ] && [ ! -f "venv/bin/activate" ]; then
         echo "Removing incomplete virtual environment..."
         rm -rf venv
