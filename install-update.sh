@@ -46,10 +46,12 @@ fi
 echo "Git is installed: $(git --version)"
 echo
 
-# Pre-check: Install python3-venv if needed (before cloning/updating)
+# Pre-check: Install python3-venv with ensurepip if needed
 echo "Checking Python venv support..."
-if ! python3 -m venv --help >/dev/null 2>&1; then
-    echo "python3-venv not found. Installing..."
+# Test if we can actually create a venv (not just check --help)
+TEST_VENV="/tmp/venv_test_$$"
+if ! python3 -m venv "$TEST_VENV" >/dev/null 2>&1; then
+    echo "venv creation failed. Installing python3-venv..."
     if command -v apt-get >/dev/null 2>&1; then
         sudo apt-get update -qq
         sudo apt-get install -y -qq python3-venv python3-pip
@@ -59,6 +61,7 @@ if ! python3 -m venv --help >/dev/null 2>&1; then
         sudo dnf install -y python3.10-venv
     fi
 fi
+rm -rf "$TEST_VENV"
 
 # Clone or update repository
 echo "Cloning or updating repository..."
