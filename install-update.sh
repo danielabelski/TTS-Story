@@ -9,6 +9,9 @@ echo "TTS-Story Linux/macOS Install/Update"
 echo "========================================"
 echo
 
+# Fix git safe.directory warning (allows git operations in any directory)
+git config --global --add safe.directory "*" 2>/dev/null || true
+
 # Check if git is installed
 echo "Checking Git installation..."
 if ! command -v git >/dev/null 2>&1; then
@@ -43,11 +46,32 @@ fi
 echo "Git is installed: $(git --version)"
 echo
 
+# Pre-check: Install python3-venv if needed (before cloning/updating)
+echo "Checking Python venv support..."
+if ! python3 -m venv --help >/dev/null 2>&1; then
+    echo "python3-venv not found. Installing..."
+    if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq python3-venv python3-pip
+    elif command -v brew >/dev/null 2>&1; then
+        brew install python@3.10
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y python3.10-venv
+    fi
+fi
+
 # Clone or update repository
 echo "Cloning or updating repository..."
 if [ -d "$REPO_DIR" ]; then
     if [ -d "$REPO_DIR/.git" ]; then
         echo "Repository found. Pulling latest updates..."
+        # Fix permissions in case repo was cloned with sudo
+        if [ -O "$REPO_DIR" ]; then
+            echo "Repository owned by current user."
+        else
+            echo "Fixing repository ownership..."
+            sudo chown -R $(whoami):$(whoami) "$REPO_DIR" 2>/dev/null || true
+        fi
         cd "$REPO_DIR"
         git pull
         cd ..
@@ -70,6 +94,13 @@ echo
 if [ -f "$REPO_DIR/setup.sh" ]; then
     cd "$REPO_DIR"
     chmod +x setup.sh
+    
+    # Remove incomplete venv if exists (caused by failed/missing python3-venv)
+    if [ -d "venv" ] && [ ! -f "venv/bin/activate" ]; then
+        echo "Removing incomplete virtual environment..."
+        rm -rf venv
+    fi
+    
     ./setup.sh
     cd ..
 else
