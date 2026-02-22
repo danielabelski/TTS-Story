@@ -3471,6 +3471,47 @@ def _cleanup_orphaned_chatterbox_voices() -> int:
     return removed_count
 
 
+def _auto_register_voice_prompt_files() -> int:
+    """Scan data/voice_prompts/ and add registry entries for any audio files
+    not already tracked in chatterbox_voices.json.
+
+    Returns the number of newly registered entries.
+    """
+    existing_entries = _load_chatterbox_voice_entries()
+    registered_files = {e.get("file_name") for e in existing_entries if e.get("file_name")}
+
+    new_entries = []
+    for path in sorted(VOICE_PROMPT_DIR.glob("*")):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in VOICE_PROMPT_EXTENSIONS:
+            continue
+        if path.name in registered_files:
+            continue
+        # Build a friendly display name from the filename stem
+        display_name = path.stem.replace("_", " ").replace("-", " ").title()
+        entry = {
+            "id": str(uuid.uuid4()),
+            "name": display_name,
+            "file_name": path.name,
+            "created_at": datetime.now().isoformat(),
+            "gender": None,
+            "language": None,
+            "description": None,
+            "archived": False,
+            "size_bytes": None,
+            "duration_seconds": None,
+        }
+        new_entries.append(entry)
+        logger.info("Auto-registered voice prompt: %s -> %s", path.name, display_name)
+
+    if new_entries:
+        _save_chatterbox_voice_entries(existing_entries + new_entries)
+        logger.info("Auto-registered %d voice prompt file(s) from disk", len(new_entries))
+
+    return len(new_entries)
+
+
 def _slugify_filename(value: str) -> str:
     value = value.lower().strip()
     value = re.sub(r"[^a-z0-9]+", "_", value)
@@ -7798,6 +7839,7 @@ if __name__ == '__main__':
     _restore_jobs_from_db()
     _archive_old_jobs()
     _cleanup_orphaned_chatterbox_voices()
+    _auto_register_voice_prompt_files()
     _cleanup_orphaned_regen_folders()
     if os.environ.get("WERKZEUG_RUN_MAIN") != "true":
         threading.Timer(1.5, lambda: webbrowser.open("http://localhost:5000")).start()
