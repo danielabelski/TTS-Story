@@ -3957,6 +3957,7 @@ def preview_voice_prompt_fx():
 
 @app.route('/api/chatterbox-voices', methods=['GET'])
 def list_chatterbox_voices():
+    _auto_register_voice_prompt_files()
     entries = _load_chatterbox_voice_entries()
     serialized = [_serialize_chatterbox_voice(entry) for entry in entries]
     return jsonify({"success": True, "voices": serialized})
