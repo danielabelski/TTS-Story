@@ -1,12 +1,17 @@
-# Current Updates and Notes - updated 02-15-2026
-- ✅ Verified working on Linux (Ubuntu) - CPU-only system install successful via install-update.sh.
-- Added complete Linux/macOS support with setup.sh and run.sh scripts (auto-installs git, python3-venv, system dependencies).
-- Added new prompt presets optimized for local LLMs: "With Paralinguistic Tags" and "Without Paralinguistic Tags".
-- Added "Local LLM Optimized" prompt preset specifically tuned for Mistral Nemo/Llama models.
-- Added speaker mapping to maintain consistent speaker names across text chunks.
-- Setup script fixes for chatterbox-tts and pocket-tts installations (scipy, torchaudio, numpy compatibility).
+# Current Updates and Notes - updated 02-22-2026
+- Added **KittenTTS** as a new CPU-only TTS engine — ultra-lightweight (<25MB), no GPU required, 8 built-in voices (Bella, Jasper, Luna, Bruno, Rosie, Hugo, Kiki, Leo). Selectable from the engine dropdown with its own settings panel.
+- Added **Alternate Word Registry** — specify words that TTS engines mispronounce and provide phonetically equivalent substitutes. Replacements are applied automatically before synthesis on every chunk.
+- Added **per-engine configurable chunk size** in Settings → Engine Settings. Each engine now has its own character chunk size slider so you can tune the text split size independently (e.g. smaller chunks for CPU engines, larger for GPU engines).
+- **Bug fix**: Speaker profile prompt was missing from the Gemini pre-processing flow — restored.
+- **Updated** Kokoro prompt preset to "Strict Book Narration V1" with improved instruction adherence for audiobook conversion.
 
 ### Previous Updates
+- (02-15-2026) Verified working on Linux (Ubuntu) — CPU-only system install successful via install-update.sh.
+- (02-15-2026) Added complete Linux/macOS support with setup.sh and run.sh scripts (auto-installs git, python3-venv, system dependencies).
+- (02-15-2026) Added new prompt presets optimized for local LLMs: "With Paralinguistic Tags" and "Without Paralinguistic Tags".
+- (02-15-2026) Added "Local LLM Optimized" prompt preset specifically tuned for Mistral Nemo/Llama models.
+- (02-15-2026) Added speaker mapping to maintain consistent speaker names across text chunks.
+- (02-15-2026) Setup script fixes for chatterbox-tts and pocket-tts installations (scipy, torchaudio, numpy compatibility).
 - (02-03-2026) Added Pocket TTS engine with preset voices and CPU-friendly voice cloning support.
 - (02-03-2026) Job queue improvements: pause/resume, cancel jobs, and persistent queue state across restarts.
 - (02-03-2026) Job detail view expanded with per-chunk status and resume-from-chunk support.
@@ -15,7 +20,7 @@
 
 # TTS-Story
 
-A web-based Text-to-Speech application supporting multiple TTS engines including **Kokoro-82M**, **Chatterbox**, **VoxCPM 1.5**, **Qwen3 TTS** (Custom Voice, Clone, Voice Creation), and **Pocket TTS** (CPU-friendly), with both local GPU inference and Replicate cloud API options for generating multi-voice audiobooks and stories.
+A web-based Text-to-Speech application supporting multiple TTS engines including **Kokoro-82M**, **Chatterbox**, **VoxCPM 1.5**, **Qwen3 TTS** (Custom Voice, Clone, Voice Creation), **Pocket TTS** (CPU-friendly), and **KittenTTS** (ultra-lightweight CPU-only), with both local GPU inference and Replicate cloud API options for generating multi-voice audiobooks and stories.
 
 <div align="center">
   <table>
@@ -72,7 +77,7 @@ A web-based Text-to-Speech application supporting multiple TTS engines including
 ## Features
 
 ### TTS Engines
-- **Multi-Engine Support**: Choose from ten TTS engine options:
+- **Multi-Engine Support**: Choose from eleven TTS engine options:
   - **Kokoro · Local GPU** - Run Kokoro-82M locally on your NVIDIA GPU
   - **Kokoro · Replicate** - Use Kokoro via Replicate cloud API
   - **Chatterbox · Local GPU** - Run Chatterbox locally with voice cloning (~8GB VRAM required)
@@ -83,6 +88,7 @@ A web-based Text-to-Speech application supporting multiple TTS engines including
   - **Qwen3 TTS · Custom Voice** - Generate with Qwen3 TTS custom voice prompts
   - **Qwen3 TTS · Clone** - Clone a voice from reference audio using Qwen3 TTS
   - **Qwen3 TTS · Voice Creation** - Create a brand-new voice using Qwen3 TTS voice design
+  - **KittenTTS** - Ultra-lightweight CPU-only engine, no GPU required
 - **Unified Replicate API**: Single API token works for both Kokoro and Chatterbox Replicate engines
 - **Voice Cloning**: Upload your own voice recordings (10-15 seconds recommended) to clone any voice with Chatterbox or VoxCPM
 - **Voice Prompt Management**: Add, rename, delete, and preview custom voice prompts with drag-and-drop bulk upload
@@ -93,7 +99,8 @@ A web-based Text-to-Speech application supporting multiple TTS engines including
 - **Multi-Voice Support**: Use Kokoro-82M voices for any number of characters in your story
 - **Custom Voice Blending**: Mix any combination of Kokoro voices with weighted ratios to create reusable "custom_*" voice codes
 - **Speaker Tags & Auto Detection**: Automatically parse `[speaker1]...[/speaker1]` or `[alice]...[/alice]` tags
-- **Smart Text Chunking**: Automatically splits long texts into manageable chunks
+- **Smart Text Chunking**: Automatically splits long texts into manageable chunks with per-engine configurable character limits
+- **Alternate Word Registry**: Define word substitutions for terms TTS engines mispronounce — replacements are applied automatically before synthesis
 - **Seamless Audio Merging**: Merges chunks into a single file with configurable crossfade
 - **Intro & Inter-Segment Silence Controls**: Dial in precise empty space before the first line and between chunks
 
@@ -272,7 +279,7 @@ python app.py
 
 ### Selecting a TTS Engine
 
-TTS-Story supports eight TTS engine options. In the **Settings** tab, choose your preferred default engine:
+TTS-Story supports eleven TTS engine options. In the **Settings** tab, choose your preferred default engine:
 
 | Engine | Description | Requirements |
 |--------|-------------|--------------|
@@ -284,6 +291,9 @@ TTS-Story supports eight TTS engine options. In the **Settings** tab, choose you
 | **Qwen3 TTS · Custom Voice** | Qwen3 TTS custom voice prompts | NVIDIA GPU (local) |
 | **Qwen3 TTS · Clone** | Qwen3 TTS voice cloning from reference audio | NVIDIA GPU (local) |
 | **Qwen3 TTS · Voice Creation** | Qwen3 TTS voice design (new voice creation) | NVIDIA GPU (local) |
+| **Pocket TTS · Preset Voices** | CPU-only preset voices, no GPU needed | CPU only |
+| **Pocket TTS · Voice Clone** | CPU-only voice cloning from reference prompts | CPU only |
+| **KittenTTS** | Ultra-lightweight CPU-only, 8 built-in voices | CPU only |
 
 You can also override the engine per-job in the **Generate** tab.
 
@@ -295,6 +305,25 @@ VoxCPM 1.5 is a powerful voice cloning engine with unique features:
 - **Shared Voice Prompts**: Uses the same voice prompt library as Chatterbox
 - **Lower VRAM Requirements**: Runs on GPUs with ~6GB VRAM
 - **High Quality Output**: Produces natural-sounding speech with good prosody
+
+### KittenTTS Engine
+
+KittenTTS is an ultra-lightweight, CPU-only TTS engine — ideal for machines without a GPU:
+
+- **No GPU Required**: Runs entirely on CPU, no CUDA needed
+- **Tiny Footprint**: Model weights under 25MB, fast to download and load
+- **8 Built-in Voices**: Bella, Jasper, Luna, Bruno, Rosie, Hugo, Kiki, Leo
+- **Multiple Model Sizes**: Choose from `kitten-tts-mini-0.8` (recommended), `kitten-tts-micro-0.8`, or `kitten-tts-nano-0.8` (fp32/int8) for speed vs. quality trade-offs
+- **English Only**: Optimised for English narration
+- **Installation**: Install separately via `pip install https://github.com/KittenML/KittenTTS/releases/download/0.8/kittentts-0.8.0-py3-none-any.whl`
+
+#### KittenTTS Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Model ID | `KittenML/kitten-tts-mini-0.8` | Which KittenTTS model to load |
+| Default Voice | `Jasper` | Fallback voice when no per-speaker assignment is set |
+| Chunk Size | `300` chars | Character limit per synthesis chunk (lower = faster on CPU) |
 
 ### Basic Workflow
 
@@ -379,13 +408,13 @@ Because the speaker list is tracked across sections, characters that appear late
 
 #### Pre-loaded Prompt Presets
 
-TTS-Story includes three pre-configured Gemini prompt presets optimized for different use cases:
+TTS-Story includes pre-configured Gemini prompt presets optimized for different use cases:
 
 | Preset | Best For | Description |
 |--------|----------|-------------|
 | **Chatterbox Natural Dialogue Conversation** | Chatterbox engines | Transforms text into natural-sounding dialogue with paralinguistic tags (laughter, sighs, pauses) and human speech quirks. Ideal for conversational content where you want expressive, lifelike output. |
 | **Chatterbox Audio Book Conversion** | Chatterbox engines | Maintains strict adherence to the original text while converting symbols and abbreviations that TTS engines struggle with into speakable words (e.g., "/" → "slash", "-" → "dash", "Dr." → "Doctor"). |
-| **Kokoro Audio Book Conversion** | Kokoro engines | Preserves the exact text of the book while adding speaker tags and preparing the content for TTS conversion. Focuses on accurate speaker identification and proper text segmentation without modifying the original prose. |
+| **Strict Book Narration V1** | Kokoro & other engines | Preserves the exact text of the book while adding speaker tags and preparing the content for TTS conversion. Improved instruction adherence ensures the original prose is never paraphrased or summarised. |
 
 Select a preset from the dropdown in the Gemini section, or create your own custom prompts and save them for reuse.
 
@@ -467,6 +496,9 @@ Settings are stored in `config.json`:
 | `qwen3_custom_voice` | Qwen3 TTS custom voice mode |
 | `qwen3_clone` | Qwen3 TTS voice cloning mode |
 | `qwen3_voice_creation` | Qwen3 TTS voice creation mode |
+| `pocket_tts` | Pocket TTS preset voices (CPU-only) |
+| `pocket_tts_preset` | Pocket TTS voice clone mode (CPU-only) |
+| `kitten_tts` | KittenTTS CPU-only engine |
 
 Any settings you override in the Generate tab (format, bitrate, engine) are sent along with the job payload while keeping the saved defaults intact.
 
@@ -490,7 +522,10 @@ TTS-Story/
 │       ├── kokoro_engine.py              # Kokoro-82M local engine
 │       ├── chatterbox_turbo_local_engine.py    # Chatterbox local GPU engine
 │       ├── chatterbox_turbo_replicate_engine.py # Chatterbox Replicate engine
-│       └── voxcpm_local_engine.py        # VoxCPM 1.5 local GPU engine
+│       ├── voxcpm_local_engine.py        # VoxCPM 1.5 local GPU engine
+│       ├── pocket_tts_engine.py          # Pocket TTS CPU-only engine
+│       ├── qwen3_engine.py               # Qwen3 TTS engine (custom/clone/design)
+│       └── kitten_tts_engine.py          # KittenTTS CPU-only engine
 ├── static/
 │   ├── css/
 │   │   └── style.css
@@ -575,6 +610,20 @@ TTS-Story/
 - No API costs
 - Full privacy
 
+### Pocket TTS · CPU
+- No GPU required — runs on any CPU
+- Preset voices and voice cloning from reference prompts
+- No API costs
+- Full privacy
+
+### KittenTTS · CPU
+- No GPU required — ultra-lightweight (<25MB model)
+- 8 built-in English voices
+- Default chunk size: 300 chars (tunable in Settings → Engine Settings)
+- No API costs
+- Full privacy
+- Install: `pip install https://github.com/KittenML/KittenTTS/releases/download/0.8/kittentts-0.8.0-py3-none-any.whl`
+
 ## Troubleshooting
 
 ### espeak-ng not found
@@ -595,6 +644,7 @@ Apache 2.0 - Same as Kokoro-82M
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by hexgrad
 - [Chatterbox](https://github.com/resemble-ai/chatterbox) by Resemble AI
 - [VoxCPM](https://github.com/openvpi/VoxCPM) by OpenVPI
+- [KittenTTS](https://github.com/KittenML/KittenTTS) by KittenML
 - [TTS Samples](https://github.com/yaph/tts-samples) by yaph - External voice sample library
 - [StyleTTS2](https://github.com/yl4579/StyleTTS2) by yl4579
 - [Replicate](https://replicate.com) for cloud API

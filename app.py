@@ -68,6 +68,11 @@ from src.engines.voxcpm_local_engine import VOXCPM_AVAILABLE
 from src.engines.qwen3_custom_voice_engine import QWEN3_AVAILABLE
 from src.engines.qwen3_voice_clone_engine import QWEN3_AVAILABLE as QWEN3_CLONE_AVAILABLE
 from src.engines.pocket_tts_engine import POCKET_TTS_AVAILABLE
+from src.engines.kitten_tts_engine import (
+    KITTEN_TTS_AVAILABLE,
+    KITTEN_TTS_BUILTIN_VOICES,
+    KITTEN_TTS_DEFAULT_MODEL,
+)
 from src.engines.chatterbox_turbo_replicate_engine import (
     DEFAULT_CHATTERBOX_TURBO_REPLICATE_MODEL,
     DEFAULT_CHATTERBOX_TURBO_REPLICATE_VOICE,
@@ -118,6 +123,10 @@ DEFAULT_CONFIG = {
     "replicate_api_key": "",
     "chunk_size": 500,
     "kokoro_chunk_size": 500,
+    "chatterbox_turbo_local_chunk_size": 450,
+    "voxcpm_chunk_size": 550,
+    "qwen3_chunk_size": 500,
+    "pocket_tts_chunk_size": 450,
     "sample_rate": 24000,
     "speed": 1.0,
     "output_format": "mp3",
@@ -196,6 +205,9 @@ DEFAULT_CONFIG = {
     "pocket_tts_prompt_truncate": False,
     "pocket_tts_num_threads": None,
     "pocket_tts_interop_threads": None,
+    "kitten_tts_model_id": "KittenML/kitten-tts-mini-0.8",
+    "kitten_tts_default_voice": "Jasper",
+    "kitten_tts_chunk_size": 300,
     "parallel_chunks": 3,
     "group_chunks_by_speaker": False,
     "cleanup_vram_after_job": False,
@@ -460,6 +472,8 @@ def _normalize_engine_options(engine_name: str, options: Dict[str, Any]) -> Dict
         return _normalize_qwen3_clone_options(options)
     if engine_name in {"pocket_tts", "pocket_tts_preset"}:
         return _normalize_pocket_tts_options(options)
+    if engine_name == "kitten_tts":
+        return _normalize_kitten_tts_options(options)
     return {}
 
 
@@ -529,6 +543,22 @@ def _normalize_pocket_tts_options(options: Dict[str, Any]) -> Dict[str, Any]:
             )
             continue
         result[key] = (value or "").strip() if isinstance(value, str) else value
+    return result
+
+
+def _normalize_kitten_tts_options(options: Dict[str, Any]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for raw_key, value in options.items():
+        if raw_key is None:
+            continue
+        key = str(raw_key).strip().lower()
+        if key == "kitten_tts_model_id":
+            result[key] = (value or KITTEN_TTS_DEFAULT_MODEL).strip()
+        elif key == "kitten_tts_default_voice":
+            v = (value or "Jasper").strip()
+            result[key] = v if v in KITTEN_TTS_BUILTIN_VOICES else "Jasper"
+        elif key == "kitten_tts_chunk_size":
+            result[key] = _coerce_int(value, minimum=50, maximum=600, fallback=300)
     return result
 
 
@@ -878,6 +908,11 @@ def _validate_voice_assignments_for_engine(
             default_prompt = (config.get("pocket_tts_default_prompt") or "").strip()
             if not prompt and not voice and not default_prompt:
                 missing_prompts.append(speaker)
+
+        if engine_name == "kitten_tts":
+            default_voice = (config.get("kitten_tts_default_voice") or "").strip()
+            if not voice and not default_voice:
+                missing_voices.append(speaker)
 
     if missing_voices or missing_prompts:
         pieces = []
@@ -1799,6 +1834,18 @@ def _create_engine(engine_name: str, config: Dict) -> TtsEngineBase:
             interop_threads=config.get("pocket_tts_interop_threads"),
         )
 
+    if engine_name == "kitten_tts":
+        if not KITTEN_TTS_AVAILABLE:
+            raise ImportError(
+                "kittentts is not installed. Run: "
+                "pip install https://github.com/KittenML/KittenTTS/releases/download/0.8/kittentts-0.8.0-py3-none-any.whl"
+            )
+        return get_engine(
+            "kitten_tts",
+            model_id=(config.get("kitten_tts_model_id") or KITTEN_TTS_DEFAULT_MODEL).strip(),
+            default_voice=(config.get("kitten_tts_default_voice") or "Jasper").strip(),
+        )
+
     if engine_name == "kokoro_replicate":
         api_key = (config.get("replicate_api_key") or "").strip()
         if not api_key:
@@ -2458,6 +2505,15 @@ def _create_text_processor_for_engine(engine_name: str, chunk_size: int, config:
             chunk_strategy="characters",
             char_soft_limit=voxcpm_chunk_size,
             char_hard_limit=voxcpm_chunk_size + 50,
+        )
+    if _normalize_engine_name(engine_name) == "kitten_tts":
+        kitten_chunk_size = 300
+        if config:
+            kitten_chunk_size = config.get("kitten_tts_chunk_size", kitten_chunk_size)
+        return TextProcessor(
+            chunk_strategy="characters",
+            char_soft_limit=kitten_chunk_size,
+            char_hard_limit=kitten_chunk_size + 50,
         )
     return TextProcessor(chunk_size=chunk_size)
 
@@ -7658,6 +7714,7 @@ def health_check():
         "kokoro_available": KOKORO_AVAILABLE,
         "qwen3_available": QWEN3_AVAILABLE,
         "pocket_tts_available": POCKET_TTS_AVAILABLE,
+        "kitten_tts_available": KITTEN_TTS_AVAILABLE,
         "cuda_available": False if not KOKORO_AVAILABLE else __import__('torch').cuda.is_available(),
         "vram": vram_info,
         "loaded_engines": list(tts_engine_instances.keys()),

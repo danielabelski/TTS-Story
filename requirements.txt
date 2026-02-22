@@ -47,6 +47,9 @@ huggingface-hub
 # Pocket TTS runtime
 pocket-tts
 
+# KittenTTS runtime (CPU-only, <25MB model)
+# Install manually: pip install https://github.com/KittenML/KittenTTS/releases/download/0.8/kittentts-0.8.0-py3-none-any.whl
+
 # Extra language-specific dependencies
 pyopenjtalk
 ordered-set

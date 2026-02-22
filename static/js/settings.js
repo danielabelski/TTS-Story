@@ -373,8 +373,10 @@ function toggleEngineSettingsSections(engineName) {
         'chatterbox_turbo_replicate': 'chatterbox-replicate',
         'voxcpm_local': 'voxcpm',
         'pocket_tts': 'pocket-tts',
+        'pocket_tts_preset': 'pocket-tts',
         'qwen3_custom': 'qwen3',
         'qwen3_clone': 'qwen3',
+        'kitten_tts': 'kitten-tts',
         'api_keys': 'api-keys'
     };
     
@@ -736,6 +738,10 @@ function applySettings(settings) {
     if (voxcpmModel) {
         voxcpmModel.value = settings.voxcpm_local_model_id || 'openbmb/VoxCPM1.5';
     }
+    const voxcpmChunkSize = document.getElementById('voxcpm-chunk-size');
+    if (voxcpmChunkSize) {
+        voxcpmChunkSize.value = settings.voxcpm_chunk_size ?? 550;
+    }
     const voxcpmDevice = document.getElementById('voxcpm-local-device');
     if (voxcpmDevice) {
         voxcpmDevice.value = settings.voxcpm_local_device || 'auto';
@@ -769,6 +775,10 @@ function applySettings(settings) {
     const qwen3Model = document.getElementById('qwen3-custom-model-id');
     if (qwen3Model) {
         qwen3Model.value = settings.qwen3_custom_model_id || 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice';
+    }
+    const qwen3ChunkSize = document.getElementById('qwen3-chunk-size');
+    if (qwen3ChunkSize) {
+        qwen3ChunkSize.value = settings.qwen3_chunk_size ?? 500;
     }
     const qwen3Device = document.getElementById('qwen3-custom-device');
     if (qwen3Device) {
@@ -826,6 +836,10 @@ function applySettings(settings) {
     if (pocketVariant) {
         pocketVariant.value = settings.pocket_tts_model_variant || 'b6369a24';
     }
+    const pocketChunkSize = document.getElementById('pocket-tts-chunk-size');
+    if (pocketChunkSize) {
+        pocketChunkSize.value = settings.pocket_tts_chunk_size ?? 450;
+    }
     const pocketTemp = document.getElementById('pocket-tts-temp');
     if (pocketTemp) {
         pocketTemp.value = settings.pocket_tts_temp ?? 0.7;
@@ -857,6 +871,20 @@ function applySettings(settings) {
     const pocketInterop = document.getElementById('pocket-tts-interop-threads');
     if (pocketInterop) {
         pocketInterop.value = settings.pocket_tts_interop_threads ?? '';
+    }
+
+    // KittenTTS settings
+    const kittenModelId = document.getElementById('kitten-tts-model-id');
+    if (kittenModelId) {
+        kittenModelId.value = settings.kitten_tts_model_id || 'KittenML/kitten-tts-mini-0.8';
+    }
+    const kittenVoice = document.getElementById('kitten-tts-default-voice');
+    if (kittenVoice) {
+        kittenVoice.value = settings.kitten_tts_default_voice || 'Jasper';
+    }
+    const kittenChunkSize = document.getElementById('kitten-tts-chunk-size');
+    if (kittenChunkSize) {
+        kittenChunkSize.value = settings.kitten_tts_chunk_size ?? 300;
     }
 
     // Chatterbox Replicate settings (uses shared replicate_api_key)
@@ -960,6 +988,7 @@ async function saveSettings() {
         chatterbox_turbo_local_prompt_norm_loudness: document.getElementById('chatterbox-turbo-local-prompt-norm').checked,
         chatterbox_turbo_local_chunk_size: parseInt(document.getElementById('chatterbox-turbo-local-chunk-size').value, 10) || 450,
         voxcpm_local_model_id: document.getElementById('voxcpm-local-model-id').value,
+        voxcpm_chunk_size: parseInt(document.getElementById('voxcpm-chunk-size')?.value, 10) || 550,
         voxcpm_local_device: document.getElementById('voxcpm-local-device').value,
         voxcpm_local_default_prompt: document.getElementById('voxcpm-local-prompt').value,
         voxcpm_local_default_prompt_text: document.getElementById('voxcpm-local-prompt-text').value,
@@ -968,6 +997,7 @@ async function saveSettings() {
         voxcpm_local_normalize: document.getElementById('voxcpm-local-normalize').checked,
         voxcpm_local_denoise: document.getElementById('voxcpm-local-denoise').checked,
         qwen3_custom_model_id: document.getElementById('qwen3-custom-model-id').value,
+        qwen3_chunk_size: parseInt(document.getElementById('qwen3-chunk-size')?.value, 10) || 500,
         qwen3_custom_device: document.getElementById('qwen3-custom-device').value,
         qwen3_custom_dtype: document.getElementById('qwen3-custom-dtype').value,
         qwen3_custom_attn_implementation: document.getElementById('qwen3-custom-attn').value,
@@ -981,6 +1011,7 @@ async function saveSettings() {
         qwen3_clone_default_prompt: document.getElementById('qwen3-clone-prompt').value,
         qwen3_clone_default_prompt_text: document.getElementById('qwen3-clone-prompt-text').value,
         pocket_tts_model_variant: document.getElementById('pocket-tts-model-variant')?.value || 'b6369a24',
+        pocket_tts_chunk_size: parseInt(document.getElementById('pocket-tts-chunk-size')?.value, 10) || 450,
         pocket_tts_temp: parseFloat(document.getElementById('pocket-tts-temp')?.value) || 0.7,
         pocket_tts_lsd_decode_steps: parseInt(document.getElementById('pocket-tts-steps')?.value, 10) || 1,
         pocket_tts_noise_clamp: (() => {
@@ -1004,6 +1035,9 @@ async function saveSettings() {
             const parsed = parseInt(raw, 10);
             return Number.isFinite(parsed) ? parsed : null;
         })(),
+        kitten_tts_model_id: document.getElementById('kitten-tts-model-id')?.value || 'KittenML/kitten-tts-mini-0.8',
+        kitten_tts_default_voice: document.getElementById('kitten-tts-default-voice')?.value || 'Jasper',
+        kitten_tts_chunk_size: parseInt(document.getElementById('kitten-tts-chunk-size')?.value, 10) || 300,
         chatterbox_turbo_replicate_model: document.getElementById('chatterbox-turbo-replicate-model').value,
         chatterbox_turbo_replicate_voice: document.getElementById('chatterbox-turbo-replicate-voice').value,
         chatterbox_turbo_replicate_temperature: parseFloat(document.getElementById('chatterbox-turbo-replicate-temperature').value) || 0.8,

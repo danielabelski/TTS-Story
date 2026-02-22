@@ -190,6 +190,7 @@
                                                 <option value="pocket_tts_preset">Pocket TTS · Preset Voices</option>
                                                 <option value="qwen3_custom">Qwen3-TTS · Custom Voice</option>
                                                 <option value="qwen3_clone">Qwen3-TTS · Voice Clone</option>
+                                                <option value="kitten_tts">KittenTTS · CPU Lightweight</option>
                                             </select>
                                         </div>
                                     </div>
@@ -611,6 +612,7 @@
                                     <option value="pocket_tts_preset">Pocket TTS · Preset Voices</option>
                                     <option value="qwen3_custom">Qwen3-TTS · Custom Voice</option>
                                     <option value="qwen3_clone">Qwen3-TTS · Voice Clone</option>
+                                    <option value="kitten_tts">KittenTTS · CPU Lightweight</option>
                                 </select>
                             </div>
                             <div class="form-group">
@@ -654,6 +656,7 @@
                             <button type="button" class="engine-tab-btn" data-engine-tab="voxcpm">VoxCPM 1.5</button>
                             <button type="button" class="engine-tab-btn" data-engine-tab="pocket-tts">Pocket TTS</button>
                             <button type="button" class="engine-tab-btn" data-engine-tab="qwen3">Qwen3-TTS</button>
+                            <button type="button" class="engine-tab-btn" data-engine-tab="kitten-tts">KittenTTS</button>
                             <button type="button" class="engine-tab-btn" data-engine-tab="api-keys">API Keys</button>
                         </div>
 
@@ -794,6 +797,11 @@
                                     <input type="text" id="voxcpm-local-model-id" placeholder="openbmb/VoxCPM1.5">
                                 </div>
                                 <div class="form-group">
+                                    <label for="voxcpm-chunk-size">Chunk Size (chars)</label>
+                                    <input type="number" id="voxcpm-chunk-size" min="100" max="1000" step="50" value="550">
+                                    <small>Character limit per chunk (recommended 400–600).</small>
+                                </div>
+                                <div class="form-group">
                                     <label for="voxcpm-local-device">Device</label>
                                     <input type="text" id="voxcpm-local-device" placeholder="auto">
                                     <small>auto, cuda, cpu</small>
@@ -847,6 +855,11 @@
                                     <input type="text" id="pocket-tts-model-variant" placeholder="b6369a24">
                                 </div>
                                 <div class="form-group">
+                                    <label for="pocket-tts-chunk-size">Chunk Size (chars)</label>
+                                    <input type="number" id="pocket-tts-chunk-size" min="100" max="1000" step="50" value="450">
+                                    <small>Character limit per chunk (recommended 300–500).</small>
+                                </div>
+                                <div class="form-group">
                                     <label for="pocket-tts-temp">Temperature</label>
                                     <input type="number" id="pocket-tts-temp" step="0.05" min="0.1" max="1.5">
                                 </div>
@@ -885,6 +898,45 @@
                             </div>
                         </div>
 
+                        <!-- KittenTTS Panel -->
+                        <div class="engine-panel" id="engine-panel-kitten-tts">
+                            <div class="section-title-inline settings-panel-title">
+                                <h4>KittenTTS</h4>
+                            </div>
+                            <p class="help-text" style="margin-top:0;">Ultra-lightweight (&lt;25MB) CPU-only TTS. No GPU required. Install: <code>pip install https://github.com/KittenML/KittenTTS/releases/download/0.8/kittentts-0.8.0-py3-none-any.whl</code></p>
+                            <div class="settings-form-grid">
+                                <div class="form-group">
+                                    <label for="kitten-tts-model-id">Model ID</label>
+                                    <select id="kitten-tts-model-id">
+                                        <option value="KittenML/kitten-tts-mini-0.8">kitten-tts-mini-0.8 (recommended)</option>
+                                        <option value="KittenML/kitten-tts-micro-0.8">kitten-tts-micro-0.8</option>
+                                        <option value="KittenML/kitten-tts-nano-0.8-fp32">kitten-tts-nano-0.8 (fp32)</option>
+                                        <option value="KittenML/kitten-tts-nano-0.8-int8">kitten-tts-nano-0.8 (int8, experimental)</option>
+                                    </select>
+                                    <small>Smaller models are faster but may have lower quality.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="kitten-tts-default-voice">Default Voice</label>
+                                    <select id="kitten-tts-default-voice">
+                                        <option value="Jasper">Jasper</option>
+                                        <option value="Bella">Bella</option>
+                                        <option value="Luna">Luna</option>
+                                        <option value="Bruno">Bruno</option>
+                                        <option value="Rosie">Rosie</option>
+                                        <option value="Hugo">Hugo</option>
+                                        <option value="Kiki">Kiki</option>
+                                        <option value="Leo">Leo</option>
+                                    </select>
+                                    <small>Used when no per-speaker voice is assigned.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="kitten-tts-chunk-size">Chunk Size (chars)</label>
+                                    <input type="number" id="kitten-tts-chunk-size" min="50" max="600" step="25" value="300">
+                                    <small>Character limit per chunk (recommended 150–350 for CPU speed).</small>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Qwen3 Panel -->
                         <div class="engine-panel" id="engine-panel-qwen3">
                             <div class="section-title-inline settings-panel-title">
@@ -897,6 +949,11 @@
                                 <div class="form-group">
                                     <label for="qwen3-custom-model-id">Model ID</label>
                                     <input type="text" id="qwen3-custom-model-id" placeholder="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice">
+                                </div>
+                                <div class="form-group">
+                                    <label for="qwen3-chunk-size">Chunk Size (chars)</label>
+                                    <input type="number" id="qwen3-chunk-size" min="100" max="1000" step="50" value="500">
+                                    <small>Applies to both CustomVoice and Voice Clone modes.</small>
                                 </div>
                                 <div class="form-group">
                                     <label for="qwen3-custom-device">Device</label>

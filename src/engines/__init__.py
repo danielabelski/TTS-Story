@@ -7,6 +7,7 @@ from .voxcpm_local_engine import VoxCPMLocalEngine
 from .qwen3_custom_voice_engine import Qwen3CustomVoiceEngine
 from .qwen3_voice_clone_engine import Qwen3VoiceCloneEngine
 from .pocket_tts_engine import PocketTTSEngine
+from .kitten_tts_engine import KittenTTSEngine
 
 __all__ = [
     "TtsEngineBase",
@@ -18,4 +19,5 @@ __all__ = [
     "Qwen3CustomVoiceEngine",
     "Qwen3VoiceCloneEngine",
     "PocketTTSEngine",
+    "KittenTTSEngine",
 ]

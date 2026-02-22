@@ -245,9 +245,17 @@ if errorlevel 1 (
     echo WARNING: Failed to install voxcpm - VoxCPM engine will not be available
 )
 
+REM Install KittenTTS runtime (optional, CPU-only)
+echo.
+echo [9/12] Installing KittenTTS runtime (optional, CPU-only)...
+pip install https://github.com/KittenML/KittenTTS/releases/download/0.8/kittentts-0.8.0-py3-none-any.whl
+if errorlevel 1 (
+    echo WARNING: Failed to install kittentts - KittenTTS engine will not be available
+)
+
 REM Optional performance extras (best-effort)
 echo.
-echo [9/12] Installing optional performance extras...
+echo [10/12] Installing optional performance extras...
 echo - flash-attn (Qwen3 speedup)
 echo - hf_xet (faster Hugging Face downloads)
 if "%HAS_NVIDIA%"=="0" (

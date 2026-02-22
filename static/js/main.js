@@ -661,6 +661,17 @@ function renderHelpSearchResults(query, searchIndex, sectionMap) {
     });
 }
 
+const KITTEN_TTS_VOICES = ['Bella', 'Jasper', 'Luna', 'Bruno', 'Rosie', 'Hugo', 'Kiki', 'Leo'];
+
+function appendKittenVoiceOptions(selectElement) {
+    KITTEN_TTS_VOICES.forEach(voiceName => {
+        const option = document.createElement('option');
+        option.value = voiceName;
+        option.textContent = voiceName;
+        selectElement.appendChild(option);
+    });
+}
+
 function appendPocketPresetVoiceOptions(selectElement) {
     const voices = Array.isArray(window.availablePocketTtsVoices)
         ? window.availablePocketTtsVoices
@@ -1101,6 +1112,10 @@ function isQwenEngine(engineName) {
     return (engineName || '').toLowerCase() === 'qwen3_custom';
 }
 
+function isKittenEngine(engineName) {
+    return (engineName || '').toLowerCase() === 'kitten_tts';
+}
+
 function isQwenCloneEngine(engineName) {
     return (engineName || '').toLowerCase() === 'qwen3_clone';
 }
@@ -1118,6 +1133,7 @@ function updateEngineUI(engineName) {
     const isPocketPreset = isPocketPresetEngine(engineName);
     const isQwenClone = isQwenCloneEngine(engineName);
     const isKokoro = isKokoroEngine(engineName);
+    const isKitten = isKittenEngine(engineName);
     console.log('[updateEngineUI] kokoroCard:', kokoroCard, 'turboCard:', turboCard, 'isTurbo:', isTurbo);
     if (kokoroCard) {
         kokoroCard.style.display = isPrompt || isQwen || isQwenClone ? 'none' : 'block';
@@ -4063,10 +4079,11 @@ function initInlineSampleHandlers() {
 
 // Populate voice select dropdowns
 function populateVoiceSelects() {
-    if (!window.availableVoices && !window.availablePocketTtsVoices) return;
     const engineName = getSelectedJobEngine() || runtimeSettings?.tts_engine || 'kokoro';
+    if (!window.availableVoices && !window.availablePocketTtsVoices && !isKittenEngine(engineName)) return;
     const isQwen = isQwenEngine(engineName);
     const isPocketPreset = isPocketPresetEngine(engineName);
+    const isKitten = isKittenEngine(engineName);
     const selects = document.querySelectorAll('#inline-voice-assignment-list .voice-select, #speaker-edit-modal-body .voice-select');
     selects.forEach(select => {
         const previousValue = select.value;
@@ -4075,6 +4092,8 @@ function populateVoiceSelects() {
             appendQwen3VoiceOptions(select);
         } else if (isPocketPreset) {
             appendPocketPresetVoiceOptions(select);
+        } else if (isKitten) {
+            appendKittenVoiceOptions(select);
         } else {
             appendVoiceOptions(select);
         }
