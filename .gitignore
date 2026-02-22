@@ -70,6 +70,7 @@ data/external_voices_cache.json
 # Personal sync scripts
 sync_to_repo.py
 sync-to-git.bat
+config.json.syncbak
 
 # Sync state
 .sync_state.json
