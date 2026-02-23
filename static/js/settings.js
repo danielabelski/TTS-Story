@@ -377,6 +377,7 @@ function toggleEngineSettingsSections(engineName) {
         'qwen3_custom': 'qwen3',
         'qwen3_clone': 'qwen3',
         'kitten_tts': 'kitten-tts',
+        'index_tts': 'index-tts',
         'api_keys': 'api-keys'
     };
     
@@ -887,6 +888,72 @@ function applySettings(settings) {
         kittenChunkSize.value = settings.kitten_tts_chunk_size ?? 300;
     }
 
+    // IndexTTS settings
+    const indexModelVersion = document.getElementById('index-tts-model-version');
+    if (indexModelVersion) {
+        indexModelVersion.value = settings.index_tts_model_version || 'IndexTTS-2';
+    }
+    const indexChunkSize = document.getElementById('index-tts-chunk-size');
+    if (indexChunkSize) {
+        indexChunkSize.value = settings.index_tts_chunk_size ?? 400;
+    }
+    const indexDevice = document.getElementById('index-tts-device');
+    if (indexDevice) {
+        indexDevice.value = settings.index_tts_device || 'auto';
+    }
+    const indexDefaultPrompt = document.getElementById('index-tts-default-prompt');
+    if (indexDefaultPrompt) {
+        indexDefaultPrompt.value = settings.index_tts_default_prompt || '';
+    }
+    const indexUseFp16 = document.getElementById('index-tts-use-fp16');
+    if (indexUseFp16) {
+        indexUseFp16.checked = settings.index_tts_use_fp16 !== false;
+    }
+    const indexUseDeepspeed = document.getElementById('index-tts-use-deepspeed');
+    if (indexUseDeepspeed) {
+        indexUseDeepspeed.checked = settings.index_tts_use_deepspeed === true;
+    }
+    const indexUseTorchCompile = document.getElementById('index-tts-use-torch-compile');
+    if (indexUseTorchCompile) {
+        indexUseTorchCompile.checked = settings.index_tts_use_torch_compile === true;
+    }
+    const indexUseAccel = document.getElementById('index-tts-use-accel');
+    if (indexUseAccel) {
+        indexUseAccel.checked = settings.index_tts_use_accel === true;
+    }
+    const indexNumBeams = document.getElementById('index-tts-num-beams');
+    if (indexNumBeams) {
+        indexNumBeams.value = settings.index_tts_num_beams ?? 1;
+    }
+    const indexDiffusionSteps = document.getElementById('index-tts-diffusion-steps');
+    if (indexDiffusionSteps) {
+        indexDiffusionSteps.value = settings.index_tts_diffusion_steps ?? 25;
+    }
+    const indexTemperature = document.getElementById('index-tts-temperature');
+    if (indexTemperature) {
+        indexTemperature.value = settings.index_tts_temperature ?? 0.8;
+    }
+    const indexTopP = document.getElementById('index-tts-top-p');
+    if (indexTopP) {
+        indexTopP.value = settings.index_tts_top_p ?? 0.8;
+    }
+    const indexTopK = document.getElementById('index-tts-top-k');
+    if (indexTopK) {
+        indexTopK.value = settings.index_tts_top_k ?? 30;
+    }
+    const indexRepetitionPenalty = document.getElementById('index-tts-repetition-penalty');
+    if (indexRepetitionPenalty) {
+        indexRepetitionPenalty.value = settings.index_tts_repetition_penalty ?? 10.0;
+    }
+    const indexMaxMelTokens = document.getElementById('index-tts-max-mel-tokens');
+    if (indexMaxMelTokens) {
+        indexMaxMelTokens.value = settings.index_tts_max_mel_tokens ?? 1500;
+    }
+    const indexMaxTextTokens = document.getElementById('index-tts-max-text-tokens-per-segment');
+    if (indexMaxTextTokens) {
+        indexMaxTextTokens.value = settings.index_tts_max_text_tokens_per_segment ?? 120;
+    }
+
     // Chatterbox Replicate settings (uses shared replicate_api_key)
     const turboModelInput = document.getElementById('chatterbox-turbo-replicate-model');
     if (turboModelInput) {
@@ -1038,6 +1105,22 @@ async function saveSettings() {
         kitten_tts_model_id: document.getElementById('kitten-tts-model-id')?.value || 'KittenML/kitten-tts-mini-0.8',
         kitten_tts_default_voice: document.getElementById('kitten-tts-default-voice')?.value || 'Jasper',
         kitten_tts_chunk_size: parseInt(document.getElementById('kitten-tts-chunk-size')?.value, 10) || 300,
+        index_tts_model_version: document.getElementById('index-tts-model-version')?.value || 'IndexTTS-2',
+        index_tts_chunk_size: parseInt(document.getElementById('index-tts-chunk-size')?.value, 10) || 400,
+        index_tts_device: document.getElementById('index-tts-device')?.value || 'auto',
+        index_tts_default_prompt: document.getElementById('index-tts-default-prompt')?.value || '',
+        index_tts_use_fp16: document.getElementById('index-tts-use-fp16')?.checked ?? true,
+        index_tts_use_deepspeed: document.getElementById('index-tts-use-deepspeed')?.checked ?? false,
+        index_tts_use_torch_compile: document.getElementById('index-tts-use-torch-compile')?.checked ?? false,
+        index_tts_use_accel: document.getElementById('index-tts-use-accel')?.checked ?? false,
+        index_tts_num_beams: parseInt(document.getElementById('index-tts-num-beams')?.value, 10) || 1,
+        index_tts_diffusion_steps: parseInt(document.getElementById('index-tts-diffusion-steps')?.value, 10) || 25,
+        index_tts_temperature: parseFloat(document.getElementById('index-tts-temperature')?.value) || 0.8,
+        index_tts_top_p: parseFloat(document.getElementById('index-tts-top-p')?.value) || 0.8,
+        index_tts_top_k: parseInt(document.getElementById('index-tts-top-k')?.value, 10) || 30,
+        index_tts_repetition_penalty: parseFloat(document.getElementById('index-tts-repetition-penalty')?.value) || 10.0,
+        index_tts_max_mel_tokens: parseInt(document.getElementById('index-tts-max-mel-tokens')?.value, 10) || 1500,
+        index_tts_max_text_tokens_per_segment: parseInt(document.getElementById('index-tts-max-text-tokens-per-segment')?.value, 10) || 120,
         chatterbox_turbo_replicate_model: document.getElementById('chatterbox-turbo-replicate-model').value,
         chatterbox_turbo_replicate_voice: document.getElementById('chatterbox-turbo-replicate-voice').value,
         chatterbox_turbo_replicate_temperature: parseFloat(document.getElementById('chatterbox-turbo-replicate-temperature').value) || 0.8,

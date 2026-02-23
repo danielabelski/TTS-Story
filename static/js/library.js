@@ -514,6 +514,7 @@ function displayLibraryItems(items) {
                     <span class="library-item-size">${fileSizeMB} MB</span>
                     <span class="library-item-format">${item.format.toUpperCase()}</span>
                     <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="openLibraryAwr('${item.job_id}')">Alt Words</button>
+                    ${item.timing_metrics ? `<button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="openLibraryMetrics('${item.job_id}', this)">Metrics</button>` : ''}
                     <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="repairLibraryItem('${item.job_id}', this)">Repair</button>
                     <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="deleteLibraryItem('${item.job_id}')">Delete</button>
                     <button type="button" class="help-icon library-item-meta-action" data-help-id="audio-library-actions" aria-label="Help: Audio Library Actions">?</button>
@@ -528,6 +529,10 @@ function displayLibraryItems(items) {
             </div>
         `;
         
+        if (item.timing_metrics) {
+            itemCard.dataset.timingMetrics = JSON.stringify(item.timing_metrics);
+        }
+
         container.appendChild(itemCard);
 
         const player = itemCard.querySelector(`#player-${item.job_id}`);
@@ -780,6 +785,58 @@ function displayLibraryItems(items) {
     if (typeof initHelpSystem === 'function') {
         initHelpSystem();
     }
+}
+
+// Library Metrics Modal
+function openLibraryMetrics(jobId, btn) {
+    const card = btn ? btn.closest('.library-item') : document.querySelector(`.library-item [data-job-id="${jobId}"]`)?.closest('.library-item');
+    const tm = card && card.dataset.timingMetrics ? JSON.parse(card.dataset.timingMetrics) : null;
+    if (!tm) { alert('No metrics data available for this item.'); return; }
+
+    function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : 'N/A'; }
+
+    const startedAt  = fmtTime(tm.started_at);
+    const completedAt = fmtTime(tm.completed_at);
+    const totalTime  = fmtDuration(tm.total_seconds);
+    const avgChunk   = tm.avg_chunk_seconds != null ? fmtDuration(tm.avg_chunk_seconds) : 'N/A';
+    const minChunk   = tm.min_chunk_seconds != null ? fmtDuration(tm.min_chunk_seconds) : 'N/A';
+    const maxChunk   = tm.max_chunk_seconds != null ? fmtDuration(tm.max_chunk_seconds) : 'N/A';
+    const chunkCount = tm.chunk_count != null ? tm.chunk_count : 'N/A';
+    const chart      = buildChunkChart(tm.chunk_times, tm.chunk_count, tm.total_seconds);
+
+    // Build or reuse overlay
+    let overlay = document.getElementById('library-metrics-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'library-metrics-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9000;display:flex;align-items:center;justify-content:center;';
+        overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+        document.body.appendChild(overlay);
+    }
+    overlay.innerHTML = `
+        <div style="background:var(--bg-card,#1a1d2e);border:1px solid var(--border,rgba(99,102,241,0.2));border-radius:12px;padding:24px;min-width:340px;max-width:560px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+                <h3 style="margin:0;font-size:1rem;color:var(--accent,#7eb8f7);">Generation Metrics</h3>
+                <button onclick="document.getElementById('library-metrics-overlay').remove()" style="background:none;border:none;color:var(--text-muted,#8892a4);font-size:1.2rem;cursor:pointer;padding:2px 6px;">✕</button>
+            </div>
+            <div class="job-detail-timing-grid" style="margin-bottom:16px;">
+                <div class="timing-row"><span class="timing-label">Started</span><span class="timing-value">${startedAt}</span></div>
+                <div class="timing-row"><span class="timing-label">Completed</span><span class="timing-value">${completedAt}</span></div>
+                <div class="timing-row timing-highlight"><span class="timing-label">Total Job Time</span><span class="timing-value">${totalTime}</span></div>
+                <div class="timing-row"><span class="timing-label">Chunks</span><span class="timing-value">${chunkCount}</span></div>
+                <div class="timing-row timing-highlight"><span class="timing-label">Avg Chunk Time</span><span class="timing-value">${avgChunk}</span></div>
+                <div class="timing-row"><span class="timing-label">Fastest Chunk</span><span class="timing-value">${minChunk}</span></div>
+                <div class="timing-row"><span class="timing-label">Slowest Chunk</span><span class="timing-value">${maxChunk}</span></div>
+            </div>
+            ${chart}
+        </div>`;
+    if (!document.getElementById('library-metrics-overlay')) {
+        document.body.appendChild(overlay);
+    }
+
+    // Close on Escape
+    const escHandler = e => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler); } };
+    document.addEventListener('keydown', escHandler);
 }
 
 // Download library item

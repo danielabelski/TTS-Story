@@ -12,6 +12,7 @@ from .engines.qwen3_custom_voice_engine import Qwen3CustomVoiceEngine
 from .engines.qwen3_voice_clone_engine import Qwen3VoiceCloneEngine
 from .engines.pocket_tts_engine import PocketTTSEngine
 from .engines.kitten_tts_engine import KittenTTSEngine
+from .engines.index_tts_engine import IndexTTSEngine, INDEX_TTS_AVAILABLE, INDEX_TTS_UNAVAILABLE_REASON
 from .engines.chatterbox_turbo_replicate_engine import ChatterboxTurboReplicateEngine
 from .engines.kokoro_engine import (
     DEFAULT_SAMPLE_RATE,
@@ -31,6 +32,7 @@ EngineRegistry: Dict[str, Type[TtsEngineBase]] = {
     "qwen3_custom": Qwen3CustomVoiceEngine,
     "qwen3_clone": Qwen3VoiceCloneEngine,
     "kitten_tts": KittenTTSEngine,
+    "index_tts": IndexTTSEngine,
 }
 AVAILABLE_ENGINES = tuple(EngineRegistry.keys())
 
@@ -63,4 +65,7 @@ __all__ = [
     "DEFAULT_SAMPLE_RATE",
     "get_engine",
     "AVAILABLE_ENGINES",
+    "IndexTTSEngine",
+    "INDEX_TTS_AVAILABLE",
+    "INDEX_TTS_UNAVAILABLE_REASON",
 ]

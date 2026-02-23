@@ -253,9 +253,85 @@ if errorlevel 1 (
     echo WARNING: Failed to install kittentts - KittenTTS engine will not be available
 )
 
+REM Setup IndexTTS isolated environment (optional)
+echo.
+echo [10/12] Setting up IndexTTS isolated environment (optional)...
+echo IndexTTS uses its own isolated venv to avoid dependency conflicts.
+set "INDEX_TTS_DIR=%~dp0engines\index-tts"
+REM Strip trailing backslash if present
+if "%INDEX_TTS_DIR:~-1%"=="\" set "INDEX_TTS_DIR=%INDEX_TTS_DIR:~0,-1%"
+if exist "%INDEX_TTS_DIR%\.venv\Scripts\python.exe" (
+    echo IndexTTS venv already present. Skipping clone and sync.
+    goto :AfterIndexTTS
+)
+where git >nul 2>&1
+if errorlevel 1 (
+    echo WARNING: git not found. Skipping IndexTTS setup.
+    echo To install IndexTTS manually:
+    echo   1. git clone https://github.com/index-tts/index-tts.git engines\index-tts
+    echo   2. cd engines\index-tts ^&^& uv sync --all-extras
+    echo   3. Download model: uv tool run huggingface-cli download IndexTeam/IndexTTS-2 --local-dir=checkpoints
+    goto :AfterIndexTTS
+)
+where uv >nul 2>&1
+if not errorlevel 1 (
+    set "UV_EXE=uv"
+    set "UV_ARGS="
+) else (
+    python -m uv --version >nul 2>&1
+    if not errorlevel 1 (
+        set "UV_EXE=python"
+        set "UV_ARGS=-m uv"
+    ) else (
+        echo uv not found. Installing uv package manager...
+        pip install -U uv --quiet
+        if errorlevel 1 (
+            echo WARNING: Failed to install uv. Skipping IndexTTS setup.
+            echo Install uv manually from https://docs.astral.sh/uv/ then run:
+            echo   cd engines\index-tts ^&^& uv sync --all-extras
+            goto :AfterIndexTTS
+        )
+        set "UV_EXE=python"
+        set "UV_ARGS=-m uv"
+    )
+)
+if not exist "%INDEX_TTS_DIR%\pyproject.toml" (
+    echo Cloning IndexTTS repository ^(skipping LFS audio examples^)...
+    set "INDEX_TTS_CLONE_TMP=%TEMP%\indextts_clone_%RANDOM%"
+    set "GIT_LFS_SKIP_SMUDGE=1"
+    git clone https://github.com/index-tts/index-tts.git "!INDEX_TTS_CLONE_TMP!"
+    set "GIT_LFS_SKIP_SMUDGE=0"
+    if not exist "!INDEX_TTS_CLONE_TMP!\pyproject.toml" (
+        echo WARNING: Failed to clone IndexTTS ^(pyproject.toml missing^). Skipping IndexTTS setup.
+        goto :AfterIndexTTS
+    )
+    if not exist "%INDEX_TTS_DIR%" mkdir "%INDEX_TTS_DIR%"
+    xcopy /E /I /Y "!INDEX_TTS_CLONE_TMP!\*" "%INDEX_TTS_DIR%\" >nul
+    rmdir /s /q "!INDEX_TTS_CLONE_TMP!" >nul 2>&1
+    echo IndexTTS cloned successfully.
+) else (
+    echo IndexTTS already cloned. Pulling latest changes...
+    set "GIT_LFS_SKIP_SMUDGE=1"
+    git -C "%INDEX_TTS_DIR%" pull --ff-only >nul 2>&1
+    set "GIT_LFS_SKIP_SMUDGE=0"
+)
+echo Installing IndexTTS dependencies (this may take several minutes)...
+pushd "%INDEX_TTS_DIR%"
+%UV_EXE% %UV_ARGS% sync --all-extras
+set "INDEX_TTS_RESULT=!errorlevel!"
+popd
+if "!INDEX_TTS_RESULT!" NEQ "0" (
+    echo WARNING: IndexTTS dependency install failed.
+    echo Try manually: cd engines\index-tts ^&^& uv sync --all-extras
+) else (
+    echo IndexTTS environment ready.
+    echo Model weights will be downloaded automatically on first use (~2-4 GB).
+)
+:AfterIndexTTS
+
 REM Optional performance extras (best-effort)
 echo.
-echo [10/12] Installing optional performance extras...
+echo [11/12] Installing optional performance extras...
 echo - flash-attn (Qwen3 speedup)
 echo - hf_xet (faster Hugging Face downloads)
 if "%HAS_NVIDIA%"=="0" (
@@ -382,6 +458,12 @@ echo 3. Open browser to: http://localhost:5000
 echo.
 pause
 goto :EOF
+
+:RunUvSync
+REM Subroutine: cd into %1 and run uv sync --all-extras, return errorlevel
+cd /d "%~1"
+%UV_EXE% %UV_ARGS% sync --all-extras
+exit /b %errorlevel%
 
 :InstallVCRedist
 echo.

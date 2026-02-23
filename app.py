@@ -73,6 +73,11 @@ from src.engines.kitten_tts_engine import (
     KITTEN_TTS_BUILTIN_VOICES,
     KITTEN_TTS_DEFAULT_MODEL,
 )
+from src.engines.index_tts_engine import (
+    INDEX_TTS_AVAILABLE,
+    INDEX_TTS_UNAVAILABLE_REASON,
+    INDEX_TTS_SAMPLE_RATE,
+)
 from src.engines.chatterbox_turbo_replicate_engine import (
     DEFAULT_CHATTERBOX_TURBO_REPLICATE_MODEL,
     DEFAULT_CHATTERBOX_TURBO_REPLICATE_VOICE,
@@ -208,6 +213,22 @@ DEFAULT_CONFIG = {
     "kitten_tts_model_id": "KittenML/kitten-tts-mini-0.8",
     "kitten_tts_default_voice": "Jasper",
     "kitten_tts_chunk_size": 300,
+    "index_tts_model_version": "IndexTTS-2",
+    "index_tts_use_fp16": True,
+    "index_tts_use_deepspeed": False,
+    "index_tts_use_torch_compile": True,
+    "index_tts_use_accel": True,
+    "index_tts_num_beams": 1,
+    "index_tts_diffusion_steps": 12,
+    "index_tts_temperature": 0.8,
+    "index_tts_top_p": 0.8,
+    "index_tts_top_k": 30,
+    "index_tts_repetition_penalty": 10.0,
+    "index_tts_max_mel_tokens": 1500,
+    "index_tts_max_text_tokens_per_segment": 120,
+    "index_tts_device": "auto",
+    "index_tts_default_prompt": "",
+    "index_tts_chunk_size": 400,
     "parallel_chunks": 3,
     "group_chunks_by_speaker": False,
     "cleanup_vram_after_job": False,
@@ -474,6 +495,8 @@ def _normalize_engine_options(engine_name: str, options: Dict[str, Any]) -> Dict
         return _normalize_pocket_tts_options(options)
     if engine_name == "kitten_tts":
         return _normalize_kitten_tts_options(options)
+    if engine_name == "index_tts":
+        return _normalize_index_tts_options(options)
     return {}
 
 
@@ -559,6 +582,49 @@ def _normalize_kitten_tts_options(options: Dict[str, Any]) -> Dict[str, Any]:
             result[key] = v if v in KITTEN_TTS_BUILTIN_VOICES else "Jasper"
         elif key == "kitten_tts_chunk_size":
             result[key] = _coerce_int(value, minimum=50, maximum=600, fallback=300)
+    return result
+
+
+def _normalize_index_tts_options(options: Dict[str, Any]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for raw_key, value in options.items():
+        if raw_key is None:
+            continue
+        key = str(raw_key).strip().lower()
+        if key == "index_tts_model_version":
+            v = (value or "IndexTTS-2").strip()
+            result[key] = v if v in {"IndexTTS-2", "IndexTTS-1.5", "IndexTTS"} else "IndexTTS-2"
+        elif key == "index_tts_use_fp16":
+            result[key] = _coerce_bool(value)
+        elif key == "index_tts_use_deepspeed":
+            result[key] = _coerce_bool(value)
+        elif key == "index_tts_use_torch_compile":
+            result[key] = _coerce_bool(value)
+        elif key == "index_tts_use_accel":
+            result[key] = _coerce_bool(value)
+        elif key == "index_tts_num_beams":
+            result[key] = max(1, int(value or 1))
+        elif key == "index_tts_diffusion_steps":
+            result[key] = max(1, int(value or 25))
+        elif key == "index_tts_temperature":
+            result[key] = max(0.01, float(value or 0.8))
+        elif key == "index_tts_top_p":
+            result[key] = max(0.01, min(1.0, float(value or 0.8)))
+        elif key == "index_tts_top_k":
+            result[key] = max(1, int(value or 30))
+        elif key == "index_tts_repetition_penalty":
+            result[key] = max(1.0, float(value or 10.0))
+        elif key == "index_tts_max_mel_tokens":
+            result[key] = max(100, int(value or 1500))
+        elif key == "index_tts_max_text_tokens_per_segment":
+            result[key] = max(20, int(value or 120))
+        elif key == "index_tts_device":
+            v = (value or "auto").strip().lower()
+            result[key] = v if v else "auto"
+        elif key == "index_tts_default_prompt":
+            result[key] = (value or "").strip()
+        elif key == "index_tts_chunk_size":
+            result[key] = _coerce_int(value, minimum=100, maximum=1000, fallback=400)
     return result
 
 
@@ -914,6 +980,11 @@ def _validate_voice_assignments_for_engine(
             if not voice and not default_voice:
                 missing_voices.append(speaker)
 
+        if engine_name == "index_tts":
+            default_prompt = (config.get("index_tts_default_prompt") or "").strip()
+            if not prompt and not default_prompt:
+                missing_prompts.append(speaker)
+
     if missing_voices or missing_prompts:
         pieces = []
         if missing_voices:
@@ -1264,8 +1335,14 @@ def _load_job_text(text_path: Optional[str]) -> str:
 
 
 def _serialize_job_payload(job_entry: Dict[str, Any]) -> Dict[str, Any]:
-    payload = job_entry.get("job_payload") or {}
-    return payload if isinstance(payload, dict) else {}
+    payload = dict(job_entry.get("job_payload") or {})
+    if not isinstance(payload, dict):
+        payload = {}
+    for key in ("timing_metrics", "started_at", "completed_at"):
+        value = job_entry.get(key)
+        if value is not None:
+            payload[key] = value
+    return payload
 
 
 def _serialize_job_entry(job_id: str, job_entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -1422,6 +1499,10 @@ def _load_jobs_from_db() -> Dict[str, Dict[str, Any]]:
             "chunks": [],
             "regen_tasks": {},
         }
+        _extra = loaded[job_id]["job_payload"]
+        for key in ("timing_metrics", "started_at", "completed_at"):
+            if key in _extra:
+                loaded[job_id][key] = _extra[key]
     return loaded
 
 
@@ -1844,6 +1925,32 @@ def _create_engine(engine_name: str, config: Dict) -> TtsEngineBase:
             "kitten_tts",
             model_id=(config.get("kitten_tts_model_id") or KITTEN_TTS_DEFAULT_MODEL).strip(),
             default_voice=(config.get("kitten_tts_default_voice") or "Jasper").strip(),
+        )
+
+    if engine_name == "index_tts":
+        if not INDEX_TTS_AVAILABLE:
+            raise ImportError(
+                f"IndexTTS is not available: {INDEX_TTS_UNAVAILABLE_REASON}"
+            )
+        device_raw = (config.get("index_tts_device") or "auto").strip().lower()
+        device = None if device_raw in ("auto", "") else device_raw
+        return get_engine(
+            "index_tts",
+            model_version=(config.get("index_tts_model_version") or "IndexTTS-2").strip(),
+            use_fp16=bool(config.get("index_tts_use_fp16", True)),
+            use_deepspeed=bool(config.get("index_tts_use_deepspeed", False)),
+            use_torch_compile=bool(config.get("index_tts_use_torch_compile", True)),
+            use_accel=bool(config.get("index_tts_use_accel", True)),
+            num_beams=int(config.get("index_tts_num_beams", 1)),
+            diffusion_steps=int(config.get("index_tts_diffusion_steps", 12)),
+            temperature=float(config.get("index_tts_temperature", 0.8)),
+            top_p=float(config.get("index_tts_top_p", 0.8)),
+            top_k=int(config.get("index_tts_top_k", 30)),
+            repetition_penalty=float(config.get("index_tts_repetition_penalty", 10.0)),
+            max_mel_tokens=int(config.get("index_tts_max_mel_tokens", 1500)),
+            max_text_tokens_per_segment=int(config.get("index_tts_max_text_tokens_per_segment", 120)),
+            device=device,
+            default_prompt=(config.get("index_tts_default_prompt") or "").strip() or None,
         )
 
     if engine_name == "kokoro_replicate":
@@ -2515,6 +2622,15 @@ def _create_text_processor_for_engine(engine_name: str, chunk_size: int, config:
             char_soft_limit=kitten_chunk_size,
             char_hard_limit=kitten_chunk_size + 50,
         )
+    if _normalize_engine_name(engine_name) == "index_tts":
+        index_chunk_size = 400
+        if config:
+            index_chunk_size = config.get("index_tts_chunk_size", index_chunk_size)
+        return TextProcessor(
+            chunk_strategy="characters",
+            char_soft_limit=index_chunk_size,
+            char_hard_limit=index_chunk_size + 100,
+        )
     return TextProcessor(chunk_size=chunk_size)
 
 
@@ -2606,7 +2722,7 @@ def process_job_worker():
                 if not job_entry:
                     job_queue.task_done()
                     continue
-                if job_entry.get("status") in {"paused", "archived", "deleted"}:
+                if job_entry.get("status") in {"paused", "archived", "deleted", "cancelled"}:
                     job_queue.task_done()
                     continue
             
@@ -2698,6 +2814,23 @@ def process_audio_job(job_data):
         job_start_time = datetime.now()
         cancel_event = cancel_events.setdefault(job_id, threading.Event())
         remaining_skip = processed_chunks
+        _chunk_done_ts: List[float] = []  # monotonic timestamp when each chunk completed
+
+        # Restore historical chunk_times from a prior run so pause/resume preserves the full history.
+        # We reconstruct synthetic monotonic timestamps spaced by the saved per-chunk durations.
+        _prior_chunk_times: List[float] = []
+        with queue_lock:
+            _prior_tm = (jobs.get(job_id) or {}).get("timing_metrics") or {}
+            _prior_chunk_times = _prior_tm.get("chunk_times") or []
+        if _prior_chunk_times and resume_from_chunk_index > 0:
+            _synthetic_base = time.monotonic()
+            _offset = 0.0
+            for _dt in _prior_chunk_times:
+                _offset += max(0.0, float(_dt))
+                _chunk_done_ts.append(_synthetic_base - (sum(_prior_chunk_times) - _offset))
+            # Shift all timestamps so the last one is just before now
+            _shift = time.monotonic() - _chunk_done_ts[-1] - 0.001
+            _chunk_done_ts = [t + _shift for t in _chunk_done_ts]
 
         with queue_lock:
             job_entry = jobs.get(job_id)
@@ -2720,6 +2853,8 @@ def process_audio_job(job_data):
             nonlocal processed_chunks
             processed_chunks += increment
             processed_chunks = min(processed_chunks, total_chunks)
+            if increment > 0:
+                _chunk_done_ts.append(time.monotonic())
             elapsed = max((datetime.now() - job_start_time).total_seconds(), 0.001)
             remaining = max(total_chunks - processed_chunks, 0)
             eta_seconds = None
@@ -2730,6 +2865,23 @@ def process_audio_job(job_data):
 
             percent = int((processed_chunks / total_chunks) * 100)
             percent = max(0, min(100, percent))
+
+            # Build live timing snapshot so job details always show current metrics
+            live_tm = None
+            if increment > 0 and len(_chunk_done_ts) >= 1:
+                _ct: List[float] = []
+                if len(_chunk_done_ts) >= 2:
+                    _ct = [_chunk_done_ts[i] - _chunk_done_ts[i - 1] for i in range(1, len(_chunk_done_ts))]
+                live_tm = {
+                    "started_at": job_start_time.isoformat(),
+                    "completed_at": None,
+                    "total_seconds": round(elapsed, 1),
+                    "chunk_count": len(_chunk_done_ts),
+                    "avg_chunk_seconds": round(sum(_ct) / len(_ct), 1) if _ct else None,
+                    "min_chunk_seconds": round(min(_ct), 1) if _ct else None,
+                    "max_chunk_seconds": round(max(_ct), 1) if _ct else None,
+                    "chunk_times": [round(t, 2) for t in _ct],
+                }
 
             with queue_lock:
                 job_entry = jobs.get(job_id)
@@ -2742,6 +2894,8 @@ def process_audio_job(job_data):
                     if increment > 0:
                         job_entry['last_completed_chunk_index'] = max(0, processed_chunks - 1)
                         job_entry['resume_from_chunk_index'] = processed_chunks
+                        if live_tm is not None:
+                            job_entry['timing_metrics'] = live_tm
 
             _persist_job_state(job_id)
 
@@ -2836,12 +2990,40 @@ def process_audio_job(job_data):
             "chunk_dirs_to_cleanup": [],
             "all_full_story_chunks": [],
         }
+
+        # On resume: restore chapter/book entries that were recorded before the pause.
+        # These were saved to review_manifest_partial.json when the job was paused.
+        if resume_from_chunk_index > 0 and review_mode:
+            _partial_manifest_path = job_dir / "review_manifest_partial.json"
+            if _partial_manifest_path.exists():
+                try:
+                    with _partial_manifest_path.open("r", encoding="utf-8") as _fh:
+                        _partial = json.load(_fh)
+                    review_manifest["chapters"] = list(_partial.get("chapters") or [])
+                    review_manifest["books"] = list(_partial.get("books") or [])
+                    review_manifest["chunk_dirs_to_cleanup"] = list(_partial.get("chunk_dirs_to_cleanup") or [])
+                    review_manifest["all_full_story_chunks"] = list(_partial.get("all_full_story_chunks") or [])
+                    if all_full_story_chunks is not None:
+                        all_full_story_chunks = [
+                            str(job_dir / rel) for rel in review_manifest["all_full_story_chunks"]
+                        ]
+                    logger.info(
+                        "Job %s: Restored partial review_manifest — %d chapters, %d books from before pause",
+                        job_id, len(review_manifest["chapters"]), len(review_manifest["books"]),
+                    )
+                except Exception as _e:
+                    logger.warning("Job %s: Could not load partial review_manifest: %s", job_id, _e)
         
         # Prepare TTS engine
         engine_name = _normalize_engine_name(config.get("tts_engine"))
         logger.info("Job %s: Creating TTS engine '%s'", job_id, engine_name)
         engine = get_tts_engine(engine_name, config=config)
         logger.info("Job %s: Engine device = %s", job_id, getattr(engine, 'device', 'unknown'))
+
+        # For IndexTTS with split_by_chapter: pre-collect ALL chapters into one
+        # subprocess call to avoid per-chapter model-reload overhead (~30-60s each).
+        # Results are cached by output_path; generate_chunks returns from cache.
+        _prebuilt_audio_cache: Dict[str, str] = {}  # output_path -> file_path (same value)
 
         job_chunks: List[Dict[str, Any]] = []
         with queue_lock:
@@ -2885,7 +3067,7 @@ def process_audio_job(job_data):
                 register_chunk(chapter_idx, chunk_idx, segment, file_path)
                 if output_files is not None:
                     output_files.append(file_path)
-                update_progress(0)  # keep progress logic centralized
+                update_progress(0)  # progress_cb already increments; just register chunk
             return chunk_cb
 
         def run_with_cancel(operation):
@@ -2916,6 +3098,19 @@ def process_audio_job(job_data):
         def generate_chunks(chapter_idx: int, section_text: str, output_dir: Path):
             if cancel_flags.get(job_id, False):
                 raise JobCancelled()
+
+            # IndexTTS pre-build: all chunks were already generated in one subprocess.
+            # Return the cached files for this chapter's output_dir directly.
+            if _prebuilt_audio_cache:
+                _out_dir_str = str(output_dir.resolve()).lower()
+                cached = sorted(
+                    [p for p in _prebuilt_audio_cache
+                     if str(Path(p).parent.resolve()).lower() == _out_dir_str],
+                    key=lambda p: p,
+                )
+                if cached:
+                    return cached
+
             segments = processor.process_text(section_text)
             if not segments:
                 return []
@@ -2968,6 +3163,8 @@ def process_audio_job(job_data):
                 engine_kwargs["parallel_workers"] = max(1, min(8, int(config.get("parallel_chunks", 1) or 1)))
             if "pause_cb" in sig_params:
                 engine_kwargs["pause_cb"] = pause_cb
+            if "cancel_cb" in sig_params:
+                engine_kwargs["cancel_cb"] = lambda: bool(cancel_flags.get(job_id, False))
             if "group_by_speaker" in sig_params:
                 engine_kwargs["group_by_speaker"] = bool(config.get("group_chunks_by_speaker", False))
             audio_files = run_with_cancel(lambda: engine.generate_batch(**engine_kwargs))
@@ -2985,7 +3182,138 @@ def process_audio_job(job_data):
                         descriptor,
                         file_path,
                     )
+                    update_progress(1)
             return audio_files
+
+        def _prebuild_index_tts_all_chapters():
+            """Collect all chapter segments and run a single IndexTTS subprocess.
+
+            Eliminates per-chapter model-reload overhead (~30-60s each) by sending
+            all chunks to one tts_worker.py process. Results cached in
+            _prebuilt_audio_cache; generate_chunks returns from cache without
+            re-launching the engine.
+            """
+            if not hasattr(engine, 'generate_batch_prebuilt'):
+                return
+            if not split_by_chapter:
+                return
+            from src.engines.index_tts_engine import IndexTTSEngine  # noqa: F401
+            if not isinstance(engine, IndexTTSEngine):
+                return
+
+            logger.info("Job %s: IndexTTS batch mode — pre-collecting all chapters into one subprocess", job_id)
+
+            all_worker_chunks: List[Dict] = []
+            all_chunk_meta: List[Dict] = []
+            global_order = 0
+
+            # Build parallel lists: section texts and their target chunk dirs
+            sections_to_process: List[str] = []
+            chapter_output_dirs: List[Path] = []
+
+            if book_mode:
+                for book_idx, book in enumerate(book_sections, start=1):
+                    _ch_folder = 1
+                    for chapter in (book.get("chapters") or []):
+                        sections_to_process.append(chapter.get("content", ""))
+                        if (chapter.get("title") or "").strip().lower() == "title":
+                            _cdir = job_dir / f"book_{book_idx:02d}" / "title"
+                        else:
+                            _cdir = job_dir / f"book_{book_idx:02d}" / f"chapter_{_ch_folder:02d}"
+                            _ch_folder += 1
+                        chapter_output_dirs.append(_cdir / "chunks")
+            else:
+                _ch_folder = 1
+                for chapter in chapter_sections:
+                    sections_to_process.append(chapter.get("content", ""))
+                    if (chapter.get("title") or "").strip().lower() == "title":
+                        _cdir = job_dir / "title"
+                    else:
+                        _cdir = job_dir / f"chapter_{_ch_folder:02d}"
+                        _ch_folder += 1
+                    chapter_output_dirs.append(_cdir / "chunks")
+
+            _skip_remaining = int(job_data.get("resume_from_chunk_index") or 0)
+            for ch_idx, (section_text, chunk_dir) in enumerate(zip(sections_to_process, chapter_output_dirs)):
+                segments = processor.process_text(section_text)
+                if not segments:
+                    continue
+                if _skip_remaining > 0:
+                    segments, skipped = _apply_chunk_skip(segments, _skip_remaining)
+                    _skip_remaining = max(0, _skip_remaining - skipped)
+                    if not segments:
+                        continue
+                if word_replacements:
+                    for seg in segments:
+                        seg["chunks"] = [
+                            _apply_word_replacements(c, word_replacements)
+                            for c in (seg.get("chunks") or [])
+                        ]
+                chunk_dir.mkdir(parents=True, exist_ok=True)
+                local_idx = 0
+                for seg_idx, segment in enumerate(segments):
+                    speaker = segment.get("speaker")
+                    assignment = engine._voice_assignment_for(voice_assignments, speaker)
+                    spk_prompt = engine._resolve_prompt(assignment)
+                    for chunk_text in (segment.get("chunks") or []):
+                        out_path = chunk_dir / f"chunk_{local_idx:04d}.wav"
+                        all_worker_chunks.append({
+                            "text": chunk_text,
+                            "spk_audio_prompt": spk_prompt,
+                            "output_path": str(out_path),
+                            "_order_index": global_order,
+                        })
+                        all_chunk_meta.append({
+                            "speaker": speaker,
+                            "text": chunk_text,
+                            "segment_index": seg_idx,
+                            "chunk_index": local_idx,
+                            "chapter_index": ch_idx,
+                            "output_path": str(out_path),
+                            "assignment": assignment,
+                            "_order_index": global_order,
+                        })
+                        local_idx += 1
+                        global_order += 1
+
+            if not all_worker_chunks:
+                return
+
+            logger.info(
+                "Job %s: IndexTTS single-subprocess batch — %d total chunks across %d chapters",
+                job_id, len(all_worker_chunks), len(sections_to_process),
+            )
+
+            group_spk = bool(config.get("group_chunks_by_speaker", False))
+
+            def _batch_chunk_cb(chunk_idx: int, segment: Dict[str, Any], file_path: str):
+                chapter_idx = segment.get("chapter_index", 0)
+                make_chunk_callback(chapter_idx)(chunk_idx, segment, file_path)
+
+            engine.generate_batch_prebuilt(
+                worker_chunks=all_worker_chunks,
+                chunk_meta=all_chunk_meta,
+                progress_cb=update_progress,
+                chunk_cb=_batch_chunk_cb,
+                pause_cb=pause_cb,
+                cancel_cb=lambda: bool(cancel_flags.get(job_id, False)),
+                group_by_speaker=group_spk,
+            )
+
+            for item in all_worker_chunks:
+                p = item["output_path"]
+                if Path(p).exists():
+                    _prebuilt_audio_cache[p] = p
+
+            logger.info("Job %s: IndexTTS pre-build complete — %d files cached", job_id, len(_prebuilt_audio_cache))
+
+        _prebuild_index_tts_all_chapters()
+
+        if cancel_flags.get(job_id, False):
+            raise JobCancelled()
+
+        if pause_flags.get(job_id, False):
+            raise JobPaused()
 
         try:
             if split_by_chapter:
@@ -3254,11 +3582,14 @@ def process_audio_job(job_data):
             with manifest_path.open("w", encoding="utf-8") as handle:
                 json.dump(review_manifest, handle, indent=2)
             chunks_meta_path = job_dir / "chunks_metadata.json"
+            _tm_for_meta = (jobs.get(job_id) or {}).get("timing_metrics")
             chunks_meta = {
                 "engine": engine_name,
                 "created_at": datetime.now().isoformat(),
                 "chunks": job_chunks,
             }
+            if _tm_for_meta:
+                chunks_meta["timing_metrics"] = _tm_for_meta
             with chunks_meta_path.open("w", encoding="utf-8") as handle:
                 json.dump(chunks_meta, handle, indent=2)
             
@@ -3289,6 +3620,32 @@ def process_audio_job(job_data):
         }
         save_job_metadata(job_dir, metadata)
         
+        # Compute timing metrics from chunk completion timestamps
+        job_end_time = datetime.now()
+        total_job_seconds = (job_end_time - job_start_time).total_seconds()
+        chunk_times: List[float] = []
+        # Derive per-chunk render times from consecutive completion timestamps.
+        # Use diffs between consecutive timestamps (excludes model-load overhead on first chunk).
+        if len(_chunk_done_ts) >= 2:
+            chunk_times = [
+                _chunk_done_ts[i] - _chunk_done_ts[i - 1]
+                for i in range(1, len(_chunk_done_ts))
+            ]
+        elif len(_chunk_done_ts) == 1 and total_chunks == 1:
+            # Single chunk: use total job time as best estimate
+            chunk_times = [total_job_seconds]
+        avg_chunk_seconds = (sum(chunk_times) / len(chunk_times)) if chunk_times else None
+        timing_metrics = {
+            "started_at": jobs[job_id].get("started_at"),
+            "completed_at": job_end_time.isoformat(),
+            "total_seconds": round(total_job_seconds, 1),
+            "chunk_count": len(_chunk_done_ts),
+            "avg_chunk_seconds": round(avg_chunk_seconds, 1) if avg_chunk_seconds is not None else None,
+            "min_chunk_seconds": round(min(chunk_times), 1) if chunk_times else None,
+            "max_chunk_seconds": round(max(chunk_times), 1) if chunk_times else None,
+            "chunk_times": [round(t, 1) for t in chunk_times],
+        }
+
         # Update job as completed
         with queue_lock:
             jobs[job_id]['status'] = 'completed'
@@ -3306,10 +3663,22 @@ def process_audio_job(job_data):
             jobs[job_id]['resume_from_chunk_index'] = total_chunks
             if full_story_entry:
                 jobs[job_id]['full_story'] = full_story_entry
-            jobs[job_id]['completed_at'] = datetime.now().isoformat()
+            jobs[job_id]['completed_at'] = job_end_time.isoformat()
+            jobs[job_id]['timing_metrics'] = timing_metrics
         _persist_job_state(job_id, force=True)
 
-        
+        # Also write timing_metrics into chunks_metadata.json so the library can read it from disk.
+        try:
+            _cmeta_path = job_dir / "chunks_metadata.json"
+            if _cmeta_path.exists():
+                with _cmeta_path.open("r", encoding="utf-8") as _fh:
+                    _cmeta = json.load(_fh)
+                _cmeta["timing_metrics"] = timing_metrics
+                with _cmeta_path.open("w", encoding="utf-8") as _fh:
+                    json.dump(_cmeta, _fh, indent=2)
+        except Exception as _e:
+            logger.warning("Could not write timing_metrics to chunks_metadata.json: %s", _e)
+
         logger.info(f"Job {job_id} completed successfully with {len(chapter_outputs)} output file(s)")
         
         # Optional VRAM cleanup after job completion
@@ -3318,6 +3687,25 @@ def process_audio_job(job_data):
         
     except JobPaused:
         logger.info(f"Job {job_id} paused – stopping after current chunk")
+        # Save the partial review_manifest so chapter/book entries before the pause
+        # are preserved and can be restored when the job is resumed.
+        if review_mode:
+            try:
+                _partial_manifest_path = job_dir / "review_manifest_partial.json"
+                # Snapshot all_full_story_chunks as relative paths
+                _rel_full_story = [
+                    os.path.relpath(p, job_dir) for p in (all_full_story_chunks or [])
+                ]
+                _partial_to_save = dict(review_manifest)
+                _partial_to_save["all_full_story_chunks"] = _rel_full_story
+                with _partial_manifest_path.open("w", encoding="utf-8") as _fh:
+                    json.dump(_partial_to_save, _fh, indent=2)
+                logger.info(
+                    "Job %s: Saved partial review_manifest — %d chapters, %d books",
+                    job_id, len(review_manifest.get("chapters") or []), len(review_manifest.get("books") or []),
+                )
+            except Exception as _e:
+                logger.warning("Job %s: Could not save partial review_manifest: %s", job_id, _e)
         with queue_lock:
             job_entry = jobs.get(job_id)
             if job_entry:
@@ -5066,6 +5454,7 @@ def _merge_review_job(job_id: str, job_entry: Dict[str, Any], manifest: Dict[str
 
     invalidate_library_cache()
 
+    job_end_time = datetime.now()
     with queue_lock:
         entry = jobs.get(job_id)
         if entry:
@@ -5076,10 +5465,77 @@ def _merge_review_job(job_id: str, job_entry: Dict[str, Any], manifest: Dict[str
             entry["post_process_active"] = False
             entry["post_process_done"] = int(entry.get("post_process_total") or entry.get("post_process_done") or 0)
             entry["chapter_outputs"] = chapter_outputs
-            entry["completed_at"] = datetime.now().isoformat()
+            entry["completed_at"] = job_end_time.isoformat()
             if full_story_entry:
                 entry["full_story"] = full_story_entry
             entry["output_file"] = (full_story_entry or (chapter_outputs[0] if chapter_outputs else {})).get("file_url")
+            # Compute timing metrics — use duration_seconds from chunks_metadata for per-chunk times
+            started_at_str = entry.get("started_at")
+            total_chunks = entry.get("total_chunks") or 0
+            try:
+                started_dt = datetime.fromisoformat(started_at_str) if started_at_str else None
+                total_seconds = (job_end_time - started_dt).total_seconds() if started_dt else None
+            except Exception:
+                total_seconds = None
+            # Prefer render-time chunk_times already accumulated in the live timing_metrics
+            # (set by update_progress during generation). Fall back to WAV audio durations.
+            chunk_times: List[float] = list(entry.get("timing_metrics", {}).get("chunk_times") or [])
+            if not chunk_times:
+                try:
+                    import wave as _wave
+                    chunks_meta_path = job_dir / "chunks_metadata.json"
+                    if chunks_meta_path.exists():
+                        with chunks_meta_path.open("r", encoding="utf-8") as _f:
+                            _cmeta = json.load(_f)
+                        # Also check if timing_metrics was already saved in chunks_metadata
+                        _saved_tm = _cmeta.get("timing_metrics") or {}
+                        chunk_times = list(_saved_tm.get("chunk_times") or [])
+                        if not chunk_times:
+                            for _c in sorted(_cmeta.get("chunks") or [], key=lambda x: x.get("order_index", x.get("chunk_index", 0))):
+                                _rel = _c.get("relative_file")
+                                if not _rel:
+                                    continue
+                                _wav_path = job_dir / _rel
+                                if not _wav_path.exists():
+                                    continue
+                                try:
+                                    with _wave.open(str(_wav_path), "rb") as _wf:
+                                        _dur = _wf.getnframes() / float(_wf.getframerate())
+                                    chunk_times.append(round(_dur, 1))
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+            avg_chunk = round(sum(chunk_times) / len(chunk_times), 1) if chunk_times else (
+                round(total_seconds / total_chunks, 1) if (total_seconds and total_chunks) else None
+            )
+            final_timing_metrics = {
+                "started_at": started_at_str,
+                "completed_at": job_end_time.isoformat(),
+                "total_seconds": round(total_seconds, 1) if total_seconds is not None else None,
+                "chunk_count": total_chunks,
+                "avg_chunk_seconds": avg_chunk,
+                "min_chunk_seconds": round(min(chunk_times), 1) if chunk_times else None,
+                "max_chunk_seconds": round(max(chunk_times), 1) if chunk_times else None,
+                "chunk_times": chunk_times,
+            }
+            entry["timing_metrics"] = final_timing_metrics
+    _persist_job_state(job_id, force=True)
+
+    # Write final timing_metrics to chunks_metadata.json so the library can read it from disk.
+    try:
+        _cmeta_path = job_dir / "chunks_metadata.json"
+        if _cmeta_path.exists():
+            with _cmeta_path.open("r", encoding="utf-8") as _fh:
+                _cmeta_data = json.load(_fh)
+            with queue_lock:
+                _final_tm = (jobs.get(job_id) or {}).get("timing_metrics")
+            if _final_tm:
+                _cmeta_data["timing_metrics"] = _final_tm
+                with _cmeta_path.open("w", encoding="utf-8") as _fh:
+                    json.dump(_cmeta_data, _fh, indent=2)
+    except Exception as _e:
+        logger.warning("Could not write timing_metrics to chunks_metadata.json (review path): %s", _e)
 
 
 @app.route('/api/jobs/<job_id>/review/finish', methods=['POST'])
@@ -5462,7 +5918,8 @@ def analyze_text():
 
 @app.route('/api/jobs/<job_id>/delete', methods=['DELETE'])
 def delete_job(job_id: str):
-    """Remove a job from the queue without deleting its output files."""
+    """Remove a job from the queue and delete its output files from disk."""
+    import shutil
     try:
         with queue_lock:
             job_entry = jobs.get(job_id)
@@ -5478,6 +5935,7 @@ def delete_job(job_id: str):
             cancel_flags[job_id] = True
             pause_flags.pop(job_id, None)
             cancel_events.pop(job_id, None)
+            job_dir = _job_dir_from_entry(job_id, job_entry)
 
         with _get_jobs_db_connection() as conn:
             conn.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
@@ -5485,6 +5943,27 @@ def delete_job(job_id: str):
 
         with queue_lock:
             jobs.pop(job_id, None)
+
+        # Always delete the job metadata folder (data/jobs/<job_id>/).
+        job_data_dir = JOBS_DATA_DIR / job_id
+        if job_data_dir.exists():
+            try:
+                shutil.rmtree(job_data_dir, onerror=handle_remove_readonly)
+                logger.info("Deleted job data directory: %s", job_data_dir)
+            except Exception as rm_err:
+                logger.warning("Could not delete job data directory %s: %s", job_data_dir, rm_err)
+
+        # Only delete the audio output folder (static/audio/<job_id>/) for jobs
+        # that never completed. Completed/done/review jobs are library items —
+        # their audio must be preserved so the library entry survives.
+        if status not in {"completed", "done", "review"} and job_dir.exists():
+            try:
+                shutil.rmtree(job_dir, onerror=handle_remove_readonly)
+                logger.info("Deleted job audio directory: %s", job_dir)
+            except Exception as rm_err:
+                logger.warning("Could not delete job audio directory %s: %s", job_dir, rm_err)
+
+        invalidate_library_cache()
         return jsonify({"success": True})
     except Exception as e:
         logger.error("Error deleting job %s: %s", job_id, e, exc_info=True)
@@ -5561,6 +6040,8 @@ def get_job_details(job_id: str):
                 "job_id": job_id,
                 "status": job_entry.get("status"),
                 "created_at": job_entry.get("created_at"),
+                "started_at": job_entry.get("started_at"),
+                "completed_at": job_entry.get("completed_at"),
                 "engine": job_entry.get("engine"),
                 "speakers": job_entry.get("speakers") or _extract_speakers_for_text(text),
                 "text": text,
@@ -5569,6 +6050,9 @@ def get_job_details(job_id: str):
                 "full_story_requested": bool(job_entry.get("full_story_requested")),
                 "resume_from_chunk_index": job_entry.get("resume_from_chunk_index"),
                 "last_completed_chunk_index": job_entry.get("last_completed_chunk_index"),
+                "timing_metrics": job_entry.get("timing_metrics"),
+                "total_chunks": job_entry.get("total_chunks"),
+                "processed_chunks": job_entry.get("processed_chunks"),
             }
         return jsonify({"success": True, "job": payload})
     except Exception as exc:
@@ -6425,20 +6909,27 @@ def _build_library_listing():
                         "format": full_path.suffix.lstrip('.')
                     }
 
+            # Read engine and timing_metrics from chunks_metadata.json once for both branches
+            _lib_chunks_meta_path = job_dir / "chunks_metadata.json"
+            _lib_manifest_path = job_dir / "review_manifest.json"
+            _lib_has_chunks = _lib_chunks_meta_path.exists() or _lib_manifest_path.exists()
+            _lib_engine = None
+            _lib_timing_metrics = None
+            if _lib_chunks_meta_path.exists():
+                try:
+                    with _lib_chunks_meta_path.open("r", encoding="utf-8") as f:
+                        _lib_cmeta = json.load(f)
+                        _lib_engine = _lib_cmeta.get("engine")
+                        _lib_timing_metrics = _lib_cmeta.get("timing_metrics")
+                except Exception:
+                    pass
+            # Also check live job entry for timing_metrics (may be more up-to-date)
+            _live_tm = (jobs.get(job_id) or {}).get("timing_metrics")
+            if _live_tm:
+                _lib_timing_metrics = _live_tm
+
             if chapters_data:
                 chapters_data.sort(key=lambda c: c.get("index") or 0)
-                chunks_meta_path = job_dir / "chunks_metadata.json"
-                manifest_path = job_dir / "review_manifest.json"
-                has_chunks = chunks_meta_path.exists() or manifest_path.exists()
-                # Get engine from chunks_metadata if available
-                engine = None
-                if chunks_meta_path.exists():
-                    try:
-                        with chunks_meta_path.open("r", encoding="utf-8") as f:
-                            chunks_meta = json.load(f)
-                            engine = chunks_meta.get("engine")
-                    except Exception:
-                        pass
                 _word_replacements = (jobs.get(job_id) or {}).get("word_replacements") or metadata.get("word_replacements") or []
                 library_items.append({
                     "job_id": job_id,
@@ -6453,22 +6944,12 @@ def _build_library_listing():
                     "books": chapters_data if metadata.get("book_mode") else [],
                     "chapters": chapters_data,
                     "full_story": full_story_entry,
-                    "has_chunks": has_chunks,
-                    "engine": engine,
+                    "has_chunks": _lib_has_chunks,
+                    "engine": _lib_engine,
+                    "timing_metrics": _lib_timing_metrics,
                     "word_replacements": _word_replacements,
                 })
             elif full_story_entry:
-                chunks_meta_path = job_dir / "chunks_metadata.json"
-                manifest_path = job_dir / "review_manifest.json"
-                has_chunks = chunks_meta_path.exists() or manifest_path.exists()
-                engine = None
-                if chunks_meta_path.exists():
-                    try:
-                        with chunks_meta_path.open("r", encoding="utf-8") as f:
-                            chunks_meta = json.load(f)
-                            engine = chunks_meta.get("engine")
-                    except Exception:
-                        pass
                 _word_replacements2 = (jobs.get(job_id) or {}).get("word_replacements") or metadata.get("word_replacements") or []
                 library_items.append({
                     "job_id": job_id,
@@ -6483,8 +6964,9 @@ def _build_library_listing():
                     "books": [],
                     "chapters": [],
                     "full_story": full_story_entry,
-                    "has_chunks": has_chunks,
-                    "engine": engine,
+                    "has_chunks": _lib_has_chunks,
+                    "engine": _lib_engine,
+                    "timing_metrics": _lib_timing_metrics,
                     "word_replacements": _word_replacements2,
                 })
             continue
@@ -7715,6 +8197,8 @@ def health_check():
         "qwen3_available": QWEN3_AVAILABLE,
         "pocket_tts_available": POCKET_TTS_AVAILABLE,
         "kitten_tts_available": KITTEN_TTS_AVAILABLE,
+        "index_tts_available": INDEX_TTS_AVAILABLE,
+        "index_tts_unavailable_reason": INDEX_TTS_UNAVAILABLE_REASON if not INDEX_TTS_AVAILABLE else "",
         "cuda_available": False if not KOKORO_AVAILABLE else __import__('torch').cuda.is_available(),
         "vram": vram_info,
         "loaded_engines": list(tts_engine_instances.keys()),

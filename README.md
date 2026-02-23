@@ -1,26 +1,20 @@
-# Current Updates and Notes - updated 02-22-2026
+# Current Updates and Notes - updated 02-23-2026
+- Added **IndexTTS** as a new TTS engine — zero-shot voice cloning by Bilibili Research. High-quality GPU-accelerated synthesis with a single reference audio clip. Supports multi-chapter batch mode that pre-collects all chapters into a single subprocess call, eliminating per-chapter model-reload overhead (~30–60s per chapter saved).
+- **Bug fix**: Pausing and resuming a job no longer loses chapter/title data collected before the pause. The partial chapter manifest is now saved to disk on pause and restored on resume, so all chapters are present in the library when the job finishes.
+- **Bug fix**: Chunk timing history is now preserved across pause/resume cycles. Historical chunk timestamps are restored on resume so the live timing chart and final metrics reflect the full generation run, not just the post-resume portion.
+- Added **Generation Metrics** button to library items — shows a modal with full timing stats (started, completed, total time, avg/min/max chunk time) and a chunk duration line chart for completed jobs.
+
+### Previous Updates
+- **Bug fix**: Deleting a job from the queue no longer removes its audio files if the job was already completed — completed jobs remain accessible in the library.
 - Added **KittenTTS** as a new CPU-only TTS engine — ultra-lightweight (<25MB), no GPU required, 8 built-in voices (Bella, Jasper, Luna, Bruno, Rosie, Hugo, Kiki, Leo). Selectable from the engine dropdown with its own settings panel.
 - Added **Alternate Word Registry** — specify words that TTS engines mispronounce and provide phonetically equivalent substitutes. Replacements are applied automatically before synthesis on every chunk.
 - Added **per-engine configurable chunk size** in Settings → Engine Settings. Each engine now has its own character chunk size slider so you can tune the text split size independently (e.g. smaller chunks for CPU engines, larger for GPU engines).
 - **Bug fix**: Speaker profile prompt was missing from the Gemini pre-processing flow — restored.
 - **Updated** Kokoro prompt preset to "Strict Book Narration V1" with improved instruction adherence for audiobook conversion.
 
-### Previous Updates
-- (02-15-2026) Verified working on Linux (Ubuntu) — CPU-only system install successful via install-update.sh.
-- (02-15-2026) Added complete Linux/macOS support with setup.sh and run.sh scripts (auto-installs git, python3-venv, system dependencies).
-- (02-15-2026) Added new prompt presets optimized for local LLMs: "With Paralinguistic Tags" and "Without Paralinguistic Tags".
-- (02-15-2026) Added "Local LLM Optimized" prompt preset specifically tuned for Mistral Nemo/Llama models.
-- (02-15-2026) Added speaker mapping to maintain consistent speaker names across text chunks.
-- (02-15-2026) Setup script fixes for chatterbox-tts and pocket-tts installations (scipy, torchaudio, numpy compatibility).
-- (02-03-2026) Added Pocket TTS engine with preset voices and CPU-friendly voice cloning support.
-- (02-03-2026) Job queue improvements: pause/resume, cancel jobs, and persistent queue state across restarts.
-- (02-03-2026) Job detail view expanded with per-chunk status and resume-from-chunk support.
-- (02-03-2026) Engine-specific chunk sizing defaults (including Pocket TTS, Qwen3, VoxCPM, Kokoro).
-- (02-03-2026) Library refreshes automatically when jobs complete (no manual refresh needed).
-
 # TTS-Story
 
-A web-based Text-to-Speech application supporting multiple TTS engines including **Kokoro-82M**, **Chatterbox**, **VoxCPM 1.5**, **Qwen3 TTS** (Custom Voice, Clone, Voice Creation), **Pocket TTS** (CPU-friendly), and **KittenTTS** (ultra-lightweight CPU-only), with both local GPU inference and Replicate cloud API options for generating multi-voice audiobooks and stories.
+A web-based Text-to-Speech application supporting multiple TTS engines including **Kokoro-82M**, **Chatterbox**, **VoxCPM 1.5**, **Qwen3 TTS** (Custom Voice, Clone, Voice Creation), **Pocket TTS** (CPU-friendly), **KittenTTS** (ultra-lightweight CPU-only), and **IndexTTS** (zero-shot voice cloning by Bilibili), with both local GPU inference and Replicate cloud API options for generating multi-voice audiobooks and stories.
 
 <div align="center">
   <table>
@@ -77,7 +71,7 @@ A web-based Text-to-Speech application supporting multiple TTS engines including
 ## Features
 
 ### TTS Engines
-- **Multi-Engine Support**: Choose from eleven TTS engine options:
+- **Multi-Engine Support**: Choose from twelve TTS engine options:
   - **Kokoro · Local GPU** - Run Kokoro-82M locally on your NVIDIA GPU
   - **Kokoro · Replicate** - Use Kokoro via Replicate cloud API
   - **Chatterbox · Local GPU** - Run Chatterbox locally with voice cloning (~8GB VRAM required)
@@ -89,6 +83,7 @@ A web-based Text-to-Speech application supporting multiple TTS engines including
   - **Qwen3 TTS · Clone** - Clone a voice from reference audio using Qwen3 TTS
   - **Qwen3 TTS · Voice Creation** - Create a brand-new voice using Qwen3 TTS voice design
   - **KittenTTS** - Ultra-lightweight CPU-only engine, no GPU required
+  - **IndexTTS** - Zero-shot voice cloning by Bilibili, runs in an isolated venv
 - **Unified Replicate API**: Single API token works for both Kokoro and Chatterbox Replicate engines
 - **Voice Cloning**: Upload your own voice recordings (10-15 seconds recommended) to clone any voice with Chatterbox or VoxCPM
 - **Voice Prompt Management**: Add, rename, delete, and preview custom voice prompts with drag-and-drop bulk upload
@@ -279,7 +274,7 @@ python app.py
 
 ### Selecting a TTS Engine
 
-TTS-Story supports eleven TTS engine options. In the **Settings** tab, choose your preferred default engine:
+TTS-Story supports twelve TTS engine options. In the **Settings** tab, choose your preferred default engine:
 
 | Engine | Description | Requirements |
 |--------|-------------|--------------|
@@ -294,6 +289,7 @@ TTS-Story supports eleven TTS engine options. In the **Settings** tab, choose yo
 | **Pocket TTS · Preset Voices** | CPU-only preset voices, no GPU needed | CPU only |
 | **Pocket TTS · Voice Clone** | CPU-only voice cloning from reference prompts | CPU only |
 | **KittenTTS** | Ultra-lightweight CPU-only, 8 built-in voices | CPU only |
+| **IndexTTS** | Zero-shot voice cloning, English + Chinese | NVIDIA GPU recommended; isolated venv |
 
 You can also override the engine per-job in the **Generate** tab.
 
@@ -305,6 +301,41 @@ VoxCPM 1.5 is a powerful voice cloning engine with unique features:
 - **Shared Voice Prompts**: Uses the same voice prompt library as Chatterbox
 - **Lower VRAM Requirements**: Runs on GPUs with ~6GB VRAM
 - **High Quality Output**: Produces natural-sounding speech with good prosody
+
+### IndexTTS Engine
+
+IndexTTS (by Bilibili) is a state-of-the-art zero-shot voice cloning engine with emotion control:
+
+- **Zero-Shot Voice Cloning**: Clone any voice from a short reference audio (up to 15 seconds)
+- **Reuses Voice Prompts Library**: Uses the same voice prompt files as Chatterbox/VoxCPM — no new voice management needed
+- **Emotion Control** (IndexTTS-2): Condition speech on a separate emotion reference audio, an 8-value emotion vector, or a text description
+- **English + Chinese**: Supports both languages natively
+- **GPU Recommended**: Runs on CUDA, MPS (Apple Silicon), or CPU (slow)
+- **FP16 Support**: Halves VRAM usage with minimal quality loss
+- **Isolated Environment**: Runs in its own `uv` venv under `engines/index-tts/` to avoid dependency conflicts
+- **Multiple Model Versions**: IndexTTS-2 (recommended), IndexTTS-1.5, IndexTTS-1.0
+
+#### IndexTTS Setup
+
+1. **Run `setup.bat`** — it will automatically clone the repo and run `uv sync` if `git` and `uv` are available
+2. **Download model weights** (one-time, several GB):
+   ```bash
+   cd engines/index-tts
+   uv tool run huggingface-cli download IndexTeam/IndexTTS-2 --local-dir=checkpoints
+   ```
+3. **Select IndexTTS** from the engine dropdown in Settings or the Generate tab
+4. **Assign voice prompts** per speaker — uses the existing Voice Prompts library
+
+#### IndexTTS Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Model Version | `IndexTTS-2` | Which model version to use |
+| Chunk Size | `400` chars | Character limit per synthesis chunk |
+| Device | `auto` | cuda, cuda:0, cpu, or auto |
+| Default Voice Prompt | _(empty)_ | Fallback reference audio path |
+| Use FP16 | `true` | Half-precision inference (faster, less VRAM) |
+| Use DeepSpeed | `false` | Optional inference speedup |
 
 ### KittenTTS Engine
 
@@ -499,6 +530,7 @@ Settings are stored in `config.json`:
 | `pocket_tts` | Pocket TTS preset voices (CPU-only) |
 | `pocket_tts_preset` | Pocket TTS voice clone mode (CPU-only) |
 | `kitten_tts` | KittenTTS CPU-only engine |
+| `index_tts` | IndexTTS zero-shot voice cloning |
 
 Any settings you override in the Generate tab (format, bitrate, engine) are sent along with the job payload while keeping the saved defaults intact.
 
@@ -525,7 +557,13 @@ TTS-Story/
 │       ├── voxcpm_local_engine.py        # VoxCPM 1.5 local GPU engine
 │       ├── pocket_tts_engine.py          # Pocket TTS CPU-only engine
 │       ├── qwen3_engine.py               # Qwen3 TTS engine (custom/clone/design)
-│       └── kitten_tts_engine.py          # KittenTTS CPU-only engine
+│       ├── kitten_tts_engine.py          # KittenTTS CPU-only engine
+│       └── index_tts_engine.py           # IndexTTS subprocess adapter
+├── engines/
+│   └── index-tts/                    # Cloned IndexTTS repo (isolated venv)
+│       ├── .venv/                        # uv-managed isolated environment
+│       ├── checkpoints/                  # Downloaded model weights
+│       └── tts_worker.py                 # Worker script called by the adapter
 ├── static/
 │   ├── css/
 │   │   └── style.css
@@ -624,6 +662,16 @@ TTS-Story/
 - Full privacy
 - Install: `pip install https://github.com/KittenML/KittenTTS/releases/download/0.8/kittentts-0.8.0-py3-none-any.whl`
 
+### IndexTTS · Local GPU (NVIDIA recommended)
+- Zero-shot voice cloning from reference audio
+- GPU strongly recommended; CPU mode works but is slow
+- FP16 inference halves VRAM usage
+- Default chunk size: 400 chars
+- Runs in isolated `uv` venv — no dependency conflicts with main project
+- No API costs
+- Full privacy
+- Model download: `uv tool run huggingface-cli download IndexTeam/IndexTTS-2 --local-dir=checkpoints`
+
 ## Troubleshooting
 
 ### espeak-ng not found
@@ -645,6 +693,7 @@ Apache 2.0 - Same as Kokoro-82M
 - [Chatterbox](https://github.com/resemble-ai/chatterbox) by Resemble AI
 - [VoxCPM](https://github.com/openvpi/VoxCPM) by OpenVPI
 - [KittenTTS](https://github.com/KittenML/KittenTTS) by KittenML
+- [IndexTTS](https://github.com/index-tts/index-tts) by Bilibili IndexTTS Team
 - [TTS Samples](https://github.com/yaph/tts-samples) by yaph - External voice sample library
 - [StyleTTS2](https://github.com/yl4579/StyleTTS2) by yl4579
 - [Replicate](https://replicate.com) for cloud API

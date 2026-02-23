@@ -149,6 +149,7 @@ class Qwen3VoiceCloneEngine(TtsEngineBase):
         progress_cb=None,
         chunk_cb=None,
         parallel_workers: int = 1,
+        group_by_speaker: bool = False,
     ) -> List[str]:
         if sample_rate and sample_rate != self.sample_rate:
             logger.warning(
@@ -159,6 +160,20 @@ class Qwen3VoiceCloneEngine(TtsEngineBase):
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Group non-consecutive same-speaker segments together so the model
+        # processes all chunks for one voice before switching to the next,
+        # avoiding repeated prompt re-encoding on every speaker switch.
+        if group_by_speaker and len(segments) > 1:
+            seen: List[str] = []
+            by_spk: Dict[str, List] = {}
+            for seg in segments:
+                spk = seg.get("speaker") or "default"
+                if spk not in by_spk:
+                    seen.append(spk)
+                    by_spk[spk] = []
+                by_spk[spk].append(seg)
+            segments = [seg for spk in seen for seg in by_spk[spk]]
 
         files: List[str] = []
         chunk_index = 0

@@ -11,6 +11,113 @@ window.VOICES_UPDATED_EVENT = REVIEW_VOICES_EVENT_NAME;
 const REVIEW_CHATTERBOX_EVENT_NAME = window.CHATTERBOX_VOICES_EVENT || 'chatterboxVoices:updated';
 window.CHATTERBOX_VOICES_EVENT = REVIEW_CHATTERBOX_EVENT_NAME;
 
+// Shared timing helpers — used by both queue job details and library metrics modal
+function fmtDuration(secs) {
+    if (secs == null) return 'N/A';
+    const rounded = Math.round(secs);
+    if (rounded < 60) return `${rounded}s`;
+    const m = Math.floor(rounded / 60);
+    const s = rounded % 60;
+    return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+function buildChunkChart(chunkTimes, chunkCount, totalSeconds) {
+    let times = Array.isArray(chunkTimes) && chunkTimes.length > 0 ? chunkTimes : null;
+    let estimated = false;
+    if (!times && chunkCount > 0 && totalSeconds > 0) {
+        const avg = totalSeconds / chunkCount;
+        times = Array.from({length: chunkCount}, () => avg);
+        estimated = true;
+    }
+    if (!times || times.length === 0) return '';
+
+    const MAX_POINTS = 60;
+    const rawN = times.length;
+    const bucketSize = rawN <= MAX_POINTS ? 1 : Math.ceil(rawN / MAX_POINTS);
+    const downsampled = [];
+    for (let b = 0; b < rawN; b += bucketSize) {
+        const slice = times.slice(b, b + bucketSize);
+        const avg = slice.reduce((s, v) => s + v, 0) / slice.length;
+        downsampled.push({
+            avg,
+            min: Math.min(...slice),
+            max: Math.max(...slice),
+            startChunk: b + 1,
+            endChunk: Math.min(b + bucketSize, rawN),
+        });
+    }
+    const isDownsampled = bucketSize > 1;
+    const n = downsampled.length;
+
+    const W = 480, H = 90, padL = 38, padR = 10, padT = 8, padB = 24;
+    function fmtT(t) { return t >= 60 ? `${Math.floor(t/60)}m${Math.round(t%60)>0?Math.round(t%60)+'s':''}` : `${Math.round(t)}s`; }
+
+    const allMax = downsampled.map(d => d.max);
+    const globalMax = Math.max(...allMax);
+    const yMin = 0;
+    const yMax = globalMax * 1.1 || 1;
+    const range = yMax - yMin;
+
+    function xPos(i) { return padL + (n === 1 ? (W - padL - padR) / 2 : i * (W - padL - padR) / (n - 1)); }
+    function yPos(t) { return padT + (1 - (t - yMin) / range) * (H - padT - padB); }
+
+    let rangeBand = '';
+    if (isDownsampled) {
+        const topPts = downsampled.map((d, i) => `${xPos(i).toFixed(1)},${yPos(d.max).toFixed(1)}`).join(' ');
+        const botPts = downsampled.slice().reverse().map((d, i) => `${xPos(n - 1 - i).toFixed(1)},${yPos(d.min).toFixed(1)}`).join(' ');
+        rangeBand = `<polygon points="${topPts} ${botPts}" fill="rgba(126,184,247,0.10)" stroke="none"/>`;
+    }
+
+    const pts = downsampled.map((d, i) => `${xPos(i).toFixed(1)},${yPos(d.avg).toFixed(1)}`).join(' ');
+    const areaD = `M${xPos(0).toFixed(1)},${(H - padB).toFixed(1)} ` +
+        downsampled.map((d, i) => `L${xPos(i).toFixed(1)},${yPos(d.avg).toFixed(1)}`).join(' ') +
+        ` L${xPos(n-1).toFixed(1)},${(H - padB).toFixed(1)} Z`;
+
+    const dots = !isDownsampled
+        ? downsampled.map((d, i) => `<circle cx="${xPos(i).toFixed(1)}" cy="${yPos(d.avg).toFixed(1)}" r="3.5" fill="var(--accent,#7eb8f7)" stroke="rgba(15,18,32,0.8)" stroke-width="1.5"><title>Chunk ${d.startChunk}: ${fmtT(d.avg)}</title></circle>`).join('')
+        : downsampled.map((d, i) => `<circle cx="${xPos(i).toFixed(1)}" cy="${yPos(d.avg).toFixed(1)}" r="2" fill="var(--accent,#7eb8f7)" opacity="0.7"><title>Chunks ${d.startChunk}–${d.endChunk}: avg ${fmtT(d.avg)}, min ${fmtT(d.min)}, max ${fmtT(d.max)}</title></circle>`).join('');
+
+    const MAX_XLABELS = 8;
+    const xLabelStep = Math.max(1, Math.ceil(n / MAX_XLABELS));
+    const xLabels = downsampled.map((d, i) => {
+        if (i % xLabelStep !== 0 && i !== n - 1) return '';
+        return `<text x="${xPos(i).toFixed(1)}" y="${H - 4}" text-anchor="middle" font-size="9" fill="rgba(180,190,210,0.6)">${d.startChunk}</text>`;
+    }).join('');
+
+    const yLabelMax = `<text x="${padL - 4}" y="${(padT + 4).toFixed(1)}" text-anchor="end" font-size="9" fill="rgba(180,190,210,0.6)">${fmtT(yMax)}</text>`;
+    const yLabelMid = `<text x="${padL - 4}" y="${((padT + H - padB) / 2 + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="rgba(180,190,210,0.6)">${fmtT(yMax / 2)}</text>`;
+    const yLabelMin2 = `<text x="${padL - 4}" y="${(H - padB).toFixed(1)}" text-anchor="end" font-size="9" fill="rgba(180,190,210,0.6)">0s</text>`;
+
+    const midY = ((padT + H - padB) / 2).toFixed(1);
+    const grid = `<line x1="${padL}" y1="${midY}" x2="${W - padR}" y2="${midY}" stroke="rgba(99,102,241,0.12)" stroke-dasharray="3,3"/>`;
+
+    const downsampleNote = isDownsampled
+        ? `<div class="chunk-chart-estimated">averaged over ${bucketSize}-chunk windows · shaded band = min/max range</div>`
+        : (estimated ? `<div class="chunk-chart-estimated">* estimated (equal distribution)</div>` : '');
+
+    return `<div class="chunk-chart">
+        <div class="chunk-chart-title">Chunk Duration Over Time</div>
+        <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;overflow:visible">
+            <defs>
+                <linearGradient id="cg" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="var(--accent,#7eb8f7)" stop-opacity="0.25"/>
+                    <stop offset="100%" stop-color="var(--accent,#7eb8f7)" stop-opacity="0.02"/>
+                </linearGradient>
+            </defs>
+            ${grid}
+            ${rangeBand}
+            <path d="${areaD}" fill="url(#cg)"/>
+            <polyline points="${pts}" fill="none" stroke="var(--accent,#7eb8f7)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+            ${dots}
+            ${xLabels}
+            ${yLabelMax}
+            ${yLabelMid}
+            ${yLabelMin2}
+        </svg>
+        ${downsampleNote}
+    </div>`;
+}
+
 // Job Queue Management
 
 const QUEUE_REFRESH_INTERVAL_MS = 3000;
@@ -954,10 +1061,59 @@ async function openJobDetailsModal(jobId) {
         const speakers = Array.isArray(job.speakers) ? job.speakers : [];
         const speakerList = speakers.length ? speakers.map(s => `<span class="speaker-tag">${s}</span>`).join('') : '<span class="speaker-tag">default</span>';
         const text = (job.text || '').trim();
-        const resumeFrom = Number.isFinite(Number(job.resume_from_chunk_index))
+        const resumeFrom = (job.status !== 'completed' && Number.isFinite(Number(job.resume_from_chunk_index)) && Number(job.resume_from_chunk_index) > 0)
             ? Number(job.resume_from_chunk_index) + 1
             : null;
         const resumeLine = resumeFrom ? `<div><strong>Resume from:</strong> chunk ${resumeFrom}</div>` : '';
+
+        // Timing metrics
+        const tm = job.timing_metrics || {};
+        function fmtTime(iso) {
+            if (!iso) return 'N/A';
+            return new Date(iso).toLocaleString();
+        }
+        const isLive = ['processing', 'pausing'].includes(job.status);
+        const startedAt = fmtTime(job.started_at || tm.started_at);
+        const completedAt = (job.completed_at || tm.completed_at)
+            ? fmtTime(job.completed_at || tm.completed_at)
+            : (isLive ? '<span style="color:var(--accent,#7eb8f7);font-style:italic">In progress…</span>' : 'N/A');
+        const totalTimeLabel = (job.completed_at || tm.completed_at) ? 'Total Job Time' : 'Elapsed Time';
+        const totalTime = fmtDuration(tm.total_seconds);
+        const avgChunk = tm.avg_chunk_seconds != null ? fmtDuration(tm.avg_chunk_seconds) : 'N/A';
+        const minChunk = tm.min_chunk_seconds != null ? fmtDuration(tm.min_chunk_seconds) : 'N/A';
+        const maxChunk = tm.max_chunk_seconds != null ? fmtDuration(tm.max_chunk_seconds) : 'N/A';
+        const chunkCount = job.total_chunks != null ? job.total_chunks : (tm.chunk_count != null ? tm.chunk_count : 'N/A');
+        const processedChunks = job.processed_chunks != null ? job.processed_chunks : 'N/A';
+        const liveBadge = isLive ? '<span style="margin-left:8px;font-size:0.7rem;padding:2px 7px;border-radius:10px;background:rgba(126,184,247,0.15);color:var(--accent,#7eb8f7);vertical-align:middle">live</span>' : '';
+
+        const hasTimingData = tm.total_seconds != null;
+
+        const chunkChart = hasTimingData
+            ? buildChunkChart(tm.chunk_times, tm.chunk_count || chunkCount, tm.total_seconds)
+            : '';
+
+        const timingSection = hasTimingData ? `
+            <div class="job-detail-timing">
+                <h4 style="margin:0 0 10px 0; font-size:0.95rem; color:var(--accent, #7eb8f7);">Timing${liveBadge}</h4>
+                <div class="job-detail-timing-grid">
+                    <div class="timing-row"><span class="timing-label">Started</span><span class="timing-value">${startedAt}</span></div>
+                    <div class="timing-row"><span class="timing-label">Completed</span><span class="timing-value">${completedAt}</span></div>
+                    <div class="timing-row timing-highlight"><span class="timing-label">${totalTimeLabel}</span><span class="timing-value">${totalTime}</span></div>
+                    <div class="timing-row"><span class="timing-label">Chunks</span><span class="timing-value">${processedChunks} / ${chunkCount}</span></div>
+                    <div class="timing-row timing-highlight"><span class="timing-label">Avg Chunk Time</span><span class="timing-value">${avgChunk}</span></div>
+                    <div class="timing-row"><span class="timing-label">Fastest Chunk</span><span class="timing-value">${minChunk}</span></div>
+                    <div class="timing-row"><span class="timing-label">Slowest Chunk</span><span class="timing-value">${maxChunk}</span></div>
+                </div>
+                ${chunkChart}
+            </div>` : (job.started_at ? `
+            <div class="job-detail-timing">
+                <h4 style="margin:0 0 10px 0; font-size:0.95rem; color:var(--accent, #7eb8f7);">Timing</h4>
+                <div class="job-detail-timing-grid">
+                    <div class="timing-row"><span class="timing-label">Started</span><span class="timing-value">${startedAt}</span></div>
+                    <div class="timing-row"><span class="timing-label">Chunks</span><span class="timing-value">${processedChunks} / ${chunkCount}</span></div>
+                </div>
+            </div>` : '');
+
         if (body) {
             body.innerHTML = `
                 <div class="job-detail-grid">
@@ -976,6 +1132,7 @@ async function openJobDetailsModal(jobId) {
                         <div class="speaker-tags-wrap">${speakerList}</div>
                     </div>
                 </div>
+                ${timingSection}
                 <div class="job-detail-text">
                     <label>Job Text</label>
                     <textarea readonly rows="10">${text}</textarea>

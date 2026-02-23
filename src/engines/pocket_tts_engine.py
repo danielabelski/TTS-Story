@@ -119,6 +119,7 @@ class PocketTTSEngine(TtsEngineBase):
         chunk_cb=None,
         parallel_workers: int = 1,
         pause_cb=None,
+        group_by_speaker: bool = False,
     ) -> List[str]:
         if sample_rate and sample_rate != self.sample_rate:
             logger.warning(
@@ -129,6 +130,20 @@ class PocketTTSEngine(TtsEngineBase):
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Group non-consecutive same-speaker segments together so the voice
+        # state cache stays hot — all chunks for one speaker run back-to-back
+        # before switching to the next voice.
+        if group_by_speaker and len(segments) > 1:
+            seen: List[str] = []
+            by_spk: Dict[str, List] = {}
+            for seg in segments:
+                spk = seg.get("speaker") or "default"
+                if spk not in by_spk:
+                    seen.append(spk)
+                    by_spk[spk] = []
+                by_spk[spk].append(seg)
+            segments = [seg for spk in seen for seg in by_spk[spk]]
 
         files: List[Optional[str]] = []
         chunk_index = 0

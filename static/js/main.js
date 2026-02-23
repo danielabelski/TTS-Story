@@ -1096,7 +1096,7 @@ function isTurboEngine(engineName) {
 
 function isPromptEngine(engineName) {
     const value = (engineName || '').toLowerCase();
-    return isTurboEngine(value) || value === 'pocket_tts';
+    return isTurboEngine(value) || value === 'pocket_tts' || value === 'index_tts';
 }
 
 function isPocketPresetEngine(engineName) {
@@ -1114,6 +1114,10 @@ function isQwenEngine(engineName) {
 
 function isKittenEngine(engineName) {
     return (engineName || '').toLowerCase() === 'kitten_tts';
+}
+
+function isIndexTTSEngine(engineName) {
+    return (engineName || '').toLowerCase() === 'index_tts';
 }
 
 function isQwenCloneEngine(engineName) {
@@ -1134,6 +1138,7 @@ function updateEngineUI(engineName) {
     const isQwenClone = isQwenCloneEngine(engineName);
     const isKokoro = isKokoroEngine(engineName);
     const isKitten = isKittenEngine(engineName);
+    const isIndexTTS = isIndexTTSEngine(engineName);
     console.log('[updateEngineUI] kokoroCard:', kokoroCard, 'turboCard:', turboCard, 'isTurbo:', isTurbo);
     if (kokoroCard) {
         kokoroCard.style.display = isPrompt || isQwen || isQwenClone ? 'none' : 'block';
@@ -1150,7 +1155,7 @@ function updateEngineUI(engineName) {
         paralinguisticTagsBar.style.display = isKokoro ? 'flex' : 'none';
     }
     updateAssignmentModes(engineName);
-    if (isPrompt || isQwenClone) {
+    if (isPrompt || isQwenClone || isIndexTTS) {
         fetchReferencePrompts();
     }
     if (isQwen) {
@@ -4080,7 +4085,7 @@ function initInlineSampleHandlers() {
 // Populate voice select dropdowns
 function populateVoiceSelects() {
     const engineName = getSelectedJobEngine() || runtimeSettings?.tts_engine || 'kokoro';
-    if (!window.availableVoices && !window.availablePocketTtsVoices && !isKittenEngine(engineName)) return;
+    if (!window.availableVoices && !window.availablePocketTtsVoices && !isKittenEngine(engineName) && !isIndexTTSEngine(engineName)) return;
     const isQwen = isQwenEngine(engineName);
     const isPocketPreset = isPocketPresetEngine(engineName);
     const isKitten = isKittenEngine(engineName);

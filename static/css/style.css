@@ -112,6 +112,68 @@
     grid-column: 1 / -1;
 }
 
+.job-detail-timing {
+    background: rgba(15, 18, 32, 0.55);
+    border: 1px solid rgba(99, 102, 241, 0.18);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+}
+
+.job-detail-timing-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 8px;
+}
+
+.timing-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    border-radius: 7px;
+    background: rgba(255,255,255,0.03);
+}
+
+.timing-row.timing-highlight {
+    background: rgba(99, 102, 241, 0.12);
+    border: 1px solid rgba(99, 102, 241, 0.25);
+}
+
+.timing-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+}
+
+.timing-value {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-color);
+}
+
+.chunk-chart {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(99, 102, 241, 0.15);
+}
+
+.chunk-chart-title {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+
+.chunk-chart-estimated {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    font-style: italic;
+    margin-top: 4px;
+}
+
 .job-detail-text label {
     display: block;
     font-weight: 600;

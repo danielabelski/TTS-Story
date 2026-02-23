@@ -191,6 +191,7 @@
                                                 <option value="qwen3_custom">Qwen3-TTS · Custom Voice</option>
                                                 <option value="qwen3_clone">Qwen3-TTS · Voice Clone</option>
                                                 <option value="kitten_tts">KittenTTS · CPU Lightweight</option>
+                                                <option value="index_tts">IndexTTS · Zero-Shot Clone</option>
                                             </select>
                                         </div>
                                     </div>
@@ -613,6 +614,7 @@
                                     <option value="qwen3_custom">Qwen3-TTS · Custom Voice</option>
                                     <option value="qwen3_clone">Qwen3-TTS · Voice Clone</option>
                                     <option value="kitten_tts">KittenTTS · CPU Lightweight</option>
+                                    <option value="index_tts">IndexTTS · Zero-Shot Clone</option>
                                 </select>
                             </div>
                             <div class="form-group">
@@ -657,6 +659,7 @@
                             <button type="button" class="engine-tab-btn" data-engine-tab="pocket-tts">Pocket TTS</button>
                             <button type="button" class="engine-tab-btn" data-engine-tab="qwen3">Qwen3-TTS</button>
                             <button type="button" class="engine-tab-btn" data-engine-tab="kitten-tts">KittenTTS</button>
+                            <button type="button" class="engine-tab-btn" data-engine-tab="index-tts">IndexTTS</button>
                             <button type="button" class="engine-tab-btn" data-engine-tab="api-keys">API Keys</button>
                         </div>
 
@@ -933,6 +936,99 @@
                                     <label for="kitten-tts-chunk-size">Chunk Size (chars)</label>
                                     <input type="number" id="kitten-tts-chunk-size" min="50" max="600" step="25" value="300">
                                     <small>Character limit per chunk (recommended 150–350 for CPU speed).</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- IndexTTS Panel -->
+                        <div class="engine-panel" id="engine-panel-index-tts">
+                            <div class="section-title-inline settings-panel-title">
+                                <h4>IndexTTS</h4>
+                            </div>
+                            <p class="help-text" style="margin-top:0;">Zero-shot voice cloning by Bilibili. Requires an isolated venv under <code>engines/index-tts/</code>. Uses the existing Voice Prompts library for reference audio.</p>
+                            <div class="settings-form-grid">
+                                <div class="form-group">
+                                    <label for="index-tts-model-version">Model Version</label>
+                                    <select id="index-tts-model-version">
+                                        <option value="IndexTTS-2">IndexTTS-2 (recommended, emotion control)</option>
+                                        <option value="IndexTTS-1.5">IndexTTS-1.5 (stable, English-improved)</option>
+                                        <option value="IndexTTS">IndexTTS-1.0 (legacy)</option>
+                                    </select>
+                                    <small>Model weights must be downloaded to <code>engines/index-tts/checkpoints/</code>.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="index-tts-chunk-size">Chunk Size (chars)</label>
+                                    <input type="number" id="index-tts-chunk-size" min="100" max="1000" step="50" value="400">
+                                    <small>Character limit per synthesis chunk (recommended 300&ndash;500).</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="index-tts-device">Device</label>
+                                    <input type="text" id="index-tts-device" placeholder="auto">
+                                    <small>auto, cuda, cuda:0, cpu</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="index-tts-default-prompt">Default Voice Prompt</label>
+                                    <input type="text" id="index-tts-default-prompt" placeholder="data/voice_prompts/...">
+                                    <small>Fallback reference audio when no per-speaker prompt is assigned.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="index-tts-num-beams">Beam Search Width</label>
+                                    <input type="number" id="index-tts-num-beams" min="1" max="10" step="1" value="1">
+                                    <small><strong>1 = fastest</strong> (greedy/sampling). 3 = default quality. Higher = slower GPT stage with marginal quality gain.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="index-tts-diffusion-steps">Diffusion Steps</label>
+                                    <input type="number" id="index-tts-diffusion-steps" min="5" max="50" step="5" value="12">
+                                    <small><strong>10&ndash;15 = fast</strong>, good quality. 25 = default. 50 = max quality. Affects the s2mel stage (biggest bottleneck).</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="index-tts-temperature">Temperature</label>
+                                    <input type="number" id="index-tts-temperature" min="0.1" max="2.0" step="0.05" value="0.8">
+                                    <small>GPT sampling randomness. <strong>0.5&ndash;0.7</strong> = consistent/stable. <strong>0.8</strong> = default. <strong>1.0+</strong> = more expressive/varied delivery.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="index-tts-top-p">Top-P (Nucleus Sampling)</label>
+                                    <input type="number" id="index-tts-top-p" min="0.1" max="1.0" step="0.05" value="0.8">
+                                    <small>Limits sampling to the top cumulative probability mass. Lower = more conservative token choices. Default: 0.8.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="index-tts-top-k">Top-K</label>
+                                    <input type="number" id="index-tts-top-k" min="1" max="200" step="1" value="30">
+                                    <small>Limits sampling to the top K tokens at each step. Default: 30. Higher = more variety.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="index-tts-repetition-penalty">Repetition Penalty</label>
+                                    <input type="number" id="index-tts-repetition-penalty" min="1.0" max="20.0" step="0.5" value="10.0">
+                                    <small>Penalises repeated mel tokens. Raise if you hear <strong>stuttering or looping</strong> artifacts. Default: 10.0.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="index-tts-max-mel-tokens">Max Mel Tokens</label>
+                                    <input type="number" id="index-tts-max-mel-tokens" min="200" max="4000" step="100" value="1500">
+                                    <small>Hard cap on output length per chunk (~22 tokens/sec). <strong>1500 &asymp; 68s</strong>. Raise for very long sentences; lower to speed up short chunks.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="index-tts-max-text-tokens-per-segment">Max Text Tokens / Segment</label>
+                                    <input type="number" id="index-tts-max-text-tokens-per-segment" min="20" max="300" step="10" value="120">
+                                    <small>How many text tokens the model processes per internal pass before splitting. Smaller = faster but may affect prosody at split points. Default: 120.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>Options</label>
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="index-tts-use-fp16" checked>
+                                        Use FP16 (half-precision) &mdash; faster, less VRAM, tiny quality loss
+                                    </label>
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="index-tts-use-deepspeed">
+                                        Use DeepSpeed (optional speedup, may be slower on some systems)
+                                    </label>
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="index-tts-use-torch-compile" checked>
+                                        Use torch.compile &mdash; JIT-compiles s2mel diffusion model. <strong>First run slow</strong>, subsequent runs faster.
+                                    </label>
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="index-tts-use-accel" checked>
+                                        Use Accel &mdash; acceleration engine for GPT stage
+                                    </label>
                                 </div>
                             </div>
                         </div>
