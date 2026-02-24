@@ -319,17 +319,19 @@ echo Installing IndexTTS dependencies (this may take several minutes)...
 echo Note: Skipping deepspeed extra - it cannot build on Windows without special CUDA tooling.
 pushd "%INDEX_TTS_DIR%"
 %UV_EXE% %UV_ARGS% sync
-set "INDEX_TTS_RESULT=!errorlevel!"
-popd
-if "!INDEX_TTS_RESULT!" NEQ "0" (
-    echo WARNING: IndexTTS dependency install failed.
-    echo Try manually: cd engines\index-tts ^&^& uv sync
-) else (
-    echo IndexTTS environment ready.
-    echo Model weights will be downloaded automatically on first use (~2-4 GB).
-    echo Note: deepspeed was skipped. IndexTTS will run in standard mode.
-    type nul > "%INDEX_TTS_DIR%\.indextts_ready"
+if errorlevel 1 (
+    popd
+    goto :IndexTTSFailed
 )
+popd
+echo IndexTTS environment ready.
+echo Model weights will be downloaded automatically on first use (~2-4 GB).
+echo Note: deepspeed was skipped. IndexTTS will run in standard mode.
+type nul > "%INDEX_TTS_DIR%\.indextts_ready"
+goto :AfterIndexTTS
+:IndexTTSFailed
+echo WARNING: IndexTTS dependency install failed.
+echo Try manually: cd engines\index-tts ^&^& uv sync
 :AfterIndexTTS
 
 REM Optional performance extras (best-effort)
