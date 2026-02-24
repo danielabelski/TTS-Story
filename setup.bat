@@ -269,7 +269,7 @@ if errorlevel 1 (
     echo WARNING: git not found. Skipping IndexTTS setup.
     echo To install IndexTTS manually:
     echo   1. git clone https://github.com/index-tts/index-tts.git engines\index-tts
-    echo   2. cd engines\index-tts ^&^& uv sync --all-extras
+    echo   2. cd engines\index-tts ^&^& uv sync --extra webui
     echo   3. Download model: uv tool run huggingface-cli download IndexTeam/IndexTTS-2 --local-dir=checkpoints
     goto :AfterIndexTTS
 )
@@ -288,7 +288,7 @@ if not errorlevel 1 (
         if errorlevel 1 (
             echo WARNING: Failed to install uv. Skipping IndexTTS setup.
             echo Install uv manually from https://docs.astral.sh/uv/ then run:
-            echo   cd engines\index-tts ^&^& uv sync --all-extras
+            echo   cd engines\index-tts ^&^& uv sync --extra webui
             goto :AfterIndexTTS
         )
         set "UV_EXE=python"
@@ -317,12 +317,12 @@ if not exist "%INDEX_TTS_DIR%\pyproject.toml" (
 )
 echo Installing IndexTTS dependencies (this may take several minutes)...
 pushd "%INDEX_TTS_DIR%"
-%UV_EXE% %UV_ARGS% sync --all-extras
+%UV_EXE% %UV_ARGS% sync --extra webui
 set "INDEX_TTS_RESULT=!errorlevel!"
 popd
 if "!INDEX_TTS_RESULT!" NEQ "0" (
     echo WARNING: IndexTTS dependency install failed.
-    echo Try manually: cd engines\index-tts ^&^& uv sync --all-extras
+    echo Try manually: cd engines\index-tts ^&^& uv sync --extra webui
 ) else (
     echo IndexTTS environment ready.
     echo Model weights will be downloaded automatically on first use (~2-4 GB).
@@ -460,9 +460,9 @@ pause
 goto :EOF
 
 :RunUvSync
-REM Subroutine: cd into %1 and run uv sync --all-extras, return errorlevel
+REM Subroutine: cd into %1 and run uv sync --extra webui, return errorlevel
 cd /d "%~1"
-%UV_EXE% %UV_ARGS% sync --all-extras
+%UV_EXE% %UV_ARGS% sync --extra webui
 exit /b %errorlevel%
 
 :InstallVCRedist
