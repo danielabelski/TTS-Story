@@ -5132,3 +5132,47 @@ audio {
     border-color: rgba(99, 102, 241, 0.7);
     box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
 }
+
+/* ── Tag-error banner ─────────────────────────────────── */
+.tag-error-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 6px;
+    padding: 8px 12px;
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.45);
+    border-radius: 8px;
+    font-size: 0.875rem;
+    color: #fbbf24;
+    flex-wrap: wrap;
+}
+
+.tag-error-banner.hidden {
+    display: none;
+}
+
+.tag-error-banner-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 auto;
+}
+
+.tag-error-icon {
+    font-size: 1rem;
+    flex-shrink: 0;
+}
+
+.tag-error-banner-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+#input-text.tag-error-highlight {
+    border-color: rgba(245, 158, 11, 0.6) !important;
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18);
+}

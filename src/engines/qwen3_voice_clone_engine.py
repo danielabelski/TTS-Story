@@ -161,6 +161,25 @@ class Qwen3VoiceCloneEngine(TtsEngineBase):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Pre-flight: validate every speaker has a resolvable reference audio before
+        # any generation starts. Prevents 10+ minute failures mid-job.
+        unique_speakers = list(dict.fromkeys(
+            seg.get("speaker") or "default" for seg in segments
+        ))
+        missing_prompt: List[str] = []
+        for _spk in unique_speakers:
+            _asgn = self._voice_assignment_for(voice_config, _spk)
+            _path = _asgn.audio_prompt_path or self.default_prompt
+            if _path:
+                _path = self._resolve_prompt_path(_path)
+            if not _path:
+                missing_prompt.append(_spk)
+        if missing_prompt:
+            raise ValueError(
+                f"Qwen3 Voice Clone requires a reference audio prompt for every speaker. "
+                f"Missing reference audio for: {', '.join(missing_prompt)}"
+            )
+
         # Group non-consecutive same-speaker segments together so the model
         # processes all chunks for one voice before switching to the next,
         # avoiding repeated prompt re-encoding on every speaker switch.
@@ -300,7 +319,7 @@ class Qwen3VoiceCloneEngine(TtsEngineBase):
         fallback = Path(__file__).parent.parent.parent / "data" / "voice_prompts" / prompt_path
         if fallback.is_file():
             return str(fallback)
-        return str(resolved)
+        return None
 
     def _get_audio_hash(self, audio_path: str) -> str:
         path = Path(audio_path)

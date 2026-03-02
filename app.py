@@ -30,7 +30,7 @@ import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from time import perf_counter
@@ -932,6 +932,49 @@ def _extract_speakers_for_text(text: str) -> List[str]:
     return speakers or ["default"]
 
 
+def _check_speaker_tag_balance(text: str) -> List[str]:
+    """Return a list of human-readable error strings for any unbalanced speaker tags.
+
+    Detects:
+    - Opening tags with no matching close: [narrator] ... (no [/narrator])
+    - Closing tags with no matching open: [/narrator] at the start
+    - Mismatched nesting: [narrator] ... [/sola]
+    """
+    open_re = re.compile(r'\[([a-zA-Z0-9_\-]+)\]')
+    close_re = re.compile(r'\[/([a-zA-Z0-9_\-]+)\]')
+    reserved = {"default"}
+
+    events: List[tuple] = []
+    for m in open_re.finditer(text):
+        tag = m.group(1).lower()
+        if tag not in reserved:
+            events.append((m.start(), "open", tag))
+    for m in close_re.finditer(text):
+        tag = m.group(1).lower()
+        if tag not in reserved:
+            events.append((m.start(), "close", tag))
+    events.sort(key=lambda e: e[0])
+
+    errors: List[str] = []
+    stack: List[str] = []
+    for _pos, kind, tag in events:
+        if kind == "open":
+            stack.append(tag)
+        else:
+            if not stack:
+                errors.append(f"Closing tag [/{tag}] has no matching opening tag")
+            elif stack[-1] != tag:
+                errors.append(
+                    f"Mismatched tags: expected [/{stack[-1]}] but found [/{tag}]"
+                )
+                stack.pop()
+            else:
+                stack.pop()
+    for unclosed in stack:
+        errors.append(f"Opening tag [{unclosed}] has no matching closing tag")
+    return errors
+
+
 def _validate_voice_assignments_for_engine(
     engine_name: str,
     text: str,
@@ -939,6 +982,19 @@ def _validate_voice_assignments_for_engine(
     config: Dict[str, Any],
 ) -> None:
     engine_name = _normalize_engine_name(engine_name)
+
+    # Check for unbalanced/orphaned speaker tags before anything else.
+    # Only run when the text actually contains speaker tags to avoid
+    # false positives on plain text submissions.
+    processor = TextProcessor()
+    if processor.has_speaker_tags(text):
+        tag_errors = _check_speaker_tag_balance(text)
+        if tag_errors:
+            raise ValueError(
+                "Speaker tags are unbalanced — please fix the text before submitting.\n"
+                + "\n".join(f"  • {e}" for e in tag_errors)
+            )
+
     speakers = _extract_speakers_for_text(text)
     normalized_assignments = _normalize_voice_assignments_map(voice_assignments)
     default_assignment = normalized_assignments.get("default") or {}
@@ -1460,7 +1516,7 @@ def _persist_job_state(job_id: str, job_entry: Optional[Dict[str, Any]] = None, 
 def _load_jobs_from_db() -> Dict[str, Dict[str, Any]]:
     loaded: Dict[str, Dict[str, Any]] = {}
     with _get_jobs_db_connection() as conn:
-        rows = conn.execute("SELECT * FROM jobs").fetchall()
+        rows = conn.execute("SELECT * FROM jobs WHERE status != 'deleted'").fetchall()
     for row in rows:
         job_id = row["job_id"]
         loaded[job_id] = {
@@ -1504,6 +1560,31 @@ def _load_jobs_from_db() -> Dict[str, Dict[str, Any]]:
             if key in _extra:
                 loaded[job_id][key] = _extra[key]
     return loaded
+
+
+def _purge_stale_jobs(days: int = 7) -> None:
+    """Hard-delete terminal-state jobs (cancelled/failed/interrupted/deleted) older than `days` days."""
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    terminal_statuses = "('cancelled', 'failed', 'interrupted', 'deleted')"
+    with _get_jobs_db_connection() as conn:
+        stale = conn.execute(
+            f"SELECT job_id, status FROM jobs WHERE status IN {terminal_statuses} AND updated_at < ?",
+            (cutoff,),
+        ).fetchall()
+        # Also purge any deleted-status rows regardless of age
+        deleted_rows = conn.execute(
+            "SELECT job_id, status FROM jobs WHERE status = 'deleted'"
+        ).fetchall()
+    all_to_purge = {row["job_id"]: row["status"] for row in stale}
+    all_to_purge.update({row["job_id"]: row["status"] for row in deleted_rows})
+    for job_id, status in all_to_purge.items():
+        try:
+            with _get_jobs_db_connection() as conn:
+                conn.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
+                conn.commit()
+            logger.info("Purged stale job %s (status=%s)", job_id, status)
+        except Exception as exc:
+            logger.warning("Failed to purge stale job %s: %s", job_id, exc)
 
 
 def _archive_old_jobs(max_jobs: int = 500) -> None:
@@ -2190,9 +2271,41 @@ def _build_sections_from_matches(
             # Create a "Title" section for content before the first heading.
             sections.append({"title": "Title", "content": pre_content})
 
+    # Matches a closing speaker tag at the very start of a string (possibly after whitespace)
+    _leading_close_tag_re = re.compile(r'^(\s*\[/([a-zA-Z0-9_\-]+)\])', re.DOTALL)
+    # Matches a lone opening speaker tag on its own line immediately before a heading
+    _lone_open_tag_re = re.compile(r'\[([a-zA-Z0-9_\-]+)\]\s*$')
+
     for idx, match in enumerate(matches):
         start = match.start()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        raw_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+
+        # The chapter-heading regex allows optional tag prefixes like [/narrator]\n\n[narrator]
+        # before the heading keyword. When the next match begins with a closing speaker tag
+        # (e.g. "[/narrator]\n\n[narrator]\nCHAPTER IX"), that closing tag actually belongs
+        # to the CURRENT chapter's content — extend end to include it.
+        next_chunk = text[raw_end:]
+        close_prefix = _leading_close_tag_re.match(next_chunk)
+        if close_prefix:
+            end = raw_end + len(close_prefix.group(1))
+        else:
+            end = raw_end
+
+        # If there is a lone speaker-tag opening on the line(s) immediately before
+        # the heading, include it so the content slice has a balanced open+close pair.
+        # This handles patterns like:
+        #   [narrator]
+        #   CHAPTER VIII          <- match.start() is here
+        #   ...prose...
+        #   [/narrator]
+        preceding = text[:start]
+        preceding_stripped = preceding.rstrip('\r\n ')
+        last_newline = preceding_stripped.rfind('\n')
+        preceding_line = preceding_stripped[last_newline + 1:] if last_newline >= 0 else preceding_stripped
+        if _lone_open_tag_re.match(preceding_line.strip()):
+            # Rewind start to the beginning of that opening-tag line
+            start = len(preceding_stripped) - len(preceding_line.lstrip())
+
         content = text[start:end].strip()
         if not content:
             continue
@@ -2783,6 +2896,7 @@ def _apply_word_replacements(text: str, replacements: list) -> str:
     return text
 
 
+
 def process_audio_job(job_data):
     """Process a single audio generation job"""
     job_id = job_data['job_id']
@@ -2793,7 +2907,9 @@ def process_audio_job(job_data):
     generate_full_story = job_data.get('generate_full_story', False)
     custom_heading = job_data.get('custom_heading')
     word_replacements = job_data.get('word_replacements') or []
-    
+    job_log = None
+    _job_log_handler = None
+
     try:
         # Check for cancellation
         if cancel_flags.get(job_id, False):
@@ -2804,6 +2920,32 @@ def process_audio_job(job_data):
         processor = _create_text_processor_for_engine(config.get("tts_engine"), config["chunk_size"], config)
         job_dir = OUTPUT_DIR / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
+
+        # Per-job file logger — writes job.log inside the job output directory.
+        _job_log_path = job_dir / "job.log"
+        _job_log_handler = logging.FileHandler(_job_log_path, encoding="utf-8")
+        _job_log_handler.setLevel(logging.DEBUG)
+        _job_log_handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        job_log = logging.getLogger(f"{__name__}.job.{job_id}")
+        job_log.setLevel(logging.DEBUG)
+        job_log.propagate = False  # write only to file; global logger still handles terminal
+        job_log.addHandler(_job_log_handler)
+
+        job_log.info("=" * 72)
+        job_log.info("JOB STARTED  id=%s", job_id)
+        job_log.info("engine=%s  review_mode=%s  split_by_chapter=%s  full_story=%s",
+                     config.get("tts_engine"), review_mode, split_by_chapter, generate_full_story)
+        job_log.info("total_chunks=%s  resume_from=%s  chunk_size=%s",
+                     job_data.get('total_chunks'), job_data.get('resume_from_chunk_index', 0),
+                     config.get('chunk_size'))
+        job_log.info("output_format=%s  speed=%s  text_length=%d chars",
+                     config.get('output_format'), config.get('speed'), len(text or ''))
+        speakers = list(voice_assignments.keys()) if voice_assignments else []
+        job_log.info("speakers=%s", speakers)
+
         with queue_lock:
             job_entry = jobs.get(job_id)
             if job_entry is not None:
@@ -2948,10 +3090,13 @@ def process_audio_job(job_data):
             if hierarchy.get("kind") == "book" and hierarchy.get("books"):
                 book_mode = True
                 book_sections = hierarchy.get("books") or []
+                job_log.info("Text split into book mode: %d books", len(book_sections))
             elif hierarchy.get("sections"):
                 chapter_sections = hierarchy.get("sections")
+                job_log.info("Text split into %d chapter(s)", len(chapter_sections))
             else:
                 logger.info("Section splitting enabled but no headings detected; falling back to single output")
+                job_log.info("Section splitting enabled but no headings detected — falling back to single output")
                 split_by_chapter = False
         
         chapter_count = len(chapter_sections)
@@ -3017,8 +3162,11 @@ def process_audio_job(job_data):
         # Prepare TTS engine
         engine_name = _normalize_engine_name(config.get("tts_engine"))
         logger.info("Job %s: Creating TTS engine '%s'", job_id, engine_name)
+        job_log.info("Initializing TTS engine: %s", engine_name)
         engine = get_tts_engine(engine_name, config=config)
-        logger.info("Job %s: Engine device = %s", job_id, getattr(engine, 'device', 'unknown'))
+        _dev = getattr(engine, 'device', 'unknown')
+        logger.info("Job %s: Engine device = %s", job_id, _dev)
+        job_log.info("Engine ready — device=%s", _dev)
 
         # For IndexTTS with split_by_chapter: pre-collect ALL chapters into one
         # subprocess call to avoid per-chapter model-reload overhead (~30-60s each).
@@ -3167,9 +3315,16 @@ def process_audio_job(job_data):
                 engine_kwargs["cancel_cb"] = lambda: bool(cancel_flags.get(job_id, False))
             if "group_by_speaker" in sig_params:
                 engine_kwargs["group_by_speaker"] = bool(config.get("group_chunks_by_speaker", False))
+            _total_text_chunks = sum(len(seg.get("chunks") or []) for seg in segments)
+            if job_log:
+                job_log.info("  chapter_idx=%d  segments=%d  text_chunks=%d  output_dir=%s",
+                             chapter_idx, len(segments), _total_text_chunks, output_dir)
             audio_files = run_with_cancel(lambda: engine.generate_batch(**engine_kwargs))
             if not audio_files and generated_files:
                 audio_files = list(generated_files)
+            if job_log:
+                job_log.info("  engine returned %d audio file(s) for chapter_idx=%d",
+                             len(audio_files) if audio_files else 0, chapter_idx)
 
             if not supports_chunk_cb and audio_files:
                 for order_idx, file_path in enumerate(audio_files):
@@ -3343,6 +3498,7 @@ def process_audio_job(job_data):
                             audio_files = generate_chunks(chapter_global_idx, chapter["content"], chunk_dir)
                             if not audio_files:
                                 logger.warning(f"Book {book_idx} chapter {chapter_idx} had no audio chunks; skipping")
+                                job_log.warning("Book %d chapter %d produced no audio chunks — skipping", book_idx, chapter_idx)
                                 chapter_global_idx += 1
                                 continue
 
@@ -3389,6 +3545,8 @@ def process_audio_job(job_data):
                                 "output_filename": output_filename,
                             })
                         else:
+                            if job_log:
+                                job_log.info("Merging book %d: %d chunks -> %s", book_idx, len(book_chunk_files), output_path)
                             merger.merge_wav_files(
                                 input_files=book_chunk_files,
                                 output_path=str(output_path),
@@ -3398,6 +3556,8 @@ def process_audio_job(job_data):
                                     update_post_process_progress(offset, count, ratio)
                                 ),
                             )
+                            if job_log:
+                                job_log.info("Merge complete: %s (exists=%s)", output_path.name, output_path.exists())
                             update_progress()
                             update_post_process(len(book_chunk_files))
                             merge_chunk_offset += len(book_chunk_files)
@@ -3435,10 +3595,13 @@ def process_audio_job(job_data):
                             chapter_dir = job_dir / f"chapter_{chapter_folder_idx:02d}"
                             chapter_folder_idx += 1
                         chunk_dir = chapter_dir / "chunks"
+                        job_log.info("Generating audio for chapter %d: '%s'", idx, chapter.get('title', ''))
                         audio_files = generate_chunks(idx - 1, chapter["content"], chunk_dir)
                         if not audio_files:
                             logger.warning(f"Chapter {idx} had no audio chunks; skipping")
+                            job_log.warning("Chapter %d produced no audio chunks — skipping", idx)
                             continue
+                        job_log.info("Chapter %d generated %d chunk file(s)", idx, len(audio_files))
 
                         if all_full_story_chunks is not None:
                             all_full_story_chunks.extend(audio_files)
@@ -3466,6 +3629,9 @@ def process_audio_job(job_data):
                             })
                             review_manifest["chunk_dirs_to_cleanup"].append(rel_chunk_dir)
                         else:
+                            if job_log:
+                                job_log.info("Merging chapter %d ('%s'): %d chunks -> %s",
+                                             idx, chapter.get('title', ''), len(audio_files), output_path)
                             merger.merge_wav_files(
                                 input_files=audio_files,
                                 output_path=str(output_path),
@@ -3475,6 +3641,8 @@ def process_audio_job(job_data):
                                     update_post_process_progress(offset, count, ratio)
                                 ),
                             )
+                            if job_log:
+                                job_log.info("Merge complete: %s (exists=%s)", output_path.name, output_path.exists())
                             update_progress()
                             update_post_process(len(audio_files))
                             merge_chunk_offset += len(audio_files)
@@ -3498,9 +3666,12 @@ def process_audio_job(job_data):
                     init_post_process(total_chunks)
                     merge_chunk_offset = 0
                 chunk_dir = job_dir / "chunks"
+                job_log.info("Generating audio chunks (single section)")
                 audio_files = generate_chunks(0, text, chunk_dir)
                 if not audio_files:
+                    job_log.error("generate_chunks returned no files — raising ValueError")
                     raise ValueError("Unable to generate audio chunks")
+                job_log.info("Generated %d chunk file(s)", len(audio_files))
                 output_file = job_dir / f"output.{output_format}"
                 if review_mode:
                     rel_chunk_dir = os.path.relpath(chunk_dir, job_dir)
@@ -3516,6 +3687,8 @@ def process_audio_job(job_data):
                     })
                     review_manifest["chunk_dirs_to_cleanup"].append(rel_chunk_dir)
                 else:
+                    if job_log:
+                        job_log.info("Merging full story: %d chunks -> %s", len(audio_files), output_file)
                     merger.merge_wav_files(
                         input_files=audio_files,
                         output_path=str(output_file),
@@ -3524,6 +3697,8 @@ def process_audio_job(job_data):
                             update_post_process_progress(offset, count, ratio)
                         ),
                     )
+                    if job_log:
+                        job_log.info("Merge complete: %s (exists=%s)", output_file.name, output_file.exists())
                     update_progress()
                     update_post_process(len(audio_files))
                     if chunk_dir.exists():
@@ -3603,6 +3778,8 @@ def process_audio_job(job_data):
             
             _merge_review_job(job_id, jobs.get(job_id), review_manifest)
             logger.info(f"Job {job_id} auto-finished and moved to library for chunk review")
+            job_log.info("Job auto-finished in review mode — %d total chunks written", len(job_chunks))
+            job_log.info("review_manifest.json and chunks_metadata.json saved to: %s", job_dir)
             return
 
         if not chapter_outputs:
@@ -3680,6 +3857,12 @@ def process_audio_job(job_data):
             logger.warning("Could not write timing_metrics to chunks_metadata.json: %s", _e)
 
         logger.info(f"Job {job_id} completed successfully with {len(chapter_outputs)} output file(s)")
+        job_log.info("JOB COMPLETED — %d output file(s)  total_time=%.1fs  chunks=%d",
+                     len(chapter_outputs),
+                     timing_metrics.get('total_seconds', 0),
+                     timing_metrics.get('chunk_count', 0))
+        for _out in chapter_outputs:
+            job_log.info("  output: %s", _out.get('relative_path', ''))
         
         # Optional VRAM cleanup after job completion
         if config.get("cleanup_vram_after_job", False):
@@ -3687,6 +3870,8 @@ def process_audio_job(job_data):
         
     except JobPaused:
         logger.info(f"Job {job_id} paused – stopping after current chunk")
+        if job_log:
+            job_log.info("JOB PAUSED at chunk %d / %d", processed_chunks, total_chunks)
         # Save the partial review_manifest so chapter/book entries before the pause
         # are preserved and can be restored when the job is resumed.
         if review_mode:
@@ -3717,6 +3902,8 @@ def process_audio_job(job_data):
         return
     except JobCancelled:
         logger.info(f"Job {job_id} cancelled – halting synthesis")
+        if job_log:
+            job_log.info("JOB CANCELLED at chunk %d / %d", processed_chunks, total_chunks)
         with queue_lock:
             job_entry = jobs.get(job_id)
             if job_entry:
@@ -3727,6 +3914,8 @@ def process_audio_job(job_data):
         return
     except Exception as e:
         logger.error(f"Error in job {job_id}: {e}", exc_info=True)
+        if job_log:
+            job_log.error("JOB FAILED: %s", e, exc_info=True)
         with queue_lock:
             jobs[job_id]['status'] = 'failed'
             jobs[job_id]['error'] = str(e)
@@ -3737,6 +3926,12 @@ def process_audio_job(job_data):
         cancel_flags.pop(job_id, None)
         cancel_events.pop(job_id, None)
         pause_flags.pop(job_id, None)
+        if job_log is not None and _job_log_handler is not None:
+            try:
+                job_log.removeHandler(_job_log_handler)
+                _job_log_handler.close()
+            except Exception:
+                pass
 
 
 def _enqueue_qwen3_voice_design_task(task_type: str, payload: Dict[str, Any]) -> str:
@@ -5923,21 +6118,29 @@ def delete_job(job_id: str):
     try:
         with queue_lock:
             job_entry = jobs.get(job_id)
-            if not job_entry:
-                return jsonify({"success": False, "error": "Job not found"}), 404
-            status = job_entry.get("status")
-            if status in {"processing", "pausing"}:
-                return jsonify({
-                    "success": False,
-                    "error": "Job is currently processing. Pause or cancel it before deleting.",
-                }), 409
-            job_entry["status"] = "deleted"
-            cancel_flags[job_id] = True
-            pause_flags.pop(job_id, None)
-            cancel_events.pop(job_id, None)
-            job_dir = _job_dir_from_entry(job_id, job_entry)
+            if job_entry:
+                status = job_entry.get("status")
+                if status in {"processing", "pausing"}:
+                    return jsonify({
+                        "success": False,
+                        "error": "Job is currently processing. Pause or cancel it before deleting.",
+                    }), 409
+                job_entry["status"] = "deleted"
+                cancel_flags[job_id] = True
+                pause_flags.pop(job_id, None)
+                cancel_events.pop(job_id, None)
+            else:
+                status = None
+            job_dir = _job_dir_from_entry(job_id, job_entry or {})
 
         with _get_jobs_db_connection() as conn:
+            row = conn.execute("SELECT status, job_dir FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+            if not job_entry and not row:
+                return jsonify({"success": False, "error": "Job not found"}), 404
+            if row and not status:
+                status = row["status"]
+                if not job_dir or str(job_dir) == ".":
+                    job_dir = _job_dir_from_entry(job_id, {"job_dir": row["job_dir"]})
             conn.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
             conn.commit()
 
@@ -8395,6 +8598,7 @@ def _cleanup_orphaned_regen_folders():
 if __name__ == '__main__':
     logger.info("Starting TTS-Story server")
     _init_jobs_db()
+    _purge_stale_jobs()
     _restore_jobs_from_db()
     _archive_old_jobs()
     _cleanup_orphaned_chatterbox_voices()

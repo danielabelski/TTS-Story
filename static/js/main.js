@@ -1614,6 +1614,7 @@ let analyzeInFlight = false;
 let analyzeRerunRequested = false;
 let sectionReviewInFlight = false;
 let sectionReviewData = null;
+let sectionReviewLastFetchedText = null;
 let sectionEditTarget = null;
 let inlineSampleHandlersReady = false;
 const turboSelectionState = {};
@@ -2212,10 +2213,40 @@ function applySectionHeadingEdit(newHeading) {
     }
     const updated = `${text.slice(0, start)}${newHeading}${text.slice(end)}`;
     input.value = updated;
-    updateSectionDataHeading(sectionEditTarget, newHeading);
-    updateSectionCardTitle(sectionEditTarget, newHeading);
-    showNotification('Heading updated in input text.', 'success');
+
+    // Invalidate both caches so the next modal open re-fetches fresh data
+    // with correct offsets, and analysis reflects the updated text.
+    sectionReviewData = null;
+    sectionReviewLastFetchedText = null;
+    lastAnalyzedText = '';
+
     closeSectionEditModal();
+    showNotification('Heading updated. Refreshing sections…', 'success');
+
+    // Re-fetch section preview so the Review modal cards are immediately current,
+    // then re-run text analysis so speaker/chapter info stays in sync.
+    (async () => {
+        try {
+            const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
+            const payload = { text: updated };
+            if (customHeading) payload.custom_heading = customHeading;
+            const response = await fetch('/api/sections/preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (data && data.success) {
+                sectionReviewLastFetchedText = updated;
+            }
+            renderSectionReview(data);
+        } catch (_) {
+            // Non-fatal — user can click Review Sections again to refresh
+        }
+    })();
+
+    // Trigger analysis refresh (debounced) so chapter/speaker detection updates
+    input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 function renderSectionReview(data) {
@@ -2642,6 +2673,14 @@ function setupEventListeners() {
                 return;
             }
             openSectionReviewModal();
+
+            // If the text hasn't changed since the last fetch, re-render from cache
+            // so that any heading edits made during this session are preserved.
+            if (sectionReviewData && sectionReviewLastFetchedText === text) {
+                renderSectionReview(sectionReviewData);
+                return;
+            }
+
             const body = document.getElementById('section-review-modal-body');
             if (body) {
                 body.innerHTML = '<div class="section-review-loading">Loading sections...</div>';
@@ -2659,6 +2698,9 @@ function setupEventListeners() {
                     body: JSON.stringify(payload)
                 });
                 const data = await response.json();
+                if (data && data.success) {
+                    sectionReviewLastFetchedText = text;
+                }
                 renderSectionReview(data);
             } catch (error) {
                 renderSectionReview({ success: false, error: error.message || 'Unable to load section preview.' });
@@ -3482,6 +3524,10 @@ function applySpeakerRename(stats, oldName, newName) {
         speakerReadyState[newName] = speakerReadyState[oldName];
         delete speakerReadyState[oldName];
     }
+    if (turboSelectionState[oldName] && !turboSelectionState[newName]) {
+        turboSelectionState[newName] = turboSelectionState[oldName];
+    }
+    delete turboSelectionState[oldName];
     const oldKey = normalizeSpeakerKey(oldName);
     const newKey = normalizeSpeakerKey(newName);
     if (speakerProfiles[oldKey]) {
@@ -3913,6 +3959,13 @@ function displayStatistics(stats) {
 // Display inline voice assignments in Generate tab
 function displayInlineVoiceAssignments(speakers, speakerEmotions = {}) {
     const container = document.getElementById('inline-voice-assignment-list');
+    const voiceSelectSnapshot = {};
+    container.querySelectorAll('.voice-assignment-row').forEach(row => {
+        const spk = row.dataset.speaker;
+        if (!spk) return;
+        const vs = row.querySelector('.voice-select');
+        if (vs && vs.value) voiceSelectSnapshot[spk] = vs.value;
+    });
     container.innerHTML = '';
     
     speakers.forEach(speaker => {
@@ -3994,13 +4047,25 @@ function displayInlineVoiceAssignments(speakers, speakerEmotions = {}) {
     });
     
     initInlineSampleHandlers();
+    const restoreVoiceSelects = () => {
+        container.querySelectorAll('.voice-assignment-row').forEach(row => {
+            const spk = row.dataset.speaker;
+            if (!spk) return;
+            const vs = row.querySelector('.voice-select');
+            if (vs && voiceSelectSnapshot[spk]) {
+                vs.value = voiceSelectSnapshot[spk];
+            }
+        });
+    };
     if (window.availableVoices) {
         populateVoiceSelects();
+        restoreVoiceSelects();
     } else {
         const checkVoices = setInterval(() => {
             if (window.availableVoices) {
                 clearInterval(checkVoices);
                 populateVoiceSelects();
+                restoreVoiceSelects();
             }
         }, 100);
     }
@@ -4124,6 +4189,19 @@ async function generateAudio() {
         lastAnalyzedText = text.trim();
     }
     
+    // Check for unbalanced speaker tags before submitting
+    if (currentStats?.speakers?.length > 0) {
+        _updateTagErrorBanner();
+        if (_tagIssues.length > 0) {
+            _tagIssueIndex = 0;
+            _scrollToTagIssue(0);
+            const banner = document.getElementById('tag-error-banner');
+            if (banner) banner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            showNotification(`Fix ${_tagIssues.length} unmatched speaker tag${_tagIssues.length === 1 ? '' : 's'} before submitting`, 'warning');
+            return;
+        }
+    }
+
     // Get voice assignments
     let voiceAssignments = getVoiceAssignments();
     
@@ -4199,6 +4277,340 @@ async function generateAudio() {
         alert('Failed to generate audio');
     }
 }
+
+// ── Speaker tag balance checker & inline banner ───────────────────────────────
+
+const _TAG_RESERVED = new Set(['default']);
+
+/**
+ * Returns an array of error objects, each with:
+ *   { message, pos, kind ('orphan-open'|'orphan-close'|'mismatch'), tag }
+ * `pos` is the character index in `text` of the offending tag.
+ */
+function getSpeakerTagIssues(text) {
+    const openRe = /\[([a-zA-Z0-9_\-]+)\]/g;
+    const closeRe = /\[\/([a-zA-Z0-9_\-]+)\]/g;
+
+    const events = [];
+    let m;
+    while ((m = openRe.exec(text)) !== null) {
+        const tag = m[1].toLowerCase();
+        if (!_TAG_RESERVED.has(tag)) events.push({ pos: m.index, len: m[0].length, kind: 'open', tag });
+    }
+    while ((m = closeRe.exec(text)) !== null) {
+        const tag = m[1].toLowerCase();
+        if (!_TAG_RESERVED.has(tag)) events.push({ pos: m.index, len: m[0].length, kind: 'close', tag });
+    }
+    events.sort((a, b) => a.pos - b.pos);
+
+    const issues = [];
+    const stack = []; // { tag, pos, len }
+    let lastCloseEvent = null;
+    for (const ev of events) {
+        if (ev.kind === 'open') {
+            stack.push(ev);
+        } else {
+            if (stack.length === 0) {
+                const blockStart = lastCloseEvent ? lastCloseEvent.pos + lastCloseEvent.len : 0;
+                issues.push({
+                    message: `Closing tag [/${ev.tag}] has no matching opening tag`,
+                    pos: ev.pos,
+                    kind: 'orphan-close',
+                    tag: ev.tag,
+                    focusStart: ev.pos,
+                    focusEnd: ev.pos + ev.len,
+                    blockStart,
+                    blockEnd: ev.pos + ev.len,
+                });
+            } else if (stack[stack.length - 1].tag !== ev.tag) {
+                const top = stack.pop();
+                issues.push({
+                    message: `Mismatched tags: expected [/${top.tag}] but found [/${ev.tag}]`,
+                    pos: ev.pos,
+                    kind: 'mismatch',
+                    tag: ev.tag,
+                    openerTag: top.tag,
+                    openerPos: top.pos,
+                    focusStart: ev.pos,
+                    focusEnd: ev.pos + ev.len,
+                    blockStart: top.pos,
+                    blockEnd: ev.pos + ev.len,
+                });
+            } else {
+                stack.pop();
+            }
+            lastCloseEvent = ev;
+        }
+    }
+    for (const unclosed of stack) {
+        const nextOpen = events.find(e => e.kind === 'open' && e.pos > unclosed.pos);
+        issues.push({
+            message: `Opening tag [${unclosed.tag}] has no matching closing tag`,
+            pos: unclosed.pos,
+            kind: 'orphan-open',
+            tag: unclosed.tag,
+            focusStart: unclosed.pos,
+            focusEnd: unclosed.pos + unclosed.len,
+            blockStart: unclosed.pos,
+            blockEnd: nextOpen ? nextOpen.pos : text.length,
+        });
+    }
+    return issues;
+}
+
+/** Convenience: returns error message strings only (for submit guard). */
+function checkSpeakerTagBalance(text) {
+    return getSpeakerTagIssues(text).map(i => i.message);
+}
+
+// ── Banner state ──────────────────────────────────────────────────────────────
+let _tagIssues = [];          // current list of issues
+let _tagIssueIndex = -1;      // which issue the user is navigating to
+
+function _updateTagErrorBanner() {
+    const textarea = document.getElementById('input-text');
+    const banner   = document.getElementById('tag-error-banner');
+    const summary  = document.getElementById('tag-error-summary');
+    if (!textarea || !banner || !summary) return;
+
+    const text = textarea.value;
+    // Only run the check when the text actually contains any speaker tags
+    const hasTags = /\[[a-zA-Z0-9_\-]+\]/.test(text);
+    if (!hasTags) {
+        _tagIssues = [];
+        banner.classList.add('hidden');
+        textarea.classList.remove('tag-error-highlight');
+        return;
+    }
+
+    _tagIssues = getSpeakerTagIssues(text);
+    if (_tagIssues.length === 0) {
+        banner.classList.add('hidden');
+        textarea.classList.remove('tag-error-highlight');
+        return;
+    }
+
+    const n = _tagIssues.length;
+    summary.textContent = `${n} unmatched speaker tag${n === 1 ? '' : 's'} found`;
+    banner.classList.remove('hidden');
+    textarea.classList.add('tag-error-highlight');
+    if (_tagIssueIndex < 0 || _tagIssueIndex >= n) _tagIssueIndex = 0;
+}
+
+function _navigateTagIssue(delta) {
+    if (_tagIssues.length === 0) return;
+    _tagIssueIndex = (_tagIssueIndex + delta + _tagIssues.length) % _tagIssues.length;
+    _scrollToTagIssue(_tagIssueIndex);
+}
+
+/**
+ * Returns the pixel scrollTop value that places charIndex at the top of the
+ * textarea's visible area, by using a hidden mirror div with identical
+ * typography and width.
+ */
+function _computeScrollTopForChar(textarea, charIndex) {
+    const text = textarea.value || '';
+    const cs   = window.getComputedStyle(textarea);
+
+    // Build mirror with identical layout properties
+    const mirror = document.createElement('div');
+    [
+        'paddingTop','paddingRight','paddingBottom','paddingLeft',
+        'fontFamily','fontSize','fontWeight','fontStyle',
+        'lineHeight','letterSpacing','wordSpacing','tabSize',
+    ].forEach(p => { mirror.style[p] = cs[p]; });
+
+    // Width must match the textarea's inner content width precisely
+    const innerWidth = textarea.clientWidth
+        - parseFloat(cs.paddingLeft)  - parseFloat(cs.paddingRight);
+    mirror.style.width     = innerWidth + 'px';
+    mirror.style.boxSizing = 'content-box';
+    mirror.style.position  = 'absolute';
+    mirror.style.top       = '0';
+    mirror.style.left      = '0';
+    mirror.style.visibility= 'hidden';
+    mirror.style.whiteSpace= 'pre-wrap';
+    mirror.style.wordWrap  = 'break-word';
+    mirror.style.overflow  = 'hidden';
+
+    // We only need the text up to the target character to measure line position
+    const before = document.createTextNode(text.slice(0, charIndex));
+    const marker = document.createElement('span');
+    marker.textContent = '\u200B'; // zero-width space as anchor
+    mirror.appendChild(before);
+    mirror.appendChild(marker);
+
+    // Append to a hidden container so layout is computed correctly
+    const host = document.createElement('div');
+    host.style.cssText = 'position:fixed;top:0;left:0;width:' + textarea.clientWidth + 'px;visibility:hidden;overflow:visible;pointer-events:none;';
+    host.appendChild(mirror);
+    document.body.appendChild(host);
+
+    // marker.offsetTop is relative to mirror (its offset parent)
+    const markerOffsetTop = marker.offsetTop;
+    document.body.removeChild(host);
+
+    // markerOffsetTop is the distance from mirror's top to the marker line.
+    // Subtract paddingTop so scrollTop=0 corresponds to the first line.
+    const paddingTop = parseFloat(cs.paddingTop) || 0;
+    return Math.max(0, markerOffsetTop - paddingTop);
+}
+
+function _scrollToTagIssue(idx) {
+    const textarea = document.getElementById('input-text');
+    if (!textarea || !_tagIssues[idx]) return;
+    const issue    = _tagIssues[idx];
+    const text     = textarea.value || '';
+
+    const focusStart = Number.isInteger(issue.focusStart) ? issue.focusStart : issue.pos;
+    const focusEnd   = Number.isInteger(issue.focusEnd)   ? issue.focusEnd   : Math.min(text.length, focusStart + 1);
+    const blockStart = Number.isInteger(issue.blockStart) ? issue.blockStart : focusStart;
+    const blockEnd   = Number.isInteger(issue.blockEnd)   ? issue.blockEnd   : focusEnd;
+    const blockLen   = Math.max(0, blockEnd - blockStart);
+
+    const useBlock = blockLen > 0 && blockLen <= 3000;
+    const selStart = useBlock ? blockStart : focusStart;
+    const selEnd   = useBlock ? blockEnd   : focusEnd;
+
+    textarea.focus();
+    textarea.setSelectionRange(selStart, selEnd);
+
+    // Compute where the focus tag sits in the content and place it at the top.
+    // Double-rAF ensures our assignment runs after the browser's own scroll-to-selection pass.
+    const targetScrollTop = _computeScrollTopForChar(textarea, focusStart);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+        textarea.scrollTop = targetScrollTop;
+    }));
+
+    // Update banner summary
+    const startLine = text.substring(0, focusStart).split('\n').length;
+    const endLine   = text.substring(0, selEnd).split('\n').length;
+    const summary   = document.getElementById('tag-error-summary');
+    if (summary) {
+        const highlightText = useBlock
+            ? `Highlighted affected block (lines ${startLine}–${endLine}).`
+            : `Highlighted unmatched tag at line ${startLine}.`;
+        summary.textContent = `Issue ${idx + 1} of ${_tagIssues.length}: ${issue.message} — ${highlightText}`;
+    }
+}
+
+/**
+ * Auto-fix: collect all issues in one pass, build a list of insertions,
+ * sort them back-to-front, then apply them all in one shot.
+ *
+ * Rules:
+ *  - orphan-open  : insert [/tag] just before the next opening tag, or at EOF
+ *  - orphan-close : insert [tag] just after the previous closing tag, or at BOF
+ *  - mismatch     : insert [/openerTag] at the position of the mismatched close
+ *                   (openerTag is stored from getSpeakerTagIssues)
+ */
+function _autoFixTagBalance() {
+    const textarea = document.getElementById('input-text');
+    if (!textarea) return;
+
+    const text   = textarea.value;
+    const issues = getSpeakerTagIssues(text);
+    if (issues.length === 0) return;
+
+    // Build flat sorted list of every tag occurrence for neighbour lookup
+    function allTags(t) {
+        const out = [];
+        let m;
+        const r1 = /\[([a-zA-Z0-9_\-]+)\]/g;
+        while ((m = r1.exec(t)) !== null) {
+            const tg = m[1].toLowerCase();
+            if (!_TAG_RESERVED.has(tg)) out.push({ pos: m.index, end: m.index + m[0].length, kind: 'open', tag: tg });
+        }
+        const r2 = /\[\/([a-zA-Z0-9_\-]+)\]/g;
+        while ((m = r2.exec(t)) !== null) {
+            const tg = m[1].toLowerCase();
+            if (!_TAG_RESERVED.has(tg)) out.push({ pos: m.index, end: m.index + m[0].length, kind: 'close', tag: tg });
+        }
+        out.sort((a, b) => a.pos - b.pos);
+        return out;
+    }
+
+    const tags = allTags(text);
+
+    // Each insertion: { at: charIndex, text: string }
+    const insertions = [];
+
+    for (const issue of issues) {
+        if (issue.kind === 'orphan-open') {
+            // Insert closing tag just before the next opening tag after this one (or EOF)
+            const nextOpen = tags.find(t => t.kind === 'open' && t.pos > issue.pos);
+            const at = nextOpen ? nextOpen.pos : text.length;
+            insertions.push({ at, insert: `\n[/${issue.tag}]` });
+
+        } else if (issue.kind === 'mismatch') {
+            // The opener (openerTag) has no matching close — insert its close
+            // just before the next opening tag after the opener's position
+            const openerTag = issue.openerTag || issue.tag;
+            const openerPos = issue.openerPos != null ? issue.openerPos : issue.pos;
+            const nextOpen  = tags.find(t => t.kind === 'open' && t.pos > openerPos);
+            const at = nextOpen ? nextOpen.pos : text.length;
+            insertions.push({ at, insert: `\n[/${openerTag}]` });
+
+        } else if (issue.kind === 'orphan-close') {
+            // Insert opening tag just after the previous closing tag before this one (or BOF)
+            const prevClose = [...tags].reverse().find(t => t.kind === 'close' && t.end <= issue.pos);
+            const at = prevClose ? prevClose.end : 0;
+            insertions.push({ at, insert: `\n[${issue.tag}]` });
+        }
+    }
+
+    // Deduplicate insertions at the same position with the same text
+    const seen = new Set();
+    const unique = insertions.filter(ins => {
+        const key = ins.at + '|' + ins.insert;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+
+    // Apply back-to-front so earlier offsets stay valid
+    unique.sort((a, b) => b.at - a.at);
+
+    let result = text;
+    for (const { at, insert } of unique) {
+        const before = result[at - 1];
+        const after  = result[at];
+        // insert starts with \n; if there's already a newline before, trim the leading \n
+        const actualInsert = (before === '\n' ? insert.replace(/^\n/, '') : insert)
+            + (after && after !== '\n' ? '\n' : '');
+        result = result.slice(0, at) + actualInsert + result.slice(at);
+    }
+
+    textarea.value = result;
+    lastAnalyzedText = null;
+    _updateTagErrorBanner();
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+// ── Wire up events once DOM is ready ─────────────────────────────────────────
+function _initTagErrorBanner() {
+    const textarea = document.getElementById('input-text');
+    const prevBtn  = document.getElementById('tag-error-prev-btn');
+    const nextBtn  = document.getElementById('tag-error-next-btn');
+    const fixBtn   = document.getElementById('tag-error-fix-btn');
+    if (!textarea) return;
+
+    let _tagCheckTimer = null;
+    textarea.addEventListener('input', () => {
+        clearTimeout(_tagCheckTimer);
+        _tagCheckTimer = setTimeout(_updateTagErrorBanner, 600);
+    });
+    textarea.addEventListener('paste', () => {
+        clearTimeout(_tagCheckTimer);
+        _tagCheckTimer = setTimeout(_updateTagErrorBanner, 800);
+    });
+
+    if (prevBtn) prevBtn.addEventListener('click', () => _navigateTagIssue(-1));
+    if (nextBtn) nextBtn.addEventListener('click', () => _navigateTagIssue(+1));
+    if (fixBtn)  fixBtn.addEventListener('click',  _autoFixTagBalance);
+}
+
+document.addEventListener('DOMContentLoaded', _initTagErrorBanner);
 
 // Show notification
 function showNotification(message, type = 'info') {
@@ -4522,8 +4934,8 @@ function getVoiceAssignments() {
     const pocketPresetDefault = pocketPresetEnabled
         ? document.getElementById('default-voice-select')?.value?.trim() || ''
         : '';
-    const turboSelections = turboEnabled ? buildTurboSelectionMap() : {};
-    const globalReference = turboEnabled ? getGlobalReferenceSelection() : '';
+    const turboSelections = (turboEnabled || qwenCloneEnabled) ? buildTurboSelectionMap() : {};
+    const globalReference = (turboEnabled || qwenCloneEnabled) ? getGlobalReferenceSelection() : '';
     const qwenSpeakerDefault = document.getElementById('qwen3-default-speaker')?.value || '';
     const qwenLanguage = document.getElementById('qwen3-default-language')?.value || 'Auto';
 
