@@ -375,6 +375,7 @@ async function generateSpeakerVoicePromptBatch(speaker, displayName, statusEl) {
             .sort((a, b) => new Date(b?.created_at || 0) - new Date(a?.created_at || 0))[0];
         const promptValue = (latestVoice?.prompt_path || latestVoice?.file_name || '').trim();
         if (promptValue) {
+            turboSelectionState[speaker] = promptValue;
             document.querySelectorAll('#inline-voice-assignment-list [data-role="turbo-control"] .reference-select, #speaker-edit-modal-body [data-role="turbo-control"] .reference-select')
                 .forEach(select => {
                     if (select?.dataset?.speaker === speaker) {
@@ -1948,9 +1949,9 @@ async function handleFxPreview(speaker, container) {
     }
     const engineName = getSelectedJobEngine() || runtimeSettings?.tts_engine || 'kokoro';
     const usesPromptEngine = isPromptEngine(engineName);
-    const usesSamplePreview = usesPromptEngine && engineName !== 'pocket_tts';
-    const voiceName = usesPromptEngine ? '' : resolveVoiceSelection(speaker);
     const samplePrompt = usesPromptEngine ? resolveVoiceSampleSelection(speaker) : '';
+    const usesSamplePreview = usesPromptEngine && !!samplePrompt;
+    const voiceName = usesSamplePreview ? '' : resolveVoiceSelection(speaker);
     if (!voiceName && !samplePrompt) {
         if (statusEl) {
             statusEl.textContent = usesPromptEngine
@@ -2934,6 +2935,182 @@ function setupEventListeners() {
             document.querySelector('.tab-button[data-tab="generate"]')?.click();
         });
     }
+
+    // ── Auto Assign modal ──────────────────────────────────────────────────
+    const autoAssignBtn = document.getElementById('auto-assign-voices-btn');
+    const autoAssignModalOverlay = document.getElementById('auto-assign-modal-overlay');
+    const autoAssignModal = document.getElementById('auto-assign-modal');
+    const autoAssignModalClose = document.getElementById('auto-assign-modal-close');
+    const autoAssignCancelBtn = document.getElementById('auto-assign-cancel-btn');
+    const autoAssignConfirmBtn = document.getElementById('auto-assign-confirm-btn');
+    const autoAssignTableBody = document.getElementById('auto-assign-table-body');
+    const autoAssignTable = document.getElementById('auto-assign-table');
+    const autoAssignNoVoices = document.getElementById('auto-assign-no-voices');
+    const autoAssignNoSpeakers = document.getElementById('auto-assign-no-speakers');
+    const autoAssignThresholdSlider = document.getElementById('auto-assign-threshold-slider');
+    const autoAssignThresholdLabel = document.getElementById('auto-assign-threshold-label');
+
+    function fuzzyMatchScore(a, b) {
+        const sa = (a || '').toLowerCase().trim();
+        const sb = (b || '').toLowerCase().trim();
+        if (!sa || !sb) return 0;
+        if (sa === sb) return 1;
+        const longer = sa.length > sb.length ? sa : sb;
+        const shorter = sa.length > sb.length ? sb : sa;
+        if (longer.includes(shorter)) return shorter.length / longer.length;
+        let matches = 0;
+        const used = new Array(sb.length).fill(false);
+        for (let i = 0; i < sa.length; i++) {
+            for (let j = 0; j < sb.length; j++) {
+                if (!used[j] && sa[i] === sb[j]) {
+                    matches++;
+                    used[j] = true;
+                    break;
+                }
+            }
+        }
+        return (2 * matches) / (sa.length + sb.length);
+    }
+
+    function buildAutoAssignProposals() {
+        const speakers = Array.isArray(currentStats?.speakers) ? currentStats.speakers : [];
+        const voices = availableChatterboxVoices || [];
+        return speakers.map(speaker => {
+            let bestScore = 0;
+            let bestVoice = null;
+            voices.forEach(v => {
+                const score = fuzzyMatchScore(speaker, v.name || '');
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestVoice = v;
+                }
+            });
+            return {
+                speaker,
+                bestVoice,
+                score: bestScore,
+                bestPromptValue: (bestVoice?.prompt_path || bestVoice?.file_name || '').trim()
+            };
+        });
+    }
+
+    function renderAutoAssignTable(threshold) {
+        const speakers = Array.isArray(currentStats?.speakers) ? currentStats.speakers : [];
+        const voices = availableChatterboxVoices || [];
+        if (!autoAssignTableBody || speakers.length === 0 || voices.length === 0) return;
+        const proposals = buildAutoAssignProposals();
+        const sortedVoices = voices.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        autoAssignTableBody.innerHTML = '';
+        proposals.forEach(({ speaker, score, bestPromptValue }) => {
+            const meetsThreshold = score >= threshold;
+            const promptValue = meetsThreshold ? bestPromptValue : '';
+            const scoreClass = score >= 0.9 ? 'score-high' : score >= threshold ? 'score-med' : 'score-none';
+            const scoreLabel = score > 0 ? `${Math.round(score * 100)}%` : 'No match';
+            const voiceOptions = sortedVoices
+                .map(v => {
+                    const vPath = (v.prompt_path || v.file_name || '').trim();
+                    const selected = vPath && vPath === promptValue ? ' selected' : '';
+                    return `<option value="${vPath}"${selected}>${v.name || vPath}</option>`;
+                })
+                .join('');
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td class="speaker-name-cell">${speaker}</td>
+                <td>
+                    <select class="auto-assign-voice-select" data-speaker="${speaker}">
+                        <option value="">— No assignment —</option>
+                        ${voiceOptions}
+                    </select>
+                </td>
+                <td><span class="auto-assign-score ${scoreClass}">${scoreLabel}</span></td>
+            `;
+            autoAssignTableBody.appendChild(tr);
+        });
+    }
+
+    function getAutoAssignThreshold() {
+        return (parseInt(autoAssignThresholdSlider?.value, 10) || 80) / 100;
+    }
+
+    function openAutoAssignModal() {
+        const speakers = Array.isArray(currentStats?.speakers) ? currentStats.speakers : [];
+        const voices = availableChatterboxVoices || [];
+
+        autoAssignNoSpeakers?.classList.toggle('hidden', speakers.length > 0);
+        autoAssignNoVoices?.classList.toggle('hidden', voices.length > 0);
+        autoAssignTable?.classList.toggle('hidden', speakers.length === 0 || voices.length === 0);
+
+        if (autoAssignThresholdSlider) {
+            autoAssignThresholdSlider.value = 80;
+        }
+        if (autoAssignThresholdLabel) {
+            autoAssignThresholdLabel.textContent = '80%';
+        }
+
+        if (speakers.length > 0 && voices.length > 0) {
+            renderAutoAssignTable(0.8);
+        }
+
+        autoAssignModalOverlay?.classList.remove('hidden');
+        autoAssignModal?.classList.remove('hidden');
+    }
+
+    function closeAutoAssignModal() {
+        autoAssignModalOverlay?.classList.add('hidden');
+        autoAssignModal?.classList.add('hidden');
+        if (autoAssignTableBody) autoAssignTableBody.innerHTML = '';
+    }
+
+    function applyAutoAssignSelections() {
+        if (!autoAssignTableBody) return;
+        autoAssignTableBody.querySelectorAll('.auto-assign-voice-select').forEach(select => {
+            const speaker = select.dataset.speaker;
+            const promptValue = select.value?.trim();
+            if (!speaker) return;
+            if (promptValue) {
+                turboSelectionState[speaker] = promptValue;
+            } else {
+                delete turboSelectionState[speaker];
+            }
+            document.querySelectorAll(
+                `#inline-voice-assignment-list .reference-select[data-speaker="${speaker}"],` +
+                `#speaker-edit-modal-body .reference-select[data-speaker="${speaker}"]`
+            ).forEach(refSelect => {
+                refSelect.value = promptValue || '';
+                const row = refSelect.closest('.voice-assignment-row');
+                if (row) updateInlineSampleButtonState(row, { stopPlayback: false });
+            });
+        });
+        showNotification('Voice samples assigned.', 'success');
+        closeAutoAssignModal();
+    }
+
+    if (autoAssignThresholdSlider) {
+        autoAssignThresholdSlider.addEventListener('input', () => {
+            const pct = parseInt(autoAssignThresholdSlider.value, 10) || 80;
+            if (autoAssignThresholdLabel) autoAssignThresholdLabel.textContent = `${pct}%`;
+            renderAutoAssignTable(pct / 100);
+        });
+    }
+    if (autoAssignBtn) {
+        autoAssignBtn.addEventListener('click', openAutoAssignModal);
+    }
+    if (autoAssignModalOverlay) {
+        autoAssignModalOverlay.addEventListener('click', event => {
+            if (event.target === autoAssignModalOverlay) closeAutoAssignModal();
+        });
+    }
+    if (autoAssignModalClose) {
+        autoAssignModalClose.addEventListener('click', closeAutoAssignModal);
+    }
+    if (autoAssignCancelBtn) {
+        autoAssignCancelBtn.addEventListener('click', closeAutoAssignModal);
+    }
+    if (autoAssignConfirmBtn) {
+        autoAssignConfirmBtn.addEventListener('click', applyAutoAssignSelections);
+    }
+    // ── End Auto Assign modal ──────────────────────────────────────────────
+
     if (projectSaveConfirm) {
         projectSaveConfirm.addEventListener('click', () => {
             const project = getProjectState();
@@ -3348,6 +3525,7 @@ async function generateSpeakerVoicePrompt(speaker) {
             .sort((a, b) => new Date(b?.created_at || 0) - new Date(a?.created_at || 0))[0];
         const promptValue = (latestVoice?.prompt_path || latestVoice?.file_name || '').trim();
         if (promptValue) {
+            turboSelectionState[speaker] = promptValue;
             document.querySelectorAll('#inline-voice-assignment-list [data-role="turbo-control"] .reference-select, #speaker-edit-modal-body [data-role="turbo-control"] .reference-select')
                 .forEach(select => {
                     if (select?.dataset?.speaker === speaker) {
@@ -3904,6 +4082,10 @@ function displayStatistics(stats) {
     if (batchBtn) {
         batchBtn.disabled = !hasDetectedSpeakers;
     }
+    const autoAssignVoicesBtn = document.getElementById('auto-assign-voices-btn');
+    if (autoAssignVoicesBtn) {
+        autoAssignVoicesBtn.disabled = !hasDetectedSpeakers;
+    }
 
     if (hasDetectedSpeakers) {
         speakersList.innerHTML = '<p><strong>Detected Speakers:</strong></p>';
@@ -3965,6 +4147,10 @@ function displayInlineVoiceAssignments(speakers, speakerEmotions = {}) {
         if (!spk) return;
         const vs = row.querySelector('.voice-select');
         if (vs && vs.value) voiceSelectSnapshot[spk] = vs.value;
+        const rs = row.querySelector('.reference-select');
+        if (rs && rs.value) {
+            turboSelectionState[spk] = rs.value;
+        }
     });
     container.innerHTML = '';
     

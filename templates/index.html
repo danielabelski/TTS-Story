@@ -160,6 +160,7 @@
                         <div id="speakers-list"></div>
                         <div class="speakers-actions">
                             <button type="button" id="generate-voices-btn" class="btn btn-secondary btn-sm">Generate Voices</button>
+                            <button type="button" id="auto-assign-voices-btn" class="btn btn-secondary btn-sm">Auto Assign</button>
                         </div>
                     </div>
                     <div id="speakers-duplicates" class="speakers-duplicates" style="display: none;"></div>
@@ -314,7 +315,10 @@
                     <h2>Job Queue</h2>
                     <p>Monitor active and pending audio generation jobs.</p>
                 </div>
-                <button id="refresh-queue-btn" class="btn btn-secondary">Refresh</button>
+                <div style="display:flex;gap:8px;">
+                    <button id="refresh-queue-btn" class="btn btn-secondary">Refresh</button>
+                    <button id="clear-queue-btn" class="btn btn-danger">Clear Queue</button>
+                </div>
             </div>
             <div id="queue-list">
                 <p><em>Loading queue...</em></p>
@@ -1401,6 +1405,43 @@
                 <button class="btn btn-secondary" id="speaker-batch-cancel-btn">Cancel</button>
                 <button class="btn btn-primary" id="speaker-batch-confirm-btn">Generate</button>
                 <button class="btn btn-primary hidden" id="speaker-batch-ok-btn">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay hidden" id="auto-assign-modal-overlay">
+        <div class="modal hidden" id="auto-assign-modal" style="max-width: 640px; width: 95%;">
+            <div class="modal-header">
+                <h3>Auto Assign Voice Samples</h3>
+                <button class="modal-close" id="auto-assign-modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="help-text">Each detected speaker is matched to the closest voice sample by name. Adjust the threshold — only matches at or above it are auto-selected.</p>
+                <div class="auto-assign-threshold-row">
+                    <label for="auto-assign-threshold-slider">Match threshold:</label>
+                    <input type="range" id="auto-assign-threshold-slider" min="10" max="100" step="1" value="80">
+                    <span id="auto-assign-threshold-label">80%</span>
+                </div>
+                <div id="auto-assign-no-voices" class="help-text hidden" style="color: var(--warning-color, #f0a500);">
+                    No voice samples are available. Upload or generate voice samples first.
+                </div>
+                <div id="auto-assign-no-speakers" class="help-text hidden" style="color: var(--warning-color, #f0a500);">
+                    No detected speakers found. Run Analyze Text first.
+                </div>
+                <table id="auto-assign-table" class="auto-assign-table hidden">
+                    <thead>
+                        <tr>
+                            <th>Speaker</th>
+                            <th>Matched Voice Sample</th>
+                            <th>Score</th>
+                        </tr>
+                    </thead>
+                    <tbody id="auto-assign-table-body"></tbody>
+                </table>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="auto-assign-cancel-btn">Cancel</button>
+                <button class="btn btn-primary" id="auto-assign-confirm-btn">Apply Assignments</button>
             </div>
         </div>
     </div>

@@ -3019,6 +3019,9 @@ audio {
 
 .speakers-actions {
     margin-top: 4px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
 }
 
 .batch-progress {
@@ -5175,4 +5178,94 @@ audio {
 #input-text.tag-error-highlight {
     border-color: rgba(245, 158, 11, 0.6) !important;
     box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18);
+}
+
+.auto-assign-threshold-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+}
+
+.auto-assign-threshold-row label {
+    font-size: 0.9rem;
+    white-space: nowrap;
+    color: var(--text-color);
+}
+
+.auto-assign-threshold-row input[type="range"] {
+    flex: 1 1 120px;
+    min-width: 100px;
+    accent-color: var(--primary-color, #6366f1);
+    cursor: pointer;
+}
+
+#auto-assign-threshold-label {
+    font-size: 0.9rem;
+    font-weight: 700;
+    min-width: 38px;
+    text-align: right;
+    color: var(--primary-color, #6366f1);
+}
+
+.auto-assign-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 14px;
+    font-size: 0.9rem;
+}
+
+.auto-assign-table th {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-muted, #94a3b8);
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.auto-assign-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    vertical-align: middle;
+}
+
+.auto-assign-table tr:last-child td {
+    border-bottom: none;
+}
+
+.auto-assign-table .speaker-name-cell {
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.auto-assign-table select {
+    width: 100%;
+    min-width: 180px;
+}
+
+.auto-assign-score {
+    font-size: 0.8rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+    font-weight: 600;
+}
+
+.auto-assign-score.score-high {
+    background: rgba(34, 197, 94, 0.15);
+    color: #4ade80;
+}
+
+.auto-assign-score.score-med {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+}
+
+.auto-assign-score.score-none {
+    background: rgba(148, 163, 184, 0.12);
+    color: var(--text-muted, #94a3b8);
 }

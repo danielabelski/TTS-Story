@@ -840,6 +840,35 @@ function initQueue() {
         refreshBtn.addEventListener('click', loadQueue);
     }
 
+    const clearQueueBtn = document.getElementById('clear-queue-btn');
+    if (clearQueueBtn) {
+        clearQueueBtn.addEventListener('click', async () => {
+            if (!confirm('Clear all jobs from the queue? Jobs that are currently processing will be skipped. This cannot be undone.')) {
+                return;
+            }
+            clearQueueBtn.disabled = true;
+            clearQueueBtn.textContent = 'Clearing…';
+            try {
+                const response = await fetch('/api/jobs/clear-all', { method: 'DELETE' });
+                const data = await response.json();
+                if (data.success) {
+                    const parts = [`Removed ${data.removed} job${data.removed !== 1 ? 's' : ''}`];
+                    if (data.skipped > 0) parts.push(`${data.skipped} skipped (processing)`);
+                    if (data.errors > 0) parts.push(`${data.errors} failed`);
+                    alert(parts.join(', ') + '.');
+                } else {
+                    alert('Failed to clear queue: ' + (data.error || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Failed to clear queue: ' + (err.message || 'Network error'));
+            } finally {
+                clearQueueBtn.disabled = false;
+                clearQueueBtn.textContent = 'Clear Queue';
+                loadQueue();
+            }
+        });
+    }
+
     loadQueue();
 }
 

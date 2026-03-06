@@ -6111,6 +6111,105 @@ def analyze_text():
         }), 500
 
 
+@app.route('/api/jobs/clear-all', methods=['DELETE'])
+def clear_all_jobs():
+    """Remove all jobs that are not actively processing from the queue, DB, and disk."""
+    import shutil
+    skipped = []
+    removed = []
+    errors = []
+
+    try:
+        with queue_lock:
+            all_job_ids = list(jobs.keys())
+
+        for job_id in all_job_ids:
+            with queue_lock:
+                job_entry = jobs.get(job_id)
+                status = job_entry.get("status") if job_entry else None
+            if status in {"processing", "pausing"}:
+                skipped.append(job_id)
+                continue
+            try:
+                with queue_lock:
+                    if job_id in jobs:
+                        jobs[job_id]["status"] = "deleted"
+                        cancel_flags[job_id] = True
+                        pause_flags.pop(job_id, None)
+                        cancel_events.pop(job_id, None)
+                    job_entry = jobs.get(job_id) or {}
+                    job_dir = _job_dir_from_entry(job_id, job_entry)
+
+                with _get_jobs_db_connection() as conn:
+                    row = conn.execute("SELECT status, job_dir FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+                    if row and not job_dir or str(job_dir) == ".":
+                        job_dir = _job_dir_from_entry(job_id, {"job_dir": row["job_dir"]})
+                    db_status = (row["status"] if row else None) or status
+                    conn.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
+                    conn.commit()
+
+                with queue_lock:
+                    jobs.pop(job_id, None)
+
+                job_data_dir = JOBS_DATA_DIR / job_id
+                if job_data_dir.exists():
+                    try:
+                        shutil.rmtree(job_data_dir, onerror=handle_remove_readonly)
+                    except Exception as rm_err:
+                        logger.warning("Could not delete job data dir %s: %s", job_data_dir, rm_err)
+
+                if db_status not in {"completed", "done", "review"} and job_dir and job_dir.exists():
+                    try:
+                        shutil.rmtree(job_dir, onerror=handle_remove_readonly)
+                    except Exception as rm_err:
+                        logger.warning("Could not delete job audio dir %s: %s", job_dir, rm_err)
+
+                removed.append(job_id)
+            except Exception as e:
+                logger.error("Error clearing job %s: %s", job_id, e, exc_info=True)
+                errors.append(job_id)
+
+        # Also sweep DB for any persisted jobs not in memory
+        try:
+            with _get_jobs_db_connection() as conn:
+                rows = conn.execute("SELECT job_id, status, job_dir FROM jobs").fetchall()
+            for row in rows:
+                job_id = row["job_id"]
+                if job_id in removed or job_id in skipped or job_id in errors:
+                    continue
+                db_status = row["status"] or ""
+                if db_status in {"processing", "pausing"}:
+                    skipped.append(job_id)
+                    continue
+                try:
+                    job_dir = _job_dir_from_entry(job_id, {"job_dir": row["job_dir"]})
+                    with _get_jobs_db_connection() as conn:
+                        conn.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
+                        conn.commit()
+                    job_data_dir = JOBS_DATA_DIR / job_id
+                    if job_data_dir.exists():
+                        shutil.rmtree(job_data_dir, onerror=handle_remove_readonly)
+                    if db_status not in {"completed", "done", "review"} and job_dir and job_dir.exists():
+                        shutil.rmtree(job_dir, onerror=handle_remove_readonly)
+                    removed.append(job_id)
+                except Exception as e:
+                    logger.error("Error clearing DB job %s: %s", job_id, e, exc_info=True)
+                    errors.append(job_id)
+        except Exception as e:
+            logger.error("Error sweeping jobs DB during clear-all: %s", e, exc_info=True)
+
+        invalidate_library_cache()
+        return jsonify({
+            "success": True,
+            "removed": len(removed),
+            "skipped": len(skipped),
+            "errors": len(errors),
+        })
+    except Exception as e:
+        logger.error("clear_all_jobs failed: %s", e, exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route('/api/jobs/<job_id>/delete', methods=['DELETE'])
 def delete_job(job_id: str):
     """Remove a job from the queue and delete its output files from disk."""
