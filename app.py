@@ -3793,7 +3793,9 @@ def process_audio_job(job_data):
             "chapter_count": chapter_count,
             "book_count": book_count,
             "books": chapter_outputs if book_mode else [],
-            "full_story": full_story_entry
+            "full_story": full_story_entry,
+            "intro_silence_ms": int(max(0, config.get('intro_silence_ms', 0) or 0)),
+            "inter_chunk_silence_ms": int(max(0, config.get('inter_chunk_silence_ms', 0) or 0)),
         }
         save_job_metadata(job_dir, metadata)
         
@@ -5644,6 +5646,8 @@ def _merge_review_job(job_id: str, job_entry: Dict[str, Any], manifest: Dict[str
         "books": book_outputs,
         "book_count": len(book_outputs),
         "full_story": full_story_entry,
+        "intro_silence_ms": int(max(0, merge_options.get("intro_silence_ms") or 0)),
+        "inter_chunk_silence_ms": int(max(0, merge_options.get("inter_chunk_silence_ms") or 0)),
     }
     save_job_metadata(job_dir, metadata)
 
@@ -6766,9 +6770,18 @@ def process_gemini_section():
         })
 
     except (GeminiProcessorError, LocalLLMProcessorError) as exc:
+        err_str = str(exc)
+        transient_markers = ("503", "UNAVAILABLE", "429", "quota", "rate limit", "rate_limit", "high demand", "try again")
+        is_transient = any(m.lower() in err_str.lower() for m in transient_markers)
+        if is_transient:
+            return jsonify({
+                "success": False,
+                "error": err_str,
+                "retryable": True
+            }), 503
         return jsonify({
             "success": False,
-            "error": str(exc)
+            "error": err_str
         }), 400
     except Exception as e:  # pragma: no cover - general failure
         logger.error(f"Error processing Gemini section: {e}", exc_info=True)
@@ -7403,6 +7416,132 @@ def get_library():
             "success": False,
             "error": str(e)
         }), 500
+
+
+@app.route('/api/library/<job_id>/chapter-durations', methods=['GET'])
+def get_library_chapter_durations(job_id):
+    """Return title + exact start_time (seconds) for each chapter in the full-story audio.
+
+    Calculates start times by walking the raw chunk files in the same order that
+    AudioMerger uses when building full_story.mp3 — intro_silence prepended once,
+    then inter_chunk_silence between every chunk.  This is the only approach that
+    gives accurate timestamps regardless of how many chunks are in each chapter.
+    """
+    job_dir = OUTPUT_DIR / job_id
+    if not job_dir.exists():
+        return jsonify({"success": False, "error": "Item not found"}), 404
+
+    # Load merge silence settings (new jobs have them in metadata.json; old jobs fall back to config)
+    metadata_path = job_dir / "metadata.json"
+    metadata = {}
+    if metadata_path.exists():
+        try:
+            with metadata_path.open("r", encoding="utf-8") as f:
+                metadata = json.load(f)
+        except Exception:
+            pass
+
+    def _silence_val(key):
+        if key in metadata:
+            return int(max(0, metadata[key] or 0))
+        try:
+            return int(max(0, load_config().get(key) or 0))
+        except Exception:
+            return 0
+
+    intro_silence_s = _silence_val("intro_silence_ms") / 1000.0
+    inter_silence_s = _silence_val("inter_chunk_silence_ms") / 1000.0
+
+    # Try to load review_manifest.json which has chunk-level detail
+    manifest_path = job_dir / "review_manifest.json"
+    manifest = {}
+    if manifest_path.exists():
+        try:
+            with manifest_path.open("r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except Exception:
+            pass
+
+    manifest_chapters = manifest.get("chapters") or []
+    all_full_story_chunks = manifest.get("all_full_story_chunks") or []
+
+    def _chunk_duration(rel_path: str) -> float:
+        p = job_dir / rel_path
+        if not p.exists():
+            return 0.0
+        try:
+            info = sf.info(str(p))
+            return info.frames / info.samplerate
+        except Exception:
+            try:
+                import wave
+                if p.suffix.lower() == ".wav":
+                    with wave.open(str(p), "rb") as wf:
+                        return wf.getnframes() / wf.getframerate()
+            except Exception:
+                pass
+            return 0.0
+
+    chapters = []
+
+    if manifest_chapters and all_full_story_chunks:
+        # Build a map from chunk rel-path to chapter index
+        chunk_to_chapter: Dict[str, int] = {}
+        for c_idx, ch in enumerate(manifest_chapters):
+            for rf in (ch.get("chunk_files") or []):
+                chunk_to_chapter[rf] = c_idx
+
+        # Walk chunks in full-story order, exactly as AudioMerger does.
+        # The first chapter always starts at 0:00 (the intro_silence before it
+        # is the very start of the file, so the timestamp for chapter 1 is 0).
+        cursor = intro_silence_s
+        current_chapter_idx = -1
+        for i, rel_chunk in enumerate(all_full_story_chunks):
+            c_idx = chunk_to_chapter.get(rel_chunk, -1)
+            if c_idx != current_chapter_idx:
+                current_chapter_idx = c_idx
+                ch_meta = manifest_chapters[c_idx] if c_idx >= 0 else {}
+                title = ch_meta.get("title") or f"Chapter {c_idx + 1}"
+                start = 0.0 if not chapters else round(cursor, 3)
+                chapters.append({"title": title, "start_time": start})
+            dur = _chunk_duration(rel_chunk)
+            cursor += dur
+            if i < len(all_full_story_chunks) - 1:
+                cursor += inter_silence_s
+
+    else:
+        # Fallback: use chapter audio file durations with silence correction.
+        # Less accurate but works when chunk files have been cleaned up.
+        raw_chapters = metadata.get("chapters") or []
+
+        def _file_duration(rel: str) -> float:
+            p = job_dir / rel
+            if not p.exists():
+                p = job_dir / Path(rel).name
+            if not p.exists():
+                return 0.0
+            return _chunk_duration(str(p.relative_to(job_dir)))
+
+        cursor = 0.0
+        for idx, ch in enumerate(raw_chapters):
+            rel = ch.get("relative_path") or ch.get("output_filename") or ""
+            title = ch.get("title") or f"Chapter {ch.get('index', '?')}"
+            if not rel:
+                continue
+            chapters.append({"title": title, "start_time": round(cursor, 3)})
+            dur = _file_duration(rel)
+            # Each chapter file has intro_silence baked in; only the first one's
+            # intro_silence is present in the full story.
+            effective = dur - (intro_silence_s if idx > 0 else 0)
+            cursor += effective + (inter_silence_s if idx < len(raw_chapters) - 1 else 0)
+
+    if not chapters:
+        return jsonify({"success": False, "error": "No chapter data found for this item"}), 404
+
+    return jsonify({
+        "success": True,
+        "chapters": chapters,
+    })
 
 
 @app.route('/api/library/<job_id>/restore-review', methods=['POST'])

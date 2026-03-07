@@ -5269,3 +5269,75 @@ audio {
     background: rgba(148, 163, 184, 0.12);
     color: var(--text-muted, #94a3b8);
 }
+
+/* ── Time Codes Modal ──────────────────────────────────────────── */
+.timecodes-intro-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.timecodes-intro-row label {
+    font-size: 0.9rem;
+    white-space: nowrap;
+}
+
+.timecodes-intro-row input[type="number"] {
+    background: var(--input-bg, rgba(255,255,255,0.07));
+    border: 1px solid var(--border-color, rgba(255,255,255,0.12));
+    border-radius: 6px;
+    color: var(--text-color);
+    padding: 5px 8px;
+    font-size: 0.9rem;
+}
+
+.timecodes-help-text {
+    font-size: 0.82rem;
+    color: var(--text-muted, #94a3b8);
+    margin-bottom: 14px;
+}
+
+.timecodes-result {
+    background: var(--input-bg, rgba(255,255,255,0.05));
+    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    border-radius: 8px;
+    overflow: hidden;
+    margin-top: 6px;
+}
+
+.timecodes-result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: rgba(99,102,241,0.08);
+    border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.08));
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.timecodes-output {
+    font-family: 'Roboto', Arial, sans-serif;
+    font-size: 0.88rem;
+    line-height: 1.7;
+    padding: 12px 14px;
+    margin: 0;
+    white-space: pre;
+    overflow-x: auto;
+    color: var(--text-color);
+}
+
+.timecodes-loading {
+    font-size: 0.88rem;
+    color: var(--text-muted, #94a3b8);
+    padding: 10px 0;
+    text-align: center;
+}
+
+.timecodes-error {
+    font-size: 0.88rem;
+    color: var(--danger-color, #ef4444);
+    padding: 8px 0;
+}

@@ -2388,6 +2388,9 @@ async function processWithGemini(buttonEl) {
             });
         }
 
+        const MAX_RETRIES = 5;
+        const RETRY_BASE_DELAY_MS = 8000;
+
         for (let i = 0; i < sections.length; i++) {
             const section = sections[i];
             const currentIndex = i + 1;
@@ -2408,17 +2411,31 @@ async function processWithGemini(buttonEl) {
                 payload.known_speakers = Array.from(knownSpeakers);
             }
 
-            const sectionResponse = await fetch('/api/gemini/process-section', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(payload)
-            });
+            let sectionData = null;
+            for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+                const sectionResponse = await fetch('/api/gemini/process-section', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
 
-            const sectionData = await sectionResponse.json();
-            if (!sectionData.success) {
-                throw new Error(sectionData.error || `Gemini failed on section ${currentIndex}`);
+                sectionData = await sectionResponse.json();
+
+                if (sectionData.success) break;
+
+                const isRetryable = sectionData.retryable === true || sectionResponse.status === 503;
+                if (!isRetryable || attempt >= MAX_RETRIES) {
+                    throw new Error(sectionData.error || `Gemini failed on section ${currentIndex}`);
+                }
+
+                const delaySec = Math.round((RETRY_BASE_DELAY_MS * (attempt + 1)) / 1000);
+                updateGeminiProgress({
+                    visible: true,
+                    label: `Section ${currentIndex}: Gemini busy — retrying in ${delaySec}s (attempt ${attempt + 1}/${MAX_RETRIES})…`,
+                    count: `${currentIndex} / ${sections.length}`,
+                    fill: Math.round((currentIndex / sections.length) * 100)
+                });
+                await new Promise(resolve => setTimeout(resolve, RETRY_BASE_DELAY_MS * (attempt + 1)));
             }
 
             if (Array.isArray(sectionData.speakers)) {

@@ -534,6 +534,7 @@ function displayLibraryItems(items) {
                     <span class="library-item-format">${item.format.toUpperCase()}</span>
                     <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="openLibraryAwr('${item.job_id}')">Alt Words</button>
                     ${item.timing_metrics ? `<button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="openLibraryMetrics('${item.job_id}', this)">Metrics</button>` : ''}
+                    <button class="btn btn-secondary btn-xs library-item-meta-action timecodes-open-btn" type="button" data-job-id="${item.job_id}" data-title="${escapeHtml(displayTitle)}">Time Codes</button>
                     <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="repairLibraryItem('${item.job_id}', this)">Repair</button>
                     <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="deleteLibraryItem('${item.job_id}')">Delete</button>
                     <button type="button" class="help-icon library-item-meta-action" data-help-id="audio-library-actions" aria-label="Help: Audio Library Actions">?</button>
@@ -3889,6 +3890,139 @@ async function saveLibraryAwr() {
 }
 
 // ─── End Library Alt Word Registry ───────────────────────────────────────────
+
+// ─── Time Codes Modal ─────────────────────────────────────────────────────────
+
+let timeCodesJobId = null;
+let timeCodesChapters = null;
+
+function fmtTimecode(totalSeconds) {
+    const s = Math.floor(totalSeconds);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+}
+
+function buildTimeCodesText(chapters, introSeconds, driftPerChapter) {
+    // All entries formatted as "HH:MM:SS  CH. XX" — uniform length, no alignment needed.
+    const entries = chapters.map((ch, idx) => {
+        const ts = Math.floor(ch.start_time + introSeconds + driftPerChapter * idx);
+        return `${fmtTimecode(ts)}  CH. ${String(idx).padStart(2, '0')}`;
+    });
+    const cols = 3;
+    const gap = '     '; // 5 spaces between columns
+    const rows = [];
+    for (let i = 0; i < entries.length; i += cols) {
+        const row = [];
+        for (let c = 0; c < cols; c++) {
+            if (entries[i + c] !== undefined) row.push(entries[i + c]);
+        }
+        rows.push(row.join(gap));
+    }
+    return rows.join('\n');
+}
+
+function renderTimeCodesResult() {
+    if (!timeCodesChapters) return;
+    const introInput = document.getElementById('timecodes-intro-seconds');
+    const driftInput = document.getElementById('timecodes-drift-adjust');
+    const introSecs = Math.max(0, parseFloat(introInput?.value) || 0);
+    const driftPerChapter = parseFloat(driftInput?.value) || 0;
+    const output = document.getElementById('timecodes-output');
+    const resultEl = document.getElementById('timecodes-result');
+    if (output) output.textContent = buildTimeCodesText(timeCodesChapters, introSecs, driftPerChapter);
+    if (resultEl) resultEl.classList.remove('hidden');
+}
+
+async function openTimeCodesModal(jobId, title) {
+    timeCodesJobId = jobId;
+    timeCodesChapters = null;
+
+    const overlay = document.getElementById('timecodes-modal-overlay');
+    const modal = document.getElementById('timecodes-modal');
+    const titleEl = document.getElementById('timecodes-modal-title');
+    const loadingEl = document.getElementById('timecodes-loading');
+    const errorEl = document.getElementById('timecodes-error');
+    const resultEl = document.getElementById('timecodes-result');
+    const introInput = document.getElementById('timecodes-intro-seconds');
+    const output = document.getElementById('timecodes-output');
+
+    if (titleEl) titleEl.textContent = `Time Codes — ${title || 'Untitled'}`;
+    if (loadingEl) loadingEl.classList.remove('hidden');
+    if (errorEl) { errorEl.classList.add('hidden'); errorEl.textContent = ''; }
+    if (resultEl) resultEl.classList.add('hidden');
+    if (output) output.textContent = '';
+    if (introInput) introInput.value = 0;
+
+    overlay?.classList.remove('hidden');
+    modal?.classList.remove('hidden');
+
+    try {
+        const response = await fetch(`/api/library/${jobId}/chapter-durations`);
+        const data = await response.json();
+        if (!data.success) throw new Error(data.error || 'Failed to load chapter data');
+        if (!data.chapters || data.chapters.length === 0) throw new Error('No chapters found for this item.');
+        timeCodesChapters = data.chapters;
+        if (loadingEl) loadingEl.classList.add('hidden');
+        renderTimeCodesResult();
+    } catch (err) {
+        if (loadingEl) loadingEl.classList.add('hidden');
+        if (errorEl) { errorEl.textContent = err.message || 'Failed to load chapters.'; errorEl.classList.remove('hidden'); }
+    }
+}
+
+function closeTimeCodesModal() {
+    document.getElementById('timecodes-modal-overlay')?.classList.add('hidden');
+    document.getElementById('timecodes-modal')?.classList.add('hidden');
+    timeCodesJobId = null;
+    timeCodesChapters = null;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('click', e => {
+        const btn = e.target.closest('.timecodes-open-btn');
+        if (btn) {
+            e.stopPropagation();
+            openTimeCodesModal(btn.dataset.jobId, btn.dataset.title || '');
+        }
+    });
+    document.getElementById('timecodes-modal-close')?.addEventListener('click', closeTimeCodesModal);
+    document.getElementById('timecodes-close-btn')?.addEventListener('click', closeTimeCodesModal);
+    document.getElementById('timecodes-modal-overlay')?.addEventListener('click', e => {
+        if (e.target === document.getElementById('timecodes-modal-overlay')) closeTimeCodesModal();
+    });
+    document.getElementById('timecodes-calculate-btn')?.addEventListener('click', renderTimeCodesResult);
+    document.getElementById('timecodes-intro-seconds')?.addEventListener('keydown', e => {
+        if (e.key === 'Enter') renderTimeCodesResult();
+    });
+    document.getElementById('timecodes-drift-adjust')?.addEventListener('keydown', e => {
+        if (e.key === 'Enter') renderTimeCodesResult();
+    });
+    document.getElementById('timecodes-drift-adjust')?.addEventListener('change', renderTimeCodesResult);
+    document.getElementById('timecodes-copy-btn')?.addEventListener('click', () => {
+        const text = document.getElementById('timecodes-output')?.textContent || '';
+        if (!text) return;
+        navigator.clipboard.writeText(text).then(() => {
+            const btn = document.getElementById('timecodes-copy-btn');
+            if (btn) {
+                const orig = btn.textContent;
+                btn.textContent = 'Copied!';
+                setTimeout(() => { btn.textContent = orig; }, 1800);
+            }
+        }).catch(() => {
+            prompt('Copy the time codes below:', text);
+        });
+    });
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') {
+            const overlay = document.getElementById('timecodes-modal-overlay');
+            if (overlay && !overlay.classList.contains('hidden')) closeTimeCodesModal();
+        }
+    });
+});
+
+// ─── End Time Codes Modal ─────────────────────────────────────────────────────
 
 // Clear all library items
 async function clearLibrary() {
