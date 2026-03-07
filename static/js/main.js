@@ -2325,6 +2325,101 @@ function getSelectedGeminiPromptOverride() {
     return preset?.prompt || '';
 }
 
+let _geminiPrepPauseRequested = false;
+let _geminiPrepAbortRequested = false;
+
+function _geminiPrepHash(text) {
+    let h = 0;
+    for (let i = 0; i < Math.min(text.length, 2000); i++) {
+        h = (Math.imul(31, h) + text.charCodeAt(i)) | 0;
+    }
+    return (h >>> 0).toString(36) + '_' + text.length;
+}
+
+async function _savePrepProgress(textHash, sections, outputs, knownSpeakers) {
+    try {
+        await fetch('/api/prep-progress/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text_hash: textHash,
+                sections,
+                outputs,
+                known_speakers: Array.from(knownSpeakers),
+                timestamp: Date.now()
+            })
+        });
+    } catch (e) { /* network error — ignore, progress already in memory */ }
+}
+
+async function _loadPrepProgress(textHash) {
+    try {
+        const resp = await fetch(`/api/prep-progress/load?text_hash=${encodeURIComponent(textHash)}`);
+        const data = await resp.json();
+        if (data.success && data.found) return data.progress;
+        return null;
+    } catch (e) { return null; }
+}
+
+async function _clearPrepProgress(textHash) {
+    try {
+        await fetch(`/api/prep-progress/clear?text_hash=${encodeURIComponent(textHash)}`, { method: 'DELETE' });
+    } catch (e) {}
+}
+
+function _showPrepResumePanel(completedCount, totalCount, onResume, onRestart, onAbort) {
+    const panel = document.getElementById('gemini-resume-panel');
+    const label = document.getElementById('gemini-resume-label');
+    const resumeBtn = document.getElementById('gemini-resume-btn');
+    const restartBtn = document.getElementById('gemini-restart-btn');
+    const abortBtn = document.getElementById('gemini-abort-panel-btn');
+    if (!panel) return;
+    const remaining = totalCount - completedCount;
+    if (label) label.textContent = `⚠️ ${completedCount} of ${totalCount} sections completed. ${remaining} remaining — will resume from section ${completedCount + 1}.`;
+    panel.style.display = 'block';
+    [resumeBtn, restartBtn, abortBtn].forEach(btn => {
+        if (!btn) return;
+        const clone = btn.cloneNode(true);
+        btn.replaceWith(clone);
+    });
+    document.getElementById('gemini-resume-btn').addEventListener('click', () => {
+        panel.style.display = 'none';
+        onResume();
+    });
+    document.getElementById('gemini-restart-btn').addEventListener('click', () => {
+        panel.style.display = 'none';
+        onRestart();
+    });
+    const abortPanelBtn = document.getElementById('gemini-abort-panel-btn');
+    if (abortPanelBtn) {
+        abortPanelBtn.addEventListener('click', () => {
+            panel.style.display = 'none';
+            if (onAbort) onAbort();
+        });
+    }
+}
+
+function _hidePrepResumePanel() {
+    const panel = document.getElementById('gemini-resume-panel');
+    if (panel) panel.style.display = 'none';
+}
+
+async function _checkAndShowPrepResume() {
+    const inputEl = document.getElementById('input-text');
+    if (!inputEl || !inputEl.value.trim()) return;
+    const textHash = _geminiPrepHash(inputEl.value);
+    const saved = await _loadPrepProgress(textHash);
+    if (saved && saved.outputs && saved.outputs.length > 0 && saved.sections) {
+        const geminiBtn = document.getElementById('gemini-process-btn');
+        _showPrepResumePanel(
+            saved.outputs.length,
+            saved.sections.length,
+            () => _runGeminiPrep(geminiBtn, inputEl.value, textHash, saved),
+            async () => { await _clearPrepProgress(textHash); }
+        );
+    }
+}
+
 async function processWithGemini(buttonEl) {
     const inputEl = document.getElementById('input-text');
     if (!inputEl) return;
@@ -2335,6 +2430,24 @@ async function processWithGemini(buttonEl) {
         return;
     }
 
+    const textHash = _geminiPrepHash(text);
+    const savedProgress = await _loadPrepProgress(textHash);
+
+    if (savedProgress && savedProgress.outputs && savedProgress.outputs.length > 0 && savedProgress.sections) {
+        _showPrepResumePanel(
+            savedProgress.outputs.length,
+            savedProgress.sections.length,
+            () => _runGeminiPrep(buttonEl, text, textHash, savedProgress),
+            async () => { await _clearPrepProgress(textHash); }
+        );
+        return;
+    }
+
+    await _runGeminiPrep(buttonEl, text, textHash, null);
+}
+
+async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
+    const inputEl = document.getElementById('input-text');
     const customHeading = document.getElementById('custom-heading-input')?.value?.trim() || '';
     const promptOverride = getSelectedGeminiPromptOverride();
     updateGeminiProgress({ visible: true, label: 'Preparing Gemini request…', count: '', fill: 5 });
@@ -2345,53 +2458,94 @@ async function processWithGemini(buttonEl) {
         buttonEl.textContent = 'Processing with Gemini...';
     }
 
+    _geminiPrepPauseRequested = false;
+    _geminiPrepAbortRequested = false;
+    _hidePrepResumePanel();
+
+    const pauseBtn = document.getElementById('gemini-pause-btn');
+    const abortBtn = document.getElementById('gemini-abort-btn');
+    if (pauseBtn) {
+        pauseBtn.textContent = 'Pause';
+        pauseBtn.disabled = false;
+        pauseBtn.onclick = () => {
+            _geminiPrepPauseRequested = true;
+            pauseBtn.textContent = 'Pausing…';
+            pauseBtn.disabled = true;
+        };
+    }
+    if (abortBtn) {
+        abortBtn.style.display = 'inline-block';
+        abortBtn.textContent = 'Abort';
+        abortBtn.disabled = false;
+        abortBtn.onclick = () => {
+            _geminiPrepAbortRequested = true;
+            abortBtn.textContent = 'Aborting…';
+            abortBtn.disabled = true;
+            if (pauseBtn) { pauseBtn.disabled = true; }
+        };
+    }
+
     showNotification('Preparing text for Gemini...', 'info');
 
     try {
-        updateGeminiProgress({
-            visible: true,
-            label: 'Building section list for Gemini…',
-            count: '',
-            fill: 15
-        });
+        let sections, outputs, knownSpeakers;
 
-        const sectionsResponse = await fetch('/api/gemini/sections', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                text,
-                prefer_chapters: true,
-                custom_heading: customHeading || undefined
-            })
-        });
-
-        const sectionsData = await sectionsResponse.json();
-        if (!sectionsData.success) {
-            throw new Error(sectionsData.error || 'Unable to build Gemini sections');
-        }
-
-        const sections = sectionsData.sections || [];
-        if (!sections.length) {
-            throw new Error('No sections were generated for Gemini processing.');
-        }
-        latestGeminiBookTitle = resolveBookTitleFromSections(sections) || latestGeminiBookTitle;
-
-        const outputs = [];
-        const knownSpeakers = new Set();
-        if (currentStats?.speakers?.length) {
-            currentStats.speakers.forEach(name => {
-                if (typeof name === 'string' && name.trim()) {
-                    knownSpeakers.add(name.trim().toLowerCase());
-                }
+        if (savedProgress) {
+            sections = savedProgress.sections;
+            outputs = savedProgress.outputs.slice();
+            knownSpeakers = new Set(savedProgress.known_speakers || []);
+            latestGeminiBookTitle = resolveBookTitleFromSections(sections) || latestGeminiBookTitle;
+            updateGeminiProgress({
+                visible: true,
+                label: `Resuming from section ${outputs.length + 1} of ${sections.length}…`,
+                count: `${outputs.length} / ${sections.length}`,
+                fill: Math.round((outputs.length / sections.length) * 100)
             });
+        } else {
+            updateGeminiProgress({
+                visible: true,
+                label: 'Building section list for Gemini…',
+                count: '',
+                fill: 15
+            });
+
+            const sectionsResponse = await fetch('/api/gemini/sections', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text,
+                    prefer_chapters: true,
+                    custom_heading: customHeading || undefined
+                })
+            });
+
+            const sectionsData = await sectionsResponse.json();
+            if (!sectionsData.success) {
+                throw new Error(sectionsData.error || 'Unable to build Gemini sections');
+            }
+
+            sections = sectionsData.sections || [];
+            if (!sections.length) {
+                throw new Error('No sections were generated for Gemini processing.');
+            }
+            latestGeminiBookTitle = resolveBookTitleFromSections(sections) || latestGeminiBookTitle;
+
+            outputs = [];
+            knownSpeakers = new Set();
+            if (currentStats?.speakers?.length) {
+                currentStats.speakers.forEach(name => {
+                    if (typeof name === 'string' && name.trim()) {
+                        knownSpeakers.add(name.trim().toLowerCase());
+                    }
+                });
+            }
         }
 
         const MAX_RETRIES = 5;
         const RETRY_BASE_DELAY_MS = 8000;
+        const resumeFrom = outputs.length;
 
-        for (let i = 0; i < sections.length; i++) {
+        for (let i = resumeFrom; i < sections.length; i++) {
             const section = sections[i];
             const currentIndex = i + 1;
             updateGeminiProgress({
@@ -2446,6 +2600,25 @@ async function processWithGemini(buttonEl) {
                 });
             }
             outputs.push(sectionData.result_text || '');
+            await _savePrepProgress(textHash, sections, outputs, knownSpeakers);
+
+            if (_geminiPrepAbortRequested) {
+                await _clearPrepProgress(textHash);
+                showNotification('Prep aborted. All progress discarded.', 'error');
+                return;
+            }
+
+            if (_geminiPrepPauseRequested) {
+                _showPrepResumePanel(
+                    outputs.length,
+                    sections.length,
+                    () => _runGeminiPrep(buttonEl, text, textHash, { sections, outputs, known_speakers: Array.from(knownSpeakers) }),
+                    async () => { await _clearPrepProgress(textHash); },
+                    async () => { await _clearPrepProgress(textHash); showNotification('Prep aborted. All progress discarded.', 'error'); }
+                );
+                showNotification(`Prep paused at section ${outputs.length} of ${sections.length}. Progress saved — click Resume to continue.`, 'warning');
+                return;
+            }
         }
 
         updateGeminiProgress({
@@ -2455,6 +2628,7 @@ async function processWithGemini(buttonEl) {
             fill: 100
         });
 
+        await _clearPrepProgress(textHash);
         inputEl.value = outputs.join('\n\n').trim();
 
         lastAnalyzedText = '';
@@ -2465,12 +2639,28 @@ async function processWithGemini(buttonEl) {
         }
     } catch (error) {
         console.error('Gemini processing failed:', error);
-        alert(error.message || 'Failed to process with Gemini');
+        const saved = await _loadPrepProgress(textHash);
+        if (saved && saved.outputs && saved.outputs.length > 0) {
+            _showPrepResumePanel(
+                saved.outputs.length,
+                saved.sections.length,
+                () => _runGeminiPrep(buttonEl, text, textHash, saved),
+                async () => { await _clearPrepProgress(textHash); },
+                async () => { await _clearPrepProgress(textHash); showNotification('Prep aborted. All progress discarded.', 'error'); }
+            );
+            showNotification(`Prep stopped at section ${saved.outputs.length} of ${saved.sections.length}. Progress saved — click Resume to continue.`, 'warning');
+        } else {
+            alert(error.message || 'Failed to process with Gemini');
+        }
     } finally {
         if (buttonEl) {
             buttonEl.disabled = false;
             buttonEl.textContent = originalLabel || 'Prep Text with Gemini';
         }
+        const pauseBtn = document.getElementById('gemini-pause-btn');
+        if (pauseBtn) { pauseBtn.textContent = 'Pause'; pauseBtn.disabled = false; }
+        const abortBtnFin = document.getElementById('gemini-abort-btn');
+        if (abortBtnFin) { abortBtnFin.style.display = 'none'; abortBtnFin.disabled = false; }
         updateGeminiProgress({ visible: false });
     }
 }
@@ -2502,6 +2692,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
     preloadGenerationControls();
     initDefaultVoiceFxPanel();
+    _checkAndShowPrepResume();
     if (typeof loadLibraryItems === 'function') {
         loadLibraryItems();
     }

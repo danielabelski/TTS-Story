@@ -107,10 +107,18 @@
                             <div class="progress-label">
                                 <span id="gemini-progress-text">Preparing Gemini request…</span>
                                 <span id="gemini-progress-count"></span>
+                                <button id="gemini-pause-btn" class="btn btn-secondary btn-sm" style="margin-left:auto;padding:2px 10px;font-size:0.8rem;">Pause</button>
+                                <button id="gemini-abort-btn" class="btn btn-danger btn-sm" style="display:none;padding:2px 10px;font-size:0.8rem;">Abort</button>
                             </div>
                             <div class="progress-bar">
                                 <div id="gemini-progress-fill" class="progress-bar-fill"></div>
                             </div>
+                        </div>
+                        <div id="gemini-resume-panel" style="display:none;margin-top:10px;padding:10px 14px;background:rgba(234,179,8,0.15);border:1px solid rgba(234,179,8,0.4);border-radius:6px;">
+                            <span id="gemini-resume-label" style="font-size:0.88rem;margin-right:10px;"></span>
+                            <button id="gemini-resume-btn" class="btn btn-primary btn-sm">Resume</button>
+                            <button id="gemini-restart-btn" class="btn btn-secondary btn-sm" style="margin-left:6px;">Restart</button>
+                            <button id="gemini-abort-panel-btn" class="btn btn-danger btn-sm" style="margin-left:6px;">Abort</button>
                         </div>
                     </div>
                 </div>

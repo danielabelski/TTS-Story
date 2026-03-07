@@ -119,6 +119,8 @@ VOICE_PROMPT_DIR.mkdir(parents=True, exist_ok=True)
 VOICE_PROMPT_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg"}
 CHATTERBOX_VOICE_REGISTRY = Path("data/chatterbox_voices.json")
 EXTERNAL_VOICES_ARCHIVE_FILE = Path("data/external_voice_archives.json")
+PREP_PROGRESS_DIR = Path("data/prep")
+PREP_PROGRESS_DIR.mkdir(parents=True, exist_ok=True)
 JOB_METADATA_FILENAME = "metadata.json"
 DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
 DEFAULT_LLM_PROVIDER = "gemini"
@@ -6789,6 +6791,64 @@ def process_gemini_section():
             "success": False,
             "error": "Failed to process section with Gemini"
         }), 500
+
+
+@app.route('/api/prep-progress/save', methods=['POST'])
+def save_prep_progress():
+    """Persist Gemini prep progress to disk so it survives backend restarts."""
+    try:
+        data = request.json or {}
+        text_hash = (data.get('text_hash') or '').strip()
+        if not text_hash or not re.match(r'^[a-z0-9_]+$', text_hash):
+            return jsonify({"success": False, "error": "Invalid text_hash"}), 400
+        payload = {
+            "text_hash": text_hash,
+            "sections": data.get('sections') or [],
+            "outputs": data.get('outputs') or [],
+            "known_speakers": data.get('known_speakers') or [],
+            "timestamp": data.get('timestamp') or int(time.time() * 1000),
+        }
+        progress_file = PREP_PROGRESS_DIR / f"{text_hash}.json"
+        with progress_file.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error("Error saving prep progress: %s", e, exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/prep-progress/load', methods=['GET'])
+def load_prep_progress():
+    """Load saved Gemini prep progress for a given text hash."""
+    try:
+        text_hash = (request.args.get('text_hash') or '').strip()
+        if not text_hash or not re.match(r'^[a-z0-9_]+$', text_hash):
+            return jsonify({"success": False, "error": "Invalid text_hash"}), 400
+        progress_file = PREP_PROGRESS_DIR / f"{text_hash}.json"
+        if not progress_file.exists():
+            return jsonify({"success": True, "found": False})
+        with progress_file.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return jsonify({"success": True, "found": True, "progress": payload})
+    except Exception as e:
+        logger.error("Error loading prep progress: %s", e, exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/prep-progress/clear', methods=['DELETE'])
+def clear_prep_progress():
+    """Delete saved Gemini prep progress for a given text hash."""
+    try:
+        text_hash = (request.args.get('text_hash') or '').strip()
+        if not text_hash or not re.match(r'^[a-z0-9_]+$', text_hash):
+            return jsonify({"success": False, "error": "Invalid text_hash"}), 400
+        progress_file = PREP_PROGRESS_DIR / f"{text_hash}.json"
+        if progress_file.exists():
+            progress_file.unlink()
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error("Error clearing prep progress: %s", e, exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route('/api/generate', methods=['POST'])
