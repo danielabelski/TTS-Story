@@ -3389,6 +3389,95 @@ audio {
     border-color: transparent;
 }
 
+/* ── Chapter selection mode ─────────────────────────── */
+.chapter-controls.select-mode .chapter-pill:not(.chapter-review-all):not(.chapter-select-toggle) {
+    cursor: pointer;
+    user-select: none;
+}
+
+.chapter-controls.select-mode .chapter-pill:not(.chapter-review-all):not(.chapter-select-toggle):not(.active) {
+    background: rgba(99, 102, 241, 0.08);
+    border-color: rgba(99, 102, 241, 0.25);
+    color: var(--text-muted);
+}
+
+.chapter-controls.select-mode .chapter-pill.ch-selected {
+    background: rgba(16, 185, 129, 0.2) !important;
+    border-color: rgba(16, 185, 129, 0.6) !important;
+    color: #6ee7b7 !important;
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15);
+}
+
+.chapter-select-toggle {
+    font-size: 0.78rem;
+    padding: 4px 10px;
+    opacity: 0.7;
+    border-style: dashed;
+}
+
+.chapter-select-toggle.active-mode {
+    opacity: 1;
+    border-style: solid;
+    background: rgba(99, 102, 241, 0.2);
+    color: #a5b4fc;
+    border-color: rgba(99, 102, 241, 0.5);
+}
+
+.chapter-export-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: rgba(16, 185, 129, 0.07);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    border-radius: 8px;
+    font-size: 0.85rem;
+}
+
+.chapter-export-bar.hidden {
+    display: none;
+}
+
+.chapter-export-count {
+    color: #6ee7b7;
+    font-weight: 600;
+    flex: 1 1 auto;
+}
+
+.chapter-export-name-input {
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    background: rgba(15, 17, 32, 0.6);
+    color: var(--text-color);
+    font-size: 0.82rem;
+    width: 180px;
+}
+
+.chapter-export-name-input:focus {
+    outline: none;
+    border-color: rgba(99, 102, 241, 0.6);
+}
+
+.chapter-export-btn {
+    white-space: nowrap;
+    font-size: 0.82rem;
+    padding: 5px 14px;
+}
+
+.chapter-export-spinner {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    display: none;
+}
+
+.chapter-export-spinner.visible {
+    display: inline;
+}
+/* ── end chapter selection mode ─────────────────────── */
+
 .chapter-action-menu {
     position: absolute;
     z-index: 5;
@@ -3422,6 +3511,106 @@ audio {
 .chapter-action-menu-item:hover {
     background: rgba(99, 102, 241, 0.35);
 }
+
+/* ── Heading keyword pill manager ───────────────────── */
+.heading-pills-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.heading-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px 3px 12px;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    background: rgba(99, 102, 241, 0.18);
+    border: 1px solid rgba(99, 102, 241, 0.4);
+    color: #a5b4fc;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.heading-pill.default-pill {
+    background: rgba(99, 102, 241, 0.12);
+    border-color: rgba(99, 102, 241, 0.3);
+    color: #c7d2fe;
+}
+
+.heading-pill.custom-pill {
+    background: rgba(16, 185, 129, 0.15);
+    border-color: rgba(16, 185, 129, 0.4);
+    color: #6ee7b7;
+}
+
+.heading-pill-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(255, 255, 255, 0.12);
+    color: inherit;
+    cursor: pointer;
+    font-size: 0.65rem;
+    line-height: 1;
+    padding: 0;
+    transition: background 0.12s;
+}
+
+.heading-pill-remove:hover {
+    background: rgba(239, 68, 68, 0.5);
+    color: #fff;
+}
+
+.heading-add-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.heading-add-input {
+    flex: 1;
+    max-width: 180px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    background: rgba(15, 17, 32, 0.6);
+    color: var(--text-color);
+    font-size: 0.82rem;
+}
+
+.heading-add-input:focus {
+    outline: none;
+    border-color: rgba(99, 102, 241, 0.7);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+.heading-add-btn {
+    padding: 4px 12px;
+    font-size: 0.82rem;
+    border-radius: 6px;
+    white-space: nowrap;
+}
+
+.heading-reset-btn {
+    padding: 4px 10px;
+    font-size: 0.78rem;
+    border-radius: 6px;
+    opacity: 0.7;
+}
+
+.heading-reset-btn:hover {
+    opacity: 1;
+}
+/* ── end heading pills ──────────────────────────────── */
 
 .library-item-size,
 .library-item-format,

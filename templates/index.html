@@ -261,11 +261,15 @@
                                             </button>
                                         </div>
                                         <div class="chapter-custom-heading" style="margin-top: 10px;">
-                                            <label for="custom-heading-input">Custom section heading (optional)</label>
-                                            <input type="text" id="custom-heading-input" placeholder="e.g., Episode, Volume, Act">
+                                            <label style="margin-bottom: 6px; display: block;">Section heading keywords</label>
+                                            <div class="heading-pills-wrap" id="heading-pills-wrap"></div>
+                                            <div class="heading-add-row">
+                                                <input type="text" id="heading-add-input" class="heading-add-input" placeholder="Add keyword…" maxlength="40">
+                                                <button type="button" id="heading-add-btn" class="btn btn-secondary btn-sm heading-add-btn">Add</button>
+                                                <button type="button" id="heading-reset-btn" class="btn btn-secondary btn-sm heading-reset-btn" title="Restore all default keywords">Reset defaults</button>
+                                            </div>
                                             <p class="help-text" style="margin-top: 6px;">
-                                                We already detect headings like Book, Chapter, Section, Letter, Part, Prologue, and Epilogue.
-                                                Add extra heading words here to include them in section detection.
+                                                Active keywords (blue = default, green = custom) are used to detect section headings. Click ✕ to remove any keyword.
                                             </p>
                                         </div>
                                         <div id="full-story-option" class="chapter-sub-option" style="display: none;">

@@ -449,24 +449,50 @@ function renderChapterControls(item) {
         `
         : '';
 
+    // Store chapter index on each pill using section.index (matches manifest chapter index)
+    const sectionPills = sections.map((section, idx) => {
+        const chapterIndex = section.index ?? idx;
+        return `
+            <button
+                class="btn btn-secondary btn-xs chapter-pill ${idx === 0 ? 'active' : ''}"
+                data-job-id="${item.job_id}"
+                data-relative-path="${section.relative_path}"
+                data-src="${section.output_file}"
+                data-index="${(section.index ?? (idx + 1))}"
+                data-chapter-index="${chapterIndex}"
+            >
+                ${formatSectionLabel(section, fallbackLabel)}
+            </button>
+        `;
+    }).join('');
+
     return `
         <div class="chapter-controls" data-job-id="${item.job_id}">
-            <div class="chapter-controls-header">
+            <div class="chapter-controls-header" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
                 <strong>${label}</strong>
+                <button
+                    class="btn btn-secondary btn-xs chapter-select-toggle"
+                    type="button"
+                    data-job-id="${item.job_id}"
+                    title="Select chapters to export as a custom audio file"
+                >✦ Select</button>
             </div>
             <div class="chapter-pill-container">
-                ${sections.map((section, idx) => `
-                    <button
-                        class="btn btn-secondary btn-xs chapter-pill ${idx === 0 ? 'active' : ''}"
-                        data-job-id="${item.job_id}"
-                        data-relative-path="${section.relative_path}"
-                        data-src="${section.output_file}"
-                        data-index="${(section.index ?? (idx + 1))}"
-                    >
-                        ${formatSectionLabel(section, fallbackLabel)}
-                    </button>
-                `).join('')}
+                ${sectionPills}
                 ${reviewAllButton}
+            </div>
+            <div class="chapter-export-bar hidden" data-job-id="${item.job_id}">
+                <span class="chapter-export-count">0 chapters selected</span>
+                <input
+                    type="text"
+                    class="chapter-export-name-input"
+                    placeholder="Output file name (optional)"
+                    maxlength="80"
+                >
+                <button class="btn btn-primary btn-sm chapter-export-btn" type="button" disabled>
+                    Export Selected
+                </button>
+                <span class="chapter-export-spinner">⏳ Building…</span>
             </div>
         </div>
     `;
@@ -791,6 +817,119 @@ function displayLibraryItems(items) {
                 });
             });
         }
+
+        // ── Chapter selection / custom export ──────────────────────────────
+        const selectToggle = itemCard.querySelector(`.chapter-select-toggle[data-job-id="${item.job_id}"]`);
+        const exportBar = itemCard.querySelector(`.chapter-export-bar[data-job-id="${item.job_id}"]`);
+
+        if (selectToggle && chapterControls && exportBar) {
+            const exportCountEl = exportBar.querySelector('.chapter-export-count');
+            const exportNameInput = exportBar.querySelector('.chapter-export-name-input');
+            const exportBtn = exportBar.querySelector('.chapter-export-btn');
+            const exportSpinner = exportBar.querySelector('.chapter-export-spinner');
+
+            // Pills that represent actual chapters (exclude review-all and the toggle itself)
+            const selectablePills = Array.from(
+                itemCard.querySelectorAll(`.chapter-pill[data-job-id="${item.job_id}"]`)
+            ).filter(b => !b.classList.contains('chapter-review-all') && !b.classList.contains('chapter-select-toggle'));
+
+            function getSelectedIndices() {
+                return selectablePills
+                    .filter(b => b.classList.contains('ch-selected'))
+                    .map(b => parseInt(b.getAttribute('data-chapter-index'), 10));
+            }
+
+            function updateExportBar() {
+                const selected = getSelectedIndices();
+                exportCountEl.textContent = selected.length === 1
+                    ? '1 chapter selected'
+                    : `${selected.length} chapters selected`;
+                exportBtn.disabled = selected.length === 0;
+            }
+
+            function enterSelectMode() {
+                chapterControls.classList.add('select-mode');
+                selectToggle.classList.add('active-mode');
+                selectToggle.textContent = '✕ Cancel';
+                exportBar.classList.remove('hidden');
+                closeChapterActionMenus(chapterControls);
+                updateExportBar();
+            }
+
+            function exitSelectMode() {
+                chapterControls.classList.remove('select-mode');
+                selectToggle.classList.remove('active-mode');
+                selectToggle.textContent = '✦ Select';
+                exportBar.classList.add('hidden');
+                selectablePills.forEach(b => b.classList.remove('ch-selected'));
+                exportNameInput.value = '';
+            }
+
+            selectToggle.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (chapterControls.classList.contains('select-mode')) {
+                    exitSelectMode();
+                } else {
+                    enterSelectMode();
+                }
+            });
+
+            // In select-mode, clicking a chapter pill toggles selection instead of playing
+            selectablePills.forEach(pill => {
+                pill.addEventListener('click', (e) => {
+                    if (!chapterControls.classList.contains('select-mode')) return;
+                    e.stopPropagation();
+                    pill.classList.toggle('ch-selected');
+                    updateExportBar();
+                }, true); // capture phase so it fires before the normal play handler
+            });
+
+            exportBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const indices = getSelectedIndices();
+                if (!indices.length) return;
+
+                const outputName = exportNameInput.value.trim();
+                exportBtn.disabled = true;
+                exportSpinner.classList.add('visible');
+                exportBtn.textContent = 'Building…';
+
+                try {
+                    const resp = await fetch(`/api/library/${item.job_id}/merge/custom`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ chapter_indices: indices, output_name: outputName }),
+                    });
+                    const data = await resp.json();
+                    if (!data.success) throw new Error(data.error || 'Export failed');
+
+                    // Trigger download via a temporary <a> tag
+                    const a = document.createElement('a');
+                    a.href = data.file_url;
+                    a.download = data.relative_path;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+
+                    exitSelectMode();
+                    if (typeof showNotification === 'function') {
+                        showNotification(`Export complete: ${data.relative_path}`, 'success');
+                    }
+                } catch (err) {
+                    console.error('Custom chapter export error:', err);
+                    if (typeof showNotification === 'function') {
+                        showNotification(err.message || 'Export failed', 'error');
+                    } else {
+                        alert(err.message || 'Export failed');
+                    }
+                } finally {
+                    exportSpinner.classList.remove('visible');
+                    exportBtn.disabled = false;
+                    exportBtn.textContent = 'Export Selected';
+                }
+            });
+        }
+        // ── end chapter selection ───────────────────────────────────────────
     });
 
     if (!document.body.dataset.chapterMenuBound) {

@@ -767,6 +767,17 @@ def _normalize_custom_headings(value: Optional[Any]) -> List[str]:
     return normalized
 
 
+def _deserialize_custom_heading(value: Optional[str]) -> Optional[Any]:
+    """Parse a custom_heading value stored in SQLite back to its original Python type."""
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+        return parsed
+    except (json.JSONDecodeError, TypeError):
+        return value
+
+
 def _keyword_to_regex(keyword: str) -> str:
     escaped = re.escape(keyword.strip())
     if not escaped:
@@ -783,11 +794,17 @@ def _clean_heading_text(value: Optional[str]) -> str:
 
 
 def _build_section_heading_pattern(custom_heading: Optional[Any] = None) -> re.Pattern:
-    keywords = list(SECTION_HEADING_KEYWORDS)
-    for custom in _normalize_custom_headings(custom_heading):
-        lowered = custom.lower()
-        if lowered not in keywords:
-            keywords.append(lowered)
+    # If caller passes a list, treat it as the complete keyword list (user has full control).
+    # If caller passes a string (legacy / single extra keyword), merge with defaults.
+    if isinstance(custom_heading, list):
+        normalized = _normalize_custom_headings(custom_heading)
+        keywords = [w.lower() for w in normalized] if normalized else list(SECTION_HEADING_KEYWORDS)
+    else:
+        keywords = list(SECTION_HEADING_KEYWORDS)
+        for custom in _normalize_custom_headings(custom_heading):
+            lowered = custom.lower()
+            if lowered not in keywords:
+                keywords.append(lowered)
     keyword_regex = "|".join(filter(None, (_keyword_to_regex(word) for word in keywords)))
     if not keyword_regex:
         keyword_regex = "chapter"
@@ -1416,7 +1433,7 @@ def _serialize_job_entry(job_id: str, job_entry: Dict[str, Any]) -> Dict[str, An
         "split_by_chapter": int(bool(job_entry.get("chapter_mode"))),
         "generate_full_story": int(bool(job_entry.get("full_story_requested"))),
         "review_mode": int(bool(job_entry.get("review_mode"))),
-        "custom_heading": job_entry.get("custom_heading"),
+        "custom_heading": json.dumps(job_entry.get("custom_heading")) if job_entry.get("custom_heading") is not None else None,
         "merge_options": json.dumps(job_entry.get("merge_options") or {}),
         "voice_assignments": json.dumps(job_entry.get("voice_assignments") or {}),
         "config_snapshot": json.dumps(job_entry.get("config_snapshot") or {}),
@@ -1531,7 +1548,7 @@ def _load_jobs_from_db() -> Dict[str, Dict[str, Any]]:
             "chapter_mode": bool(row["chapter_mode"]),
             "full_story_requested": bool(row["full_story_requested"]),
             "review_mode": bool(row["review_mode"]),
-            "custom_heading": row["custom_heading"],
+            "custom_heading": _deserialize_custom_heading(row["custom_heading"]),
             "merge_options": json.loads(row["merge_options"] or "{}"),
             "voice_assignments": json.loads(row["voice_assignments"] or "{}"),
             "config_snapshot": json.loads(row["config_snapshot"] or "{}"),
@@ -2960,12 +2977,14 @@ def process_audio_job(job_data):
         remaining_skip = processed_chunks
         _chunk_done_ts: List[float] = []  # monotonic timestamp when each chunk completed
 
-        # Restore historical chunk_times from a prior run so pause/resume preserves the full history.
-        # We reconstruct synthetic monotonic timestamps spaced by the saved per-chunk durations.
+        # Restore historical chunk_times and elapsed seconds from prior run(s) so pause/resume
+        # preserves cumulative metrics across all segments of a job.
         _prior_chunk_times: List[float] = []
+        _prior_elapsed_seconds: float = 0.0
         with queue_lock:
             _prior_tm = (jobs.get(job_id) or {}).get("timing_metrics") or {}
             _prior_chunk_times = _prior_tm.get("chunk_times") or []
+            _prior_elapsed_seconds = float(_prior_tm.get("total_seconds") or 0.0)
         if _prior_chunk_times and resume_from_chunk_index > 0:
             _synthetic_base = time.monotonic()
             _offset = 0.0
@@ -3140,6 +3159,7 @@ def process_audio_job(job_data):
 
         # On resume: restore chapter/book entries that were recorded before the pause.
         # These were saved to review_manifest_partial.json when the job was paused.
+        _restored_chapter_indices: set = set()
         if resume_from_chunk_index > 0 and review_mode:
             _partial_manifest_path = job_dir / "review_manifest_partial.json"
             if _partial_manifest_path.exists():
@@ -3154,6 +3174,11 @@ def process_audio_job(job_data):
                         all_full_story_chunks = [
                             str(job_dir / rel) for rel in review_manifest["all_full_story_chunks"]
                         ]
+                    # Track which chapter indices are already in the manifest so the
+                    # chapter loop does not append them a second time (prevents duplication).
+                    _restored_chapter_indices = {
+                        ch["index"] for ch in review_manifest["chapters"] if "index" in ch
+                    }
                     logger.info(
                         "Job %s: Restored partial review_manifest — %d chapters, %d books from before pause",
                         job_id, len(review_manifest["chapters"]), len(review_manifest["books"]),
@@ -3269,6 +3294,15 @@ def process_audio_job(job_data):
                 segments, skipped = _apply_chunk_skip(segments, remaining_skip)
                 remaining_skip = max(0, remaining_skip - skipped)
                 if not segments:
+                    # Entire chapter was skipped — return existing chunk files from disk
+                    # so the caller can still build the review_manifest entry for this chapter.
+                    if output_dir.exists():
+                        existing = sorted(
+                            str(p) for p in output_dir.iterdir()
+                            if p.is_file() and p.suffix.lower() in {".wav", ".mp3", ".ogg", ".flac"}
+                        )
+                        if existing:
+                            return existing
                     return []
             output_dir.mkdir(parents=True, exist_ok=True)
             # Apply word replacements to each chunk before TTS submission
@@ -3508,7 +3542,7 @@ def process_audio_job(job_data):
                             book_chapter_indices.append(chapter_global_idx - 1)
                             book_chunk_files.extend(audio_files)
 
-                            if all_full_story_chunks is not None:
+                            if all_full_story_chunks is not None and (chapter_global_idx - 1) not in _restored_chapter_indices:
                                 all_full_story_chunks.extend(audio_files)
                                 chunk_dirs_to_cleanup.append(chunk_dir)
 
@@ -3605,7 +3639,8 @@ def process_audio_job(job_data):
                             continue
                         job_log.info("Chapter %d generated %d chunk file(s)", idx, len(audio_files))
 
-                        if all_full_story_chunks is not None:
+                        chapter_index_for_restore = idx - 1
+                        if all_full_story_chunks is not None and chapter_index_for_restore not in _restored_chapter_indices:
                             all_full_story_chunks.extend(audio_files)
                             chunk_dirs_to_cleanup.append(chunk_dir)
 
@@ -3618,18 +3653,20 @@ def process_audio_job(job_data):
                         output_path = chapter_dir / output_filename
 
                         if review_mode:
-                            rel_chunk_dir = os.path.relpath(chunk_dir, job_dir)
-                            rel_chapter_dir = os.path.relpath(chapter_dir, job_dir)
-                            rel_chunk_files = [os.path.relpath(path, job_dir) for path in audio_files]
-                            review_manifest["chapters"].append({
-                                "index": idx - 1,  # 0-indexed to match chunk.chapter_index
-                                "title": chapter['title'],
-                                "chunk_dir": rel_chunk_dir,
-                                "chunk_files": rel_chunk_files,
-                                "chapter_dir": rel_chapter_dir,
-                                "output_filename": output_filename,
-                            })
-                            review_manifest["chunk_dirs_to_cleanup"].append(rel_chunk_dir)
+                            chapter_index = idx - 1  # 0-indexed to match chunk.chapter_index
+                            if chapter_index not in _restored_chapter_indices:
+                                rel_chunk_dir = os.path.relpath(chunk_dir, job_dir)
+                                rel_chapter_dir = os.path.relpath(chapter_dir, job_dir)
+                                rel_chunk_files = [os.path.relpath(path, job_dir) for path in audio_files]
+                                review_manifest["chapters"].append({
+                                    "index": chapter_index,
+                                    "title": chapter['title'],
+                                    "chunk_dir": rel_chunk_dir,
+                                    "chunk_files": rel_chunk_files,
+                                    "chapter_dir": rel_chapter_dir,
+                                    "output_filename": output_filename,
+                                })
+                                review_manifest["chunk_dirs_to_cleanup"].append(rel_chunk_dir)
                         else:
                             if job_log:
                                 job_log.info("Merging chapter %d ('%s'): %d chunks -> %s",
@@ -3803,24 +3840,26 @@ def process_audio_job(job_data):
         
         # Compute timing metrics from chunk completion timestamps
         job_end_time = datetime.now()
-        total_job_seconds = (job_end_time - job_start_time).total_seconds()
-        chunk_times: List[float] = []
-        # Derive per-chunk render times from consecutive completion timestamps.
-        # Use diffs between consecutive timestamps (excludes model-load overhead on first chunk).
+        this_run_seconds = (job_end_time - job_start_time).total_seconds()
+        # Accumulate elapsed time across all pause/resume cycles
+        total_job_seconds = this_run_seconds + _prior_elapsed_seconds
+        # Derive per-chunk render times from consecutive completion timestamps this run
+        this_run_chunk_times: List[float] = []
         if len(_chunk_done_ts) >= 2:
-            chunk_times = [
+            this_run_chunk_times = [
                 _chunk_done_ts[i] - _chunk_done_ts[i - 1]
                 for i in range(1, len(_chunk_done_ts))
             ]
         elif len(_chunk_done_ts) == 1 and total_chunks == 1:
-            # Single chunk: use total job time as best estimate
-            chunk_times = [total_job_seconds]
+            this_run_chunk_times = [this_run_seconds]
+        # Merge prior chunk_times (from before pause) with this run's chunk_times
+        chunk_times: List[float] = _prior_chunk_times + this_run_chunk_times
         avg_chunk_seconds = (sum(chunk_times) / len(chunk_times)) if chunk_times else None
         timing_metrics = {
             "started_at": jobs[job_id].get("started_at"),
             "completed_at": job_end_time.isoformat(),
             "total_seconds": round(total_job_seconds, 1),
-            "chunk_count": len(_chunk_done_ts),
+            "chunk_count": resume_from_chunk_index + len(_chunk_done_ts),
             "avg_chunk_seconds": round(avg_chunk_seconds, 1) if avg_chunk_seconds is not None else None,
             "min_chunk_seconds": round(min(chunk_times), 1) if chunk_times else None,
             "max_chunk_seconds": round(max(chunk_times), 1) if chunk_times else None,
@@ -7910,14 +7949,27 @@ def _rebuild_review_manifest_from_chunks(job_id: str, job_dir: Path, force_rebui
         except Exception:
             existing_manifest = None
 
+    metadata = load_job_metadata(job_dir) or {}
+
     title_by_index = {}
     if existing_manifest:
         for entry in existing_manifest.get("chapters") or []:
             if entry.get("index") is not None and entry.get("title"):
                 title_by_index[int(entry["index"])] = entry["title"]
+    # metadata.json is the authoritative title source — overwrite any generic manifest titles.
+    # Non-review jobs store chapter index 1-based in metadata (idx from enumerate start=1),
+    # while the manifest and chapter_map use 0-based indices.  Detect and correct the offset.
+    _meta_chapters = metadata.get("chapters") or []
+    if _meta_chapters:
+        _meta_indices = [int(e["index"]) for e in _meta_chapters if e.get("index") is not None]
+        _meta_offset = 1 if (_meta_indices and min(_meta_indices) == 1 and 0 not in _meta_indices) else 0
+        for entry in _meta_chapters:
+            idx = entry.get("index")
+            title = entry.get("title")
+            if idx is not None and title and title not in ("", "Title"):
+                title_by_index[int(idx) - _meta_offset] = title
 
     output_format = None
-    metadata = load_job_metadata(job_dir) or {}
     if metadata.get("output_format"):
         output_format = metadata.get("output_format")
     if not output_format:
@@ -8260,6 +8312,95 @@ def rebuild_library_full_story(job_id):
     except Exception as exc:
         logger.error("Failed to rebuild full story for %s: %s", job_id, exc, exc_info=True)
         return jsonify({"success": False, "error": "Failed to rebuild full story"}), 500
+
+
+@app.route('/api/library/<job_id>/merge/custom', methods=['POST'])
+def merge_custom_chapters(job_id):
+    """Merge selected chapters into a single audio file and return a download URL."""
+    try:
+        job_dir = OUTPUT_DIR / job_id
+        if not job_dir.exists():
+            return jsonify({"success": False, "error": "Item not found"}), 404
+
+        manifest_path = job_dir / "review_manifest.json"
+        if not manifest_path.exists():
+            return jsonify({"success": False, "error": "Review manifest not found"}), 404
+
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+
+        payload = request.get_json(silent=True) or {}
+        chapter_indices = payload.get("chapter_indices")
+        output_name = (payload.get("output_name") or "").strip()
+
+        if not isinstance(chapter_indices, list) or not chapter_indices:
+            return jsonify({"success": False, "error": "chapter_indices is required"}), 400
+
+        # Normalise to ints and deduplicate, preserving order
+        try:
+            chapter_indices = list(dict.fromkeys(int(i) for i in chapter_indices))
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "chapter_indices must be integers"}), 400
+
+        config_snapshot = load_config()
+        output_format = manifest.get("output_format") or config_snapshot.get("output_format") or "mp3"
+
+        chapters = manifest.get("chapters") or []
+        chapter_by_index = {ch.get("index", i): ch for i, ch in enumerate(chapters)}
+
+        # Collect chunk files in chapter order
+        all_chunk_paths: List[str] = []
+        found_indices: List[int] = []
+        for idx in chapter_indices:
+            ch = chapter_by_index.get(idx)
+            if ch is None:
+                return jsonify({"success": False, "error": f"Chapter index {idx} not found"}), 400
+            rel_paths = ch.get("chunk_files") or []
+            if not rel_paths:
+                return jsonify({"success": False, "error": f"Chapter {idx} has no chunk files"}), 400
+            full_paths = [str(job_dir / rel) for rel in rel_paths]
+            missing = [p for p in full_paths if not Path(p).exists()]
+            if missing:
+                return jsonify({"success": False, "error": f"Missing chunk files for chapter {idx}"}), 409
+            all_chunk_paths.extend(full_paths)
+            found_indices.append(idx)
+
+        if not all_chunk_paths:
+            return jsonify({"success": False, "error": "No audio chunks found for selected chapters"}), 400
+
+        # Build a safe filename
+        if output_name:
+            safe_name = re.sub(r'[^\w\-. ]', '', output_name).strip().replace(' ', '_')
+        else:
+            idx_parts = '_'.join(str(i) for i in found_indices[:6])
+            if len(found_indices) > 6:
+                idx_parts += f'_and_{len(found_indices) - 6}_more'
+            safe_name = f"chapters_{idx_parts}"
+
+        output_filename = f"{safe_name}.{output_format}"
+        output_path = job_dir / output_filename
+        # Overwrite if exists
+        _remove_existing_output(output_path)
+
+        merger = _build_review_merger(config_snapshot)
+        merger.merge_wav_files(
+            input_files=all_chunk_paths,
+            output_path=str(output_path),
+            format=output_format,
+            cleanup_chunks=False,
+        )
+
+        return jsonify({
+            "success": True,
+            "file_url": f"/static/audio/{job_id}/{output_filename}",
+            "relative_path": output_filename,
+            "output_name": output_name or safe_name,
+            "chapter_count": len(found_indices),
+            "format": output_format,
+        })
+    except Exception as exc:
+        logger.error("Failed to merge custom chapters for %s: %s", job_id, exc, exc_info=True)
+        return jsonify({"success": False, "error": "Failed to merge chapters"}), 500
 
 
 @app.route('/api/library/<job_id>/rebuild/selected', methods=['POST'])

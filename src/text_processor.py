@@ -133,21 +133,24 @@ class TextProcessor:
     def _chunk_text_by_words(self, text: str, max_words: int = None) -> List[str]:
         if max_words is None:
             max_words = self.chunk_size
-        sentences = re.split(r'([.!?]+\s+)', text)
+        # Use sentence-boundary-aware splitting so chunks never end mid-sentence.
+        # A chunk may exceed max_words when a single sentence is longer than the limit;
+        # that is intentional — it is always better to overflow than to cut a sentence.
+        sentences = self._split_into_sentences(text)
         chunks = []
         current_chunk = ""
         current_word_count = 0
-        for i in range(0, len(sentences), 2):
-            sentence = sentences[i]
-            punctuation = sentences[i + 1] if i + 1 < len(sentences) else ""
-            full_sentence = sentence + punctuation
-            word_count = len(sentence.split())
+        for sentence in sentences:
+            normalized = sentence.strip()
+            if not normalized:
+                continue
+            word_count = len(normalized.split())
             if current_word_count + word_count > max_words and current_chunk:
                 chunks.append(current_chunk.strip())
-                current_chunk = full_sentence
+                current_chunk = normalized
                 current_word_count = word_count
             else:
-                current_chunk += full_sentence
+                current_chunk = f"{current_chunk} {normalized}".strip() if current_chunk else normalized
                 current_word_count += word_count
         if current_chunk.strip():
             chunks.append(current_chunk.strip())
@@ -205,7 +208,14 @@ class TextProcessor:
         while len(remaining) > hard_limit:
             boundary_idx = self._find_sentence_boundary_before_limit(remaining, hard_limit)
             if boundary_idx is None:
-                boundary_idx = self._find_whitespace_before_limit(remaining, hard_limit)
+                # No sentence boundary before the hard limit — look ahead past it for
+                # the next .!? so we never cut mid-sentence.  Only fall back to
+                # whitespace / hard-char split when there is truly no terminator at all.
+                ahead_idx = self._find_next_sentence_boundary(remaining, hard_limit)
+                if ahead_idx is not None:
+                    boundary_idx = ahead_idx
+                else:
+                    boundary_idx = self._find_whitespace_before_limit(remaining, hard_limit)
             if boundary_idx is None or boundary_idx <= 0:
                 boundary_idx = hard_limit
             chunks.append(remaining[:boundary_idx].strip())
@@ -214,6 +224,16 @@ class TextProcessor:
         if remaining:
             chunks.append(remaining.strip())
         return chunks
+
+    @staticmethod
+    def _find_next_sentence_boundary(text: str, start: int) -> int:
+        """
+        Search for the first sentence-ending punctuation at or after `start`.
+        Returns the index just after the terminator, or None if not found.
+        """
+        pattern = re.compile(r'[.!?]+["\')\]]*')
+        match = pattern.search(text, start)
+        return match.end() if match else None
 
     @staticmethod
     def _find_sentence_boundary_before_limit(text: str, limit: int) -> int:

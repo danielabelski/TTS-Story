@@ -2228,9 +2228,8 @@ function applySectionHeadingEdit(newHeading) {
     // then re-run text analysis so speaker/chapter info stays in sync.
     (async () => {
         try {
-            const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
             const payload = { text: updated };
-            if (customHeading) payload.custom_heading = customHeading;
+            payload.custom_heading = getCustomHeadingList();
             const response = await fetch('/api/sections/preview', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2448,7 +2447,7 @@ async function processWithGemini(buttonEl) {
 
 async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
     const inputEl = document.getElementById('input-text');
-    const customHeading = document.getElementById('custom-heading-input')?.value?.trim() || '';
+    const customHeading = getCustomHeadingList();
     const promptOverride = getSelectedGeminiPromptOverride();
     updateGeminiProgress({ visible: true, label: 'Preparing Gemini request…', count: '', fill: 5 });
 
@@ -2515,7 +2514,7 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
                 body: JSON.stringify({
                     text,
                     prefer_chapters: true,
-                    custom_heading: customHeading || undefined
+                    custom_heading: customHeading.length ? customHeading : undefined
                 })
             });
 
@@ -2685,6 +2684,122 @@ function updateGeminiProgress({ visible, label, count, fill }) {
     }
 }
 
+// ============================================================
+// Heading Keyword Pill Manager
+// ============================================================
+
+const DEFAULT_HEADING_KEYWORDS = ['chapter', 'section', 'letter', 'part', 'prologue', 'epilogue'];
+
+// Internal state: array of { word: string, isDefault: boolean }
+let _headingPills = DEFAULT_HEADING_KEYWORDS.map(w => ({ word: w, isDefault: true }));
+
+function _renderHeadingPills() {
+    const wrap = document.getElementById('heading-pills-wrap');
+    if (!wrap) return;
+    wrap.innerHTML = '';
+    _headingPills.forEach((pill, idx) => {
+        const el = document.createElement('span');
+        el.className = 'heading-pill ' + (pill.isDefault ? 'default-pill' : 'custom-pill');
+        el.innerHTML = `${escapeHtml(pill.word)}<button class="heading-pill-remove" data-idx="${idx}" title="Remove '${escapeHtml(pill.word)}'" aria-label="Remove ${escapeHtml(pill.word)}">✕</button>`;
+        wrap.appendChild(el);
+    });
+}
+
+function _addHeadingPill(word, isDefault = false) {
+    const normalized = word.trim().toLowerCase();
+    if (!normalized) return false;
+    if (_headingPills.some(p => p.word.toLowerCase() === normalized)) return false;
+    _headingPills.push({ word: normalized, isDefault });
+    _renderHeadingPills();
+    _onHeadingPillsChanged();
+    return true;
+}
+
+function _removeHeadingPill(idx) {
+    if (idx < 0 || idx >= _headingPills.length) return;
+    _headingPills.splice(idx, 1);
+    _renderHeadingPills();
+    _onHeadingPillsChanged();
+}
+
+function _onHeadingPillsChanged() {
+    // Re-trigger section detection analysis when keyword list changes
+    if (typeof analyzeText === 'function') {
+        analyzeText({ auto: true });
+    }
+}
+
+function getCustomHeadingList() {
+    return _headingPills.map(p => p.word);
+}
+
+function setHeadingPillsFromValue(value) {
+    // Accepts a comma-separated string or array (for project load)
+    let words = [];
+    if (Array.isArray(value)) {
+        words = value.map(w => String(w).trim().toLowerCase()).filter(Boolean);
+    } else if (typeof value === 'string' && value.trim()) {
+        words = value.split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
+    }
+    if (!words.length) {
+        _headingPills = DEFAULT_HEADING_KEYWORDS.map(w => ({ word: w, isDefault: true }));
+    } else {
+        _headingPills = words.map(w => ({
+            word: w,
+            isDefault: DEFAULT_HEADING_KEYWORDS.includes(w),
+        }));
+    }
+    _renderHeadingPills();
+}
+
+function initHeadingPillManager() {
+    _renderHeadingPills();
+
+    const wrap = document.getElementById('heading-pills-wrap');
+    if (wrap) {
+        wrap.addEventListener('click', e => {
+            const btn = e.target.closest('.heading-pill-remove');
+            if (!btn) return;
+            const idx = parseInt(btn.dataset.idx, 10);
+            _removeHeadingPill(idx);
+        });
+    }
+
+    const addInput = document.getElementById('heading-add-input');
+    const addBtn = document.getElementById('heading-add-btn');
+    if (addBtn && addInput) {
+        addBtn.addEventListener('click', () => {
+            const word = addInput.value.trim();
+            if (word) {
+                if (_addHeadingPill(word, false)) {
+                    addInput.value = '';
+                } else {
+                    addInput.select();
+                }
+            }
+        });
+        addInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addBtn.click();
+            }
+        });
+    }
+
+    const resetBtn = document.getElementById('heading-reset-btn');
+    if (resetBtn) {
+        resetBtn.addEventListener('click', () => {
+            _headingPills = DEFAULT_HEADING_KEYWORDS.map(w => ({ word: w, isDefault: true }));
+            _renderHeadingPills();
+            _onHeadingPillsChanged();
+        });
+    }
+}
+
+// ============================================================
+// End Heading Keyword Pill Manager
+// ============================================================
+
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
     initTabs();
@@ -2696,6 +2811,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (typeof loadLibraryItems === 'function') {
         loadLibraryItems();
     }
+    initHeadingPillManager();
     initAutoAnalyze();
     const chapterCheckbox = document.getElementById('split-chapters-checkbox');
     syncFullStoryOption(chapterCheckbox, true);
@@ -2896,11 +3012,8 @@ function setupEventListeners() {
             }
             sectionReviewInFlight = true;
             try {
-                const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
                 const payload = { text };
-                if (customHeading) {
-                    payload.custom_heading = customHeading;
-                }
+                payload.custom_heading = getCustomHeadingList();
                 const response = await fetch('/api/sections/preview', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -3029,7 +3142,7 @@ function setupEventListeners() {
         projectManageBtn.addEventListener('click', () => {
             openProjectModal();
             if (projectNameInput && !projectNameInput.value) {
-                const headingValue = document.getElementById('custom-heading-input')?.value?.trim() || '';
+                const headingValue = getCustomHeadingList().join(', ');
                 projectNameInput.value = headingValue || projectNameInput.value;
             }
         });
@@ -3508,10 +3621,7 @@ async function analyzeText(options = {}) {
     analyzeRerunRequested = false;
     try {
         const payload = { text };
-        const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
-        if (customHeading) {
-            payload.custom_heading = customHeading;
-        }
+        payload.custom_heading = getCustomHeadingList();
         const selectedEngine = getSelectedJobEngine() || runtimeSettings?.tts_engine;
         if (selectedEngine) {
             payload.tts_engine = selectedEngine;
@@ -4066,7 +4176,7 @@ function getProjectState() {
         qwen_default_instruct: document.getElementById('qwen3-default-instruct')?.value || '',
         split_chapters: document.getElementById('split-chapters-checkbox')?.checked || false,
         full_story: document.getElementById('full-story-checkbox')?.checked || false,
-        custom_heading: document.getElementById('custom-heading-input')?.value || '',
+        custom_heading: getCustomHeadingList(),
         book_title: latestGeminiBookTitle,
         output_format: document.getElementById('job-output-format')?.value || 'mp3',
         output_bitrate: document.getElementById('job-output-bitrate')?.value || '128',
@@ -4161,8 +4271,7 @@ async function applyProjectState(project) {
     if (splitChapters) splitChapters.checked = project.split_chapters != null ? !!project.split_chapters : splitChapters.defaultChecked;
     const fullStory = document.getElementById('full-story-checkbox');
     if (fullStory) fullStory.checked = project.full_story != null ? !!project.full_story : fullStory.defaultChecked;
-    const heading = document.getElementById('custom-heading-input');
-    if (heading) heading.value = project.custom_heading || '';
+    setHeadingPillsFromValue(project.custom_heading || []);
     const projectNameInput = document.getElementById('project-name-input');
     if (projectNameInput && project.name) {
         projectNameInput.value = project.name;
@@ -4612,7 +4721,7 @@ async function generateAudio() {
     console.log('Voice assignments for generation:', voiceAssignments);
     
     const splitByChapter = document.getElementById('split-chapters-checkbox')?.checked || false;
-    const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
+    const customHeading = getCustomHeadingList();
     const generateFullStory = splitByChapter && (document.getElementById('full-story-checkbox')?.checked || false);
     const outputFormat = document.getElementById('job-output-format')?.value || undefined;
     const outputBitrate = document.getElementById('job-output-bitrate')?.value || undefined;
@@ -4629,9 +4738,7 @@ async function generateAudio() {
     if (wordReplacements.length > 0) {
         payload.word_replacements = wordReplacements;
     }
-    if (customHeading) {
-        payload.custom_heading = customHeading;
-    }
+    payload.custom_heading = customHeading;
     if (selectedEngine) {
         payload.tts_engine = selectedEngine;
         const overrides = collectEngineOverrides(selectedEngine);
