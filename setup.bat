@@ -245,9 +245,50 @@ if errorlevel 1 (
     echo WARNING: Failed to install voxcpm - VoxCPM engine will not be available
 )
 
+REM Setup OmniVoice isolated environment
+echo.
+echo [9/12] Setting up OmniVoice isolated environment...
+echo OmniVoice requires torch==2.8 which conflicts with main deps, so it runs in its own venv.
+set "OMNIVOICE_DIR=%~dp0engines\omnivoice"
+if "%OMNIVOICE_DIR:~-1%"=="\" set "OMNIVOICE_DIR=%OMNIVOICE_DIR:~0,-1%"
+if exist "%OMNIVOICE_DIR%\.omnivoice_ready" (
+    echo OmniVoice isolated environment already set up. Skipping.
+    goto :AfterOmniVoice
+)
+if not exist "%OMNIVOICE_DIR%" mkdir "%OMNIVOICE_DIR%"
+echo Creating OmniVoice isolated virtual environment...
+python -m venv "%OMNIVOICE_DIR%\.venv"
+if errorlevel 1 (
+    echo WARNING: Failed to create OmniVoice venv. OmniVoice will not be available.
+    goto :AfterOmniVoice
+)
+echo Installing OmniVoice and its dependencies (torch 2.8 + transformers 5.3)...
+echo This may take several minutes...
+echo Installing omnivoice package...
+"%OMNIVOICE_DIR%\.venv\Scripts\pip.exe" install omnivoice
+if errorlevel 1 (
+    echo WARNING: Failed to install omnivoice in isolated venv. OmniVoice will not be available.
+    goto :AfterOmniVoice
+)
+if "%HAS_NVIDIA%"=="1" (
+    echo Upgrading torch to CUDA 12.8 build for GPU acceleration...
+    "%OMNIVOICE_DIR%\.venv\Scripts\pip.exe" install "torch==2.8.0+cu128" --index-url https://download.pytorch.org/whl/cu128
+    if errorlevel 1 (
+        echo WARNING: CUDA torch install failed, OmniVoice will run on CPU.
+    )
+)
+echo Installing soundfile and huggingface-hub in OmniVoice venv...
+"%OMNIVOICE_DIR%\.venv\Scripts\pip.exe" install soundfile huggingface-hub
+if errorlevel 1 (
+    echo WARNING: Failed to install OmniVoice helper packages.
+)
+type nul > "%OMNIVOICE_DIR%\.omnivoice_ready"
+echo OmniVoice isolated environment ready.
+:AfterOmniVoice
+
 REM Install KittenTTS runtime (optional, CPU-only)
 echo.
-echo [9/12] Installing KittenTTS runtime (optional, CPU-only)...
+echo [10/12] Installing KittenTTS runtime (optional, CPU-only)...
 pip install https://github.com/KittenML/KittenTTS/releases/download/0.8/kittentts-0.8.0-py3-none-any.whl
 if errorlevel 1 (
     echo WARNING: Failed to install kittentts - KittenTTS engine will not be available

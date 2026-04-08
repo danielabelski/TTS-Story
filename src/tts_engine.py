@@ -10,6 +10,8 @@ from .engines.chatterbox_turbo_local_engine import ChatterboxTurboLocalEngine
 from .engines.voxcpm_local_engine import VoxCPMLocalEngine
 from .engines.qwen3_custom_voice_engine import Qwen3CustomVoiceEngine
 from .engines.qwen3_voice_clone_engine import Qwen3VoiceCloneEngine
+from .engines.omnivoice_clone_engine import OmniVoiceCloneEngine
+from .engines.omnivoice_design_engine import OmniVoiceDesignEngine
 from .engines.pocket_tts_engine import PocketTTSEngine
 from .engines.kitten_tts_engine import KittenTTSEngine
 from .engines.index_tts_engine import IndexTTSEngine, INDEX_TTS_AVAILABLE, INDEX_TTS_UNAVAILABLE_REASON
@@ -31,6 +33,8 @@ EngineRegistry: Dict[str, Type[TtsEngineBase]] = {
     "pocket_tts_preset": PocketTTSEngine,
     "qwen3_custom": Qwen3CustomVoiceEngine,
     "qwen3_clone": Qwen3VoiceCloneEngine,
+    "omnivoice_clone": OmniVoiceCloneEngine,
+    "omnivoice_design": OmniVoiceDesignEngine,
     "kitten_tts": KittenTTSEngine,
     "index_tts": IndexTTSEngine,
 }

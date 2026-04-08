@@ -67,6 +67,8 @@ from src.engines.chatterbox_turbo_local_engine import (
 from src.engines.voxcpm_local_engine import VOXCPM_AVAILABLE
 from src.engines.qwen3_custom_voice_engine import QWEN3_AVAILABLE
 from src.engines.qwen3_voice_clone_engine import QWEN3_AVAILABLE as QWEN3_CLONE_AVAILABLE
+from src.engines.omnivoice_clone_engine import OMNIVOICE_AVAILABLE
+from src.engines.omnivoice_design_engine import OMNIVOICE_AVAILABLE as OMNIVOICE_DESIGN_AVAILABLE
 from src.engines.pocket_tts_engine import POCKET_TTS_AVAILABLE
 from src.engines.kitten_tts_engine import (
     KITTEN_TTS_AVAILABLE,
@@ -493,6 +495,10 @@ def _normalize_engine_options(engine_name: str, options: Dict[str, Any]) -> Dict
         return _normalize_qwen3_custom_options(options)
     if engine_name == "qwen3_clone":
         return _normalize_qwen3_clone_options(options)
+    if engine_name == "omnivoice_clone":
+        return _normalize_omnivoice_clone_options(options)
+    if engine_name == "omnivoice_design":
+        return _normalize_omnivoice_design_options(options)
     if engine_name in {"pocket_tts", "pocket_tts_preset"}:
         return _normalize_pocket_tts_options(options)
     if engine_name == "kitten_tts":
@@ -627,6 +633,50 @@ def _normalize_index_tts_options(options: Dict[str, Any]) -> Dict[str, Any]:
             result[key] = (value or "").strip()
         elif key == "index_tts_chunk_size":
             result[key] = _coerce_int(value, minimum=100, maximum=1000, fallback=400)
+    return result
+
+
+OMNIVOICE_CLONE_SETTING_KEYS = {
+    "omnivoice_clone_model_id",
+    "omnivoice_clone_device",
+    "omnivoice_clone_dtype",
+    "omnivoice_clone_num_step",
+    "omnivoice_clone_default_prompt",
+    "omnivoice_clone_default_prompt_text",
+    "omnivoice_chunk_size",
+    "omnivoice_post_process",
+}
+
+OMNIVOICE_DESIGN_SETTING_KEYS = {
+    "omnivoice_design_model_id",
+    "omnivoice_design_device",
+    "omnivoice_design_dtype",
+    "omnivoice_design_num_step",
+    "omnivoice_design_default_instruct",
+    "omnivoice_chunk_size",
+    "omnivoice_post_process",
+}
+
+
+def _normalize_omnivoice_clone_options(options: Dict[str, Any]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for raw_key, value in options.items():
+        if raw_key is None:
+            continue
+        key = str(raw_key).strip().lower()
+        if key in OMNIVOICE_CLONE_SETTING_KEYS:
+            result[key] = (value or "").strip() if isinstance(value, str) else value
+    return result
+
+
+def _normalize_omnivoice_design_options(options: Dict[str, Any]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for raw_key, value in options.items():
+        if raw_key is None:
+            continue
+        key = str(raw_key).strip().lower()
+        if key in OMNIVOICE_DESIGN_SETTING_KEYS:
+            result[key] = (value or "").strip() if isinstance(value, str) else value
     return result
 
 
@@ -767,17 +817,6 @@ def _normalize_custom_headings(value: Optional[Any]) -> List[str]:
     return normalized
 
 
-def _deserialize_custom_heading(value: Optional[str]) -> Optional[Any]:
-    """Parse a custom_heading value stored in SQLite back to its original Python type."""
-    if not value:
-        return None
-    try:
-        parsed = json.loads(value)
-        return parsed
-    except (json.JSONDecodeError, TypeError):
-        return value
-
-
 def _keyword_to_regex(keyword: str) -> str:
     escaped = re.escape(keyword.strip())
     if not escaped:
@@ -794,17 +833,11 @@ def _clean_heading_text(value: Optional[str]) -> str:
 
 
 def _build_section_heading_pattern(custom_heading: Optional[Any] = None) -> re.Pattern:
-    # If caller passes a list, treat it as the complete keyword list (user has full control).
-    # If caller passes a string (legacy / single extra keyword), merge with defaults.
-    if isinstance(custom_heading, list):
-        normalized = _normalize_custom_headings(custom_heading)
-        keywords = [w.lower() for w in normalized] if normalized else list(SECTION_HEADING_KEYWORDS)
-    else:
-        keywords = list(SECTION_HEADING_KEYWORDS)
-        for custom in _normalize_custom_headings(custom_heading):
-            lowered = custom.lower()
-            if lowered not in keywords:
-                keywords.append(lowered)
+    keywords = list(SECTION_HEADING_KEYWORDS)
+    for custom in _normalize_custom_headings(custom_heading):
+        lowered = custom.lower()
+        if lowered not in keywords:
+            keywords.append(lowered)
     keyword_regex = "|".join(filter(None, (_keyword_to_regex(word) for word in keywords)))
     if not keyword_regex:
         keyword_regex = "chapter"
@@ -942,6 +975,11 @@ def _prepare_voice_assignments(text: str, voice_assignments: Any) -> Dict[str, D
     speakers = _extract_speakers_for_text(text)
     if "default" in speakers and "default" not in normalized:
         normalized["default"] = next(iter(normalized.values()))
+    # When there are multiple speaker assignments, text outside speaker tags is
+    # rendered as "default". Always ensure a "default" fallback so prompt-based
+    # engines (OmniVoice Clone, Chatterbox Turbo, etc.) don't reject the job.
+    if "default" not in normalized and len(normalized) > 1:
+        normalized["default"] = next(iter(normalized.values()))
     return normalized
 
 
@@ -963,10 +1001,14 @@ def _check_speaker_tag_balance(text: str) -> List[str]:
     close_re = re.compile(r'\[/([a-zA-Z0-9_\-]+)\]')
     reserved = {"default"}
 
+    # Only tags that appear in a closing [/tag] form are speaker tags.
+    # Self-closing tags like [laugh] or [grunt] are paralinguistic and must be ignored.
+    closed_tags = {m.group(1).lower() for m in close_re.finditer(text)}
+
     events: List[tuple] = []
     for m in open_re.finditer(text):
         tag = m.group(1).lower()
-        if tag not in reserved:
+        if tag not in reserved and tag in closed_tags:
             events.append((m.start(), "open", tag))
     for m in close_re.finditer(text):
         tag = m.group(1).lower()
@@ -1042,6 +1084,11 @@ def _validate_voice_assignments_for_engine(
 
         if engine_name == "qwen3_clone":
             default_prompt = (config.get("qwen3_clone_default_prompt") or "").strip()
+            if not prompt and not default_prompt:
+                missing_prompts.append(speaker)
+
+        if engine_name == "omnivoice_clone":
+            default_prompt = (config.get("omnivoice_clone_default_prompt") or "").strip()
             if not prompt and not default_prompt:
                 missing_prompts.append(speaker)
 
@@ -1433,7 +1480,7 @@ def _serialize_job_entry(job_id: str, job_entry: Dict[str, Any]) -> Dict[str, An
         "split_by_chapter": int(bool(job_entry.get("chapter_mode"))),
         "generate_full_story": int(bool(job_entry.get("full_story_requested"))),
         "review_mode": int(bool(job_entry.get("review_mode"))),
-        "custom_heading": json.dumps(job_entry.get("custom_heading")) if job_entry.get("custom_heading") is not None else None,
+        "custom_heading": job_entry.get("custom_heading"),
         "merge_options": json.dumps(job_entry.get("merge_options") or {}),
         "voice_assignments": json.dumps(job_entry.get("voice_assignments") or {}),
         "config_snapshot": json.dumps(job_entry.get("config_snapshot") or {}),
@@ -1548,7 +1595,7 @@ def _load_jobs_from_db() -> Dict[str, Dict[str, Any]]:
             "chapter_mode": bool(row["chapter_mode"]),
             "full_story_requested": bool(row["full_story_requested"]),
             "review_mode": bool(row["review_mode"]),
-            "custom_heading": _deserialize_custom_heading(row["custom_heading"]),
+            "custom_heading": row["custom_heading"],
             "merge_options": json.loads(row["merge_options"] or "{}"),
             "voice_assignments": json.loads(row["voice_assignments"] or "{}"),
             "config_snapshot": json.loads(row["config_snapshot"] or "{}"),
@@ -1877,6 +1924,27 @@ def _engine_signature(engine_name: str, config: Dict) -> str:
             (config.get("qwen3_clone_default_prompt_text") or "").strip(),
         )
         return f"{engine_name}::{'|'.join(parts)}"
+    if engine_name == "omnivoice_clone":
+        parts = (
+            (config.get("omnivoice_clone_model_id") or "").strip(),
+            (config.get("omnivoice_clone_device") or "").strip(),
+            (config.get("omnivoice_clone_dtype") or "").strip(),
+            str(config.get("omnivoice_clone_num_step") or 32),
+            (config.get("omnivoice_clone_default_prompt") or "").strip(),
+            (config.get("omnivoice_clone_default_prompt_text") or "").strip(),
+            str(config.get("omnivoice_post_process", True)),
+        )
+        return f"{engine_name}::{'|'.join(parts)}"
+    if engine_name == "omnivoice_design":
+        parts = (
+            (config.get("omnivoice_design_model_id") or "").strip(),
+            (config.get("omnivoice_design_device") or "").strip(),
+            (config.get("omnivoice_design_dtype") or "").strip(),
+            str(config.get("omnivoice_design_num_step") or 32),
+            (config.get("omnivoice_design_default_instruct") or "").strip(),
+            str(config.get("omnivoice_post_process", True)),
+        )
+        return f"{engine_name}::{'|'.join(parts)}"
     if engine_name in {"pocket_tts", "pocket_tts_preset"}:
         parts = (
             (config.get("pocket_tts_model_variant") or "").strip(),
@@ -1996,6 +2064,33 @@ def _create_engine(engine_name: str, config: Dict) -> TtsEngineBase:
             default_language=(config.get("qwen3_clone_default_language") or "Auto").strip() or "Auto",
             default_prompt=(config.get("qwen3_clone_default_prompt") or "").strip() or None,
             default_prompt_text=(config.get("qwen3_clone_default_prompt_text") or "").strip() or None,
+        )
+
+    if engine_name == "omnivoice_clone":
+        if not OMNIVOICE_AVAILABLE:
+            raise ImportError("omnivoice is not installed. Run: pip install omnivoice")
+        return get_engine(
+            "omnivoice_clone",
+            device=(config.get("omnivoice_clone_device") or "auto").strip() or "auto",
+            model_id=(config.get("omnivoice_clone_model_id") or "k2-fsa/OmniVoice").strip(),
+            dtype=(config.get("omnivoice_clone_dtype") or "float16").strip(),
+            num_step=int(config.get("omnivoice_clone_num_step") or 32),
+            default_prompt=(config.get("omnivoice_clone_default_prompt") or "").strip() or None,
+            default_prompt_text=(config.get("omnivoice_clone_default_prompt_text") or "").strip() or None,
+            post_process=bool(config.get("omnivoice_post_process", True)),
+        )
+
+    if engine_name == "omnivoice_design":
+        if not OMNIVOICE_DESIGN_AVAILABLE:
+            raise ImportError("omnivoice is not installed. Run: pip install omnivoice")
+        return get_engine(
+            "omnivoice_design",
+            device=(config.get("omnivoice_design_device") or "auto").strip() or "auto",
+            model_id=(config.get("omnivoice_design_model_id") or "k2-fsa/OmniVoice").strip(),
+            dtype=(config.get("omnivoice_design_dtype") or "float16").strip(),
+            num_step=int(config.get("omnivoice_design_num_step") or 32),
+            default_instruct=(config.get("omnivoice_design_default_instruct") or "").strip() or None,
+            post_process=bool(config.get("omnivoice_post_process", True)),
         )
 
     if engine_name in {"pocket_tts", "pocket_tts_preset"}:
@@ -2736,6 +2831,15 @@ def _create_text_processor_for_engine(engine_name: str, chunk_size: int, config:
             char_soft_limit=qwen_chunk_size,
             char_hard_limit=qwen_chunk_size + 50,
         )
+    if _normalize_engine_name(engine_name) in {"omnivoice_clone", "omnivoice_design"}:
+        omnivoice_chunk_size = 500
+        if config:
+            omnivoice_chunk_size = config.get("omnivoice_chunk_size", omnivoice_chunk_size)
+        return TextProcessor(
+            chunk_strategy="characters",
+            char_soft_limit=omnivoice_chunk_size,
+            char_hard_limit=omnivoice_chunk_size + 50,
+        )
     if _normalize_engine_name(engine_name) == "voxcpm_local":
         voxcpm_chunk_size = 550
         if config:
@@ -2876,6 +2980,10 @@ def process_job_worker():
                     process_qwen3_voice_design_preview_task(job_data)
                 elif job_type == 'qwen3_voice_design_save':
                     process_qwen3_voice_design_save_task(job_data)
+                elif job_type == 'omnivoice_design_preview':
+                    process_omnivoice_design_preview_task(job_data)
+                elif job_type == 'omnivoice_design_save':
+                    process_omnivoice_design_save_task(job_data)
                 else:
                     raise ValueError(f"Unsupported job type: {job_type}")
             except Exception as e:
@@ -3140,7 +3248,8 @@ def process_audio_job(job_data):
             crossfade_ms=int(max(0.0, crossfade_seconds) * 1000),
             intro_silence_ms=int(max(0, config.get('intro_silence_ms', 0) or 0)),
             inter_chunk_silence_ms=int(max(0, config.get('inter_chunk_silence_ms', 0) or 0)),
-            bitrate_kbps=int(config.get('output_bitrate_kbps') or 0)
+            bitrate_kbps=int(config.get('output_bitrate_kbps') or 0),
+            acx_compliance=bool(config.get('acx_compliance', False)),
         )
         chapter_outputs = []
         full_story_entry = None
@@ -3542,7 +3651,7 @@ def process_audio_job(job_data):
                             book_chapter_indices.append(chapter_global_idx - 1)
                             book_chunk_files.extend(audio_files)
 
-                            if all_full_story_chunks is not None and (chapter_global_idx - 1) not in _restored_chapter_indices:
+                            if all_full_story_chunks is not None:
                                 all_full_story_chunks.extend(audio_files)
                                 chunk_dirs_to_cleanup.append(chunk_dir)
 
@@ -3639,8 +3748,7 @@ def process_audio_job(job_data):
                             continue
                         job_log.info("Chapter %d generated %d chunk file(s)", idx, len(audio_files))
 
-                        chapter_index_for_restore = idx - 1
-                        if all_full_story_chunks is not None and chapter_index_for_restore not in _restored_chapter_indices:
+                        if all_full_story_chunks is not None:
                             all_full_story_chunks.extend(audio_files)
                             chunk_dirs_to_cleanup.append(chunk_dir)
 
@@ -4043,6 +4151,99 @@ def process_qwen3_voice_design_save_task(job_data: Dict[str, Any]) -> None:
                 job_entry["status"] = "failed"
                 job_entry["error"] = str(exc)
         raise
+
+
+def _generate_omnivoice_design_preview(payload: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate an OmniVoice voice-design preview clip and return base64 audio."""
+    if not OMNIVOICE_DESIGN_AVAILABLE:
+        raise ImportError("omnivoice is not installed. Run: pip install omnivoice")
+    instruct = (payload.get("instruct") or "").strip()
+    text = (payload.get("text") or "").strip()
+    if not instruct:
+        raise ValueError("Voice instruction string is required.")
+    if not text:
+        raise ValueError("Sample text is required.")
+    engine = get_tts_engine("omnivoice_design", config)
+    audio = engine.generate_audio(text, voice=instruct)
+    if audio is None or len(audio) == 0:
+        raise RuntimeError("OmniVoice design generated no audio.")
+    import numpy as np, io, wave
+    sample_rate = getattr(engine, "sample_rate", 24000)
+    if audio.dtype != np.int16:
+        audio = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(audio.tobytes())
+    audio_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return {"audio_base64": audio_b64}
+
+
+def process_omnivoice_design_preview_task(job_data: Dict[str, Any]) -> None:
+    job_id = job_data["job_id"]
+    payload = job_data.get("payload") or {}
+    config = job_data.get("config") or load_config()
+    try:
+        result = _generate_omnivoice_design_preview(payload, config)
+        with queue_lock:
+            job_entry = jobs.get(job_id)
+            if job_entry:
+                job_entry["status"] = "completed"
+                job_entry["progress"] = 100
+                job_entry["completed_at"] = datetime.now().isoformat()
+                job_entry["result"] = result
+    except Exception as exc:
+        with queue_lock:
+            job_entry = jobs.get(job_id)
+            if job_entry:
+                job_entry["status"] = "failed"
+                job_entry["error"] = str(exc)
+        raise
+
+
+def process_omnivoice_design_save_task(job_data: Dict[str, Any]) -> None:
+    job_id = job_data["job_id"]
+    payload = job_data.get("payload") or {}
+    try:
+        result = _save_voice_design_payload(payload)
+        with queue_lock:
+            job_entry = jobs.get(job_id)
+            if job_entry:
+                job_entry["status"] = "completed"
+                job_entry["progress"] = 100
+                job_entry["completed_at"] = datetime.now().isoformat()
+                job_entry["result"] = result
+    except Exception as exc:
+        with queue_lock:
+            job_entry = jobs.get(job_id)
+            if job_entry:
+                job_entry["status"] = "failed"
+                job_entry["error"] = str(exc)
+        raise
+
+
+def _enqueue_omnivoice_design_task(task_type: str, payload: Dict[str, Any]) -> str:
+    start_worker_thread()
+    job_id = str(uuid.uuid4())
+    job_entry = {
+        "job_id": job_id,
+        "status": "queued",
+        "progress": 0,
+        "created_at": datetime.now().isoformat(),
+        "completed_at": None,
+        "error": None,
+        "result": None,
+        "job_type": task_type,
+        "payload": payload,
+    }
+    if task_type == "omnivoice_design_preview":
+        job_entry["config"] = load_config()
+    with queue_lock:
+        jobs[job_id] = job_entry
+    job_queue.put(job_entry)
+    return job_id
 
 
 def start_worker_thread():
@@ -5542,6 +5743,7 @@ def _merge_review_job(job_id: str, job_entry: Dict[str, Any], manifest: Dict[str
         intro_silence_ms=int(max(0, merge_options.get("intro_silence_ms") or 0)),
         inter_chunk_silence_ms=int(max(0, merge_options.get("inter_chunk_silence_ms") or 0)),
         bitrate_kbps=int(merge_options.get("output_bitrate_kbps") or 0),
+        acx_compliance=bool(merge_options.get("acx_compliance", False)),
     )
     job_dir = _job_dir_from_entry(job_id, job_entry)
 
@@ -5847,7 +6049,7 @@ def preview_audio():
     # be forwarded as audio_prompt_path, not as the voice name parameter.
     _PROMPT_ENGINES = {
         "chatterbox_turbo_local", "chatterbox_turbo_replicate",
-        "voxcpm_local", "pocket_tts", "qwen3_clone",
+        "voxcpm_local", "pocket_tts", "qwen3_clone", "omnivoice_clone",
     }
     audio_prompt_path = data.get('audio_prompt_path') or None
     if engine_name in _PROMPT_ENGINES and voice and not audio_prompt_path:
@@ -6960,6 +7162,9 @@ def generate_audio():
             config['output_format'] = requested_format
         if requested_bitrate:
             config['output_bitrate_kbps'] = requested_bitrate
+        requested_acx = data.get('acx_compliance')
+        if requested_acx is not None:
+            config['acx_compliance'] = bool(requested_acx)
 
         voice_assignments = _prepare_voice_assignments(text, voice_assignments)
 
@@ -6991,6 +7196,7 @@ def generate_audio():
             "intro_silence_ms": int(config.get('intro_silence_ms', 0) or 0),
             "inter_chunk_silence_ms": int(config.get('inter_chunk_silence_ms', 0) or 0),
             "output_bitrate_kbps": int(config.get('output_bitrate_kbps') or 0),
+            "acx_compliance": bool(config.get('acx_compliance', False)),
         }
 
         job_dir_path = OUTPUT_DIR / job_id
@@ -7829,6 +8035,7 @@ def _build_review_merger(config_snapshot: Optional[Dict[str, Any]] = None) -> Au
         intro_silence_ms=int(max(0, config_snapshot.get("intro_silence_ms") or 0)),
         inter_chunk_silence_ms=int(max(0, config_snapshot.get("inter_chunk_silence_ms") or 0)),
         bitrate_kbps=int(config_snapshot.get("output_bitrate_kbps") or 0),
+        acx_compliance=bool(config_snapshot.get("acx_compliance", False)),
     )
 
 
@@ -7949,27 +8156,14 @@ def _rebuild_review_manifest_from_chunks(job_id: str, job_dir: Path, force_rebui
         except Exception:
             existing_manifest = None
 
-    metadata = load_job_metadata(job_dir) or {}
-
     title_by_index = {}
     if existing_manifest:
         for entry in existing_manifest.get("chapters") or []:
             if entry.get("index") is not None and entry.get("title"):
                 title_by_index[int(entry["index"])] = entry["title"]
-    # metadata.json is the authoritative title source — overwrite any generic manifest titles.
-    # Non-review jobs store chapter index 1-based in metadata (idx from enumerate start=1),
-    # while the manifest and chapter_map use 0-based indices.  Detect and correct the offset.
-    _meta_chapters = metadata.get("chapters") or []
-    if _meta_chapters:
-        _meta_indices = [int(e["index"]) for e in _meta_chapters if e.get("index") is not None]
-        _meta_offset = 1 if (_meta_indices and min(_meta_indices) == 1 and 0 not in _meta_indices) else 0
-        for entry in _meta_chapters:
-            idx = entry.get("index")
-            title = entry.get("title")
-            if idx is not None and title and title not in ("", "Title"):
-                title_by_index[int(idx) - _meta_offset] = title
 
     output_format = None
+    metadata = load_job_metadata(job_dir) or {}
     if metadata.get("output_format"):
         output_format = metadata.get("output_format")
     if not output_format:
@@ -8312,95 +8506,6 @@ def rebuild_library_full_story(job_id):
     except Exception as exc:
         logger.error("Failed to rebuild full story for %s: %s", job_id, exc, exc_info=True)
         return jsonify({"success": False, "error": "Failed to rebuild full story"}), 500
-
-
-@app.route('/api/library/<job_id>/merge/custom', methods=['POST'])
-def merge_custom_chapters(job_id):
-    """Merge selected chapters into a single audio file and return a download URL."""
-    try:
-        job_dir = OUTPUT_DIR / job_id
-        if not job_dir.exists():
-            return jsonify({"success": False, "error": "Item not found"}), 404
-
-        manifest_path = job_dir / "review_manifest.json"
-        if not manifest_path.exists():
-            return jsonify({"success": False, "error": "Review manifest not found"}), 404
-
-        with manifest_path.open("r", encoding="utf-8") as handle:
-            manifest = json.load(handle)
-
-        payload = request.get_json(silent=True) or {}
-        chapter_indices = payload.get("chapter_indices")
-        output_name = (payload.get("output_name") or "").strip()
-
-        if not isinstance(chapter_indices, list) or not chapter_indices:
-            return jsonify({"success": False, "error": "chapter_indices is required"}), 400
-
-        # Normalise to ints and deduplicate, preserving order
-        try:
-            chapter_indices = list(dict.fromkeys(int(i) for i in chapter_indices))
-        except (TypeError, ValueError):
-            return jsonify({"success": False, "error": "chapter_indices must be integers"}), 400
-
-        config_snapshot = load_config()
-        output_format = manifest.get("output_format") or config_snapshot.get("output_format") or "mp3"
-
-        chapters = manifest.get("chapters") or []
-        chapter_by_index = {ch.get("index", i): ch for i, ch in enumerate(chapters)}
-
-        # Collect chunk files in chapter order
-        all_chunk_paths: List[str] = []
-        found_indices: List[int] = []
-        for idx in chapter_indices:
-            ch = chapter_by_index.get(idx)
-            if ch is None:
-                return jsonify({"success": False, "error": f"Chapter index {idx} not found"}), 400
-            rel_paths = ch.get("chunk_files") or []
-            if not rel_paths:
-                return jsonify({"success": False, "error": f"Chapter {idx} has no chunk files"}), 400
-            full_paths = [str(job_dir / rel) for rel in rel_paths]
-            missing = [p for p in full_paths if not Path(p).exists()]
-            if missing:
-                return jsonify({"success": False, "error": f"Missing chunk files for chapter {idx}"}), 409
-            all_chunk_paths.extend(full_paths)
-            found_indices.append(idx)
-
-        if not all_chunk_paths:
-            return jsonify({"success": False, "error": "No audio chunks found for selected chapters"}), 400
-
-        # Build a safe filename
-        if output_name:
-            safe_name = re.sub(r'[^\w\-. ]', '', output_name).strip().replace(' ', '_')
-        else:
-            idx_parts = '_'.join(str(i) for i in found_indices[:6])
-            if len(found_indices) > 6:
-                idx_parts += f'_and_{len(found_indices) - 6}_more'
-            safe_name = f"chapters_{idx_parts}"
-
-        output_filename = f"{safe_name}.{output_format}"
-        output_path = job_dir / output_filename
-        # Overwrite if exists
-        _remove_existing_output(output_path)
-
-        merger = _build_review_merger(config_snapshot)
-        merger.merge_wav_files(
-            input_files=all_chunk_paths,
-            output_path=str(output_path),
-            format=output_format,
-            cleanup_chunks=False,
-        )
-
-        return jsonify({
-            "success": True,
-            "file_url": f"/static/audio/{job_id}/{output_filename}",
-            "relative_path": output_filename,
-            "output_name": output_name or safe_name,
-            "chapter_count": len(found_indices),
-            "format": output_format,
-        })
-    except Exception as exc:
-        logger.error("Failed to merge custom chapters for %s: %s", job_id, exc, exc_info=True)
-        return jsonify({"success": False, "error": "Failed to merge chapters"}), 500
 
 
 @app.route('/api/library/<job_id>/rebuild/selected', methods=['POST'])
@@ -8854,6 +8959,7 @@ def health_check():
         "tts_engine": config.get('tts_engine', 'kokoro'),
         "kokoro_available": KOKORO_AVAILABLE,
         "qwen3_available": QWEN3_AVAILABLE,
+        "omnivoice_available": OMNIVOICE_AVAILABLE,
         "pocket_tts_available": POCKET_TTS_AVAILABLE,
         "kitten_tts_available": KITTEN_TTS_AVAILABLE,
         "index_tts_available": INDEX_TTS_AVAILABLE,
@@ -8940,6 +9046,69 @@ def qwen3_voice_design_task_status(task_id: str):
         if not job_entry:
             return jsonify({"success": False, "error": "Task not found."}), 404
         if job_entry.get("job_type") not in {"qwen3_voice_design_preview", "qwen3_voice_design_save"}:
+            return jsonify({"success": False, "error": "Task type mismatch."}), 400
+        payload = {
+            "success": True,
+            "status": job_entry.get("status"),
+            "progress": job_entry.get("progress"),
+        }
+        if job_entry.get("status") == "completed":
+            payload["result"] = job_entry.get("result")
+        if job_entry.get("status") == "failed":
+            payload["error"] = job_entry.get("error")
+        return jsonify(payload)
+
+
+@app.route('/api/omnivoice/voice-design/preview', methods=['POST'])
+def omnivoice_voice_design_preview():
+    if not OMNIVOICE_DESIGN_AVAILABLE:
+        return jsonify({
+            "success": False,
+            "error": "omnivoice is not installed. Run: pip install omnivoice"
+        }), 400
+    payload = request.get_json(silent=True) or {}
+    text = (payload.get("text") or "").strip()
+    instruct = (payload.get("instruct") or "").strip()
+    if not text:
+        return jsonify({"success": False, "error": "Text is required to generate a preview."}), 400
+    if not instruct:
+        return jsonify({"success": False, "error": "Voice instruction string is required."}), 400
+    job_id = _enqueue_omnivoice_design_task("omnivoice_design_preview", payload)
+    return jsonify({"success": True, "job_id": job_id}), 202
+
+
+@app.route('/api/omnivoice/voice-design/save', methods=['POST'])
+def omnivoice_voice_design_save():
+    if not OMNIVOICE_DESIGN_AVAILABLE:
+        return jsonify({
+            "success": False,
+            "error": "omnivoice is not installed. Run: pip install omnivoice"
+        }), 400
+    payload = request.get_json(silent=True) or {}
+    name = (payload.get("name") or "").strip()
+    text = (payload.get("text") or "").strip()
+    audio_base64 = payload.get("audio_base64")
+    if not name:
+        return jsonify({"success": False, "error": "Voice name is required."}), 400
+    if not text:
+        return jsonify({"success": False, "error": "Sample text is required."}), 400
+    if not audio_base64:
+        return jsonify({"success": False, "error": "Preview audio is required."}), 400
+    try:
+        base64.b64decode(audio_base64)
+    except Exception:
+        return jsonify({"success": False, "error": "Invalid audio payload."}), 400
+    job_id = _enqueue_omnivoice_design_task("omnivoice_design_save", payload)
+    return jsonify({"success": True, "job_id": job_id}), 202
+
+
+@app.route('/api/omnivoice/voice-design/tasks/<task_id>', methods=['GET'])
+def omnivoice_voice_design_task_status(task_id: str):
+    with queue_lock:
+        job_entry = jobs.get(task_id)
+        if not job_entry:
+            return jsonify({"success": False, "error": "Task not found."}), 404
+        if job_entry.get("job_type") not in {"omnivoice_design_preview", "omnivoice_design_save"}:
             return jsonify({"success": False, "error": "Task type mismatch."}), 400
         payload = {
             "success": True,

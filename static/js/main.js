@@ -36,7 +36,7 @@ const HELP_TOPICS = {
         title: 'Paralinguistic Tags',
         body: `
             <p>Insert expressive tags like <code>[sigh]</code> or <code>[laugh]</code> into your text.</p>
-            <p>These are supported by Kokoro engines to add non-verbal cues.</p>
+            <p>These are supported by Kokoro and OmniVoice engines to add non-verbal cues. Available tags differ per engine.</p>
         `
     },
     'text-statistics': {
@@ -302,7 +302,7 @@ const HELP_TOPICS = {
     }
 };
 
-async function generateSpeakerVoicePromptBatch(speaker, displayName, statusEl) {
+async function generateSpeakerVoicePromptBatch(speaker, displayName, statusEl, engine = 'qwen3') {
     if (!speaker) return false;
     const { profile } = findSpeakerProfile(speaker);
     const description = profile?.description || '';
@@ -322,6 +322,12 @@ async function generateSpeakerVoicePromptBatch(speaker, displayName, statusEl) {
         }
         return false;
     }
+    const isOmniVoiceBatch = engine === 'omnivoice';
+    const previewUrl = isOmniVoiceBatch ? '/api/omnivoice/voice-design/preview' : '/api/qwen3/voice-design/preview';
+    const saveUrl = isOmniVoiceBatch ? '/api/omnivoice/voice-design/save' : '/api/qwen3/voice-design/save';
+    const taskPollUrl = isOmniVoiceBatch
+        ? (id) => `/api/omnivoice/voice-design/tasks/${id}`
+        : (id) => `/api/qwen3/voice-design/tasks/${id}`;
     const payload = {
         name: displayName || speaker,
         gender: parseGenderFromSpeakerName(speaker),
@@ -334,27 +340,26 @@ async function generateSpeakerVoicePromptBatch(speaker, displayName, statusEl) {
         if (statusEl) {
             statusEl.textContent = `Generating preview for ${displayName || speaker}...`;
         }
-        const previewResponse = await fetch('/api/qwen3/voice-design/preview', {
+        const previewBody = isOmniVoiceBatch
+            ? { text: payload.text, instruct: payload.instruct }
+            : { text: payload.text, instruct: payload.instruct, language: payload.language };
+        const previewResponse = await fetch(previewUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                text: payload.text,
-                instruct: payload.instruct,
-                language: payload.language
-            })
+            body: JSON.stringify(previewBody)
         });
         const previewData = await previewResponse.json();
         if (!previewData.success) {
             throw new Error(previewData.error || 'Failed to enqueue preview');
         }
-        const previewResult = await pollQwenVoiceTask(previewData.job_id, `Generating ${displayName || speaker}...`);
+        const previewResult = await pollVoiceDesignTask(previewData.job_id, taskPollUrl, `Generating ${displayName || speaker}...`);
         if (!previewResult.audio_base64) {
             throw new Error('Preview audio missing from response.');
         }
         if (statusEl) {
             statusEl.textContent = `Saving ${displayName || speaker}...`;
         }
-        const saveResponse = await fetch('/api/qwen3/voice-design/save', {
+        const saveResponse = await fetch(saveUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -366,7 +371,7 @@ async function generateSpeakerVoicePromptBatch(speaker, displayName, statusEl) {
         if (!saveData.success) {
             throw new Error(saveData.error || 'Failed to enqueue save');
         }
-        await pollQwenVoiceTask(saveData.job_id, `Saving ${displayName || speaker}...`);
+        await pollVoiceDesignTask(saveData.job_id, taskPollUrl, `Saving ${displayName || speaker}...`);
         await refreshChatterboxVoices();
         populateReferenceSelects();
         const targetName = (displayName || speaker).trim().toLowerCase();
@@ -394,7 +399,7 @@ async function generateSpeakerVoicePromptBatch(speaker, displayName, statusEl) {
     }
 }
 
-async function runBatchVoiceGeneration(prefix, statusEl, progressEls = {}, completionEls = {}) {
+async function runBatchVoiceGeneration(prefix, statusEl, engine = 'qwen3', progressEls = {}, completionEls = {}) {
     const speakers = Array.isArray(currentStats?.speakers) && currentStats.speakers.length
         ? currentStats.speakers
         : [];
@@ -429,7 +434,7 @@ async function runBatchVoiceGeneration(prefix, statusEl, progressEls = {}, compl
         if (fill) {
             fill.style.width = `${Math.round((index / speakers.length) * 100)}%`;
         }
-        const success = await generateSpeakerVoicePromptBatch(speaker, displayName, statusEl);
+        const success = await generateSpeakerVoicePromptBatch(speaker, displayName, statusEl, engine);
         if (success) {
             successCount += 1;
         }
@@ -1092,12 +1097,26 @@ function isTurboEngine(engineName) {
     return value === 'chatterbox_turbo_local'
         || value === 'chatterbox_turbo_replicate'
         || value === 'voxcpm_local'
-        || value === 'qwen3_clone';
+        || value === 'qwen3_clone'
+        || value === 'omnivoice_clone';
 }
 
 function isPromptEngine(engineName) {
     const value = (engineName || '').toLowerCase();
     return isTurboEngine(value) || value === 'pocket_tts' || value === 'index_tts';
+}
+
+function isOmniVoiceEngine(engineName) {
+    const value = (engineName || '').toLowerCase();
+    return value === 'omnivoice_clone' || value === 'omnivoice_design';
+}
+
+function isOmniVoiceCloneEngine(engineName) {
+    return (engineName || '').toLowerCase() === 'omnivoice_clone';
+}
+
+function isOmniVoiceDesignEngine(engineName) {
+    return (engineName || '').toLowerCase() === 'omnivoice_design';
 }
 
 function isPocketPresetEngine(engineName) {
@@ -1126,7 +1145,6 @@ function isQwenCloneEngine(engineName) {
 }
 
 function updateEngineUI(engineName) {
-    console.log('[updateEngineUI] engineName:', engineName, 'isTurbo:', isTurboEngine(engineName));
     updateJobEngineOptionVisibility(engineName);
     const kokoroCard = document.getElementById('kokoro-default-voice-card');
     const turboCard = document.getElementById('chatterbox-turbo-voice-card');
@@ -1137,26 +1155,30 @@ function updateEngineUI(engineName) {
     const isQwen = isQwenEngine(engineName);
     const isPocketPreset = isPocketPresetEngine(engineName);
     const isQwenClone = isQwenCloneEngine(engineName);
+    const isOmniClone = isOmniVoiceCloneEngine(engineName);
     const isKokoro = isKokoroEngine(engineName);
     const isKitten = isKittenEngine(engineName);
     const isIndexTTS = isIndexTTSEngine(engineName);
-    console.log('[updateEngineUI] kokoroCard:', kokoroCard, 'turboCard:', turboCard, 'isTurbo:', isTurbo);
+    const isCloneStyle = isQwenClone || isOmniClone;
     if (kokoroCard) {
-        kokoroCard.style.display = isPrompt || isQwen || isQwenClone ? 'none' : 'block';
-        console.log('[updateEngineUI] set kokoroCard.display to:', kokoroCard.style.display);
+        kokoroCard.style.display = isPrompt || isQwen || isCloneStyle ? 'none' : 'block';
     }
     if (turboCard) {
-        turboCard.style.display = (isPrompt || isQwenClone) ? 'block' : 'none';
-        console.log('[updateEngineUI] set turboCard.display to:', turboCard.style.display);
+        turboCard.style.display = (isPrompt || isCloneStyle) ? 'block' : 'none';
     }
     if (qwenCard) {
         qwenCard.style.display = isQwen ? 'block' : 'none';
     }
+    const isOmniVoice = isOmniVoiceEngine(engineName);
     if (paralinguisticTagsBar) {
-        paralinguisticTagsBar.style.display = isKokoro ? 'flex' : 'none';
+        paralinguisticTagsBar.style.display = (isKokoro || isOmniVoice) ? 'flex' : 'none';
+        const kokoroTags = document.getElementById('paralinguistic-tags-kokoro');
+        const omniTags = document.getElementById('paralinguistic-tags-omnivoice');
+        if (kokoroTags) kokoroTags.style.display = isKokoro ? '' : 'none';
+        if (omniTags) omniTags.style.display = isOmniVoice ? '' : 'none';
     }
     updateAssignmentModes(engineName);
-    if (isPrompt || isQwenClone || isIndexTTS) {
+    if (isPrompt || isCloneStyle || isIndexTTS) {
         fetchReferencePrompts();
     }
     if (isQwen) {
@@ -1176,20 +1198,22 @@ function updateAssignmentModes(engineName) {
     const isTurbo = isPromptEngine(engineName);
     const isQwen = isQwenEngine(engineName);
     const isQwenClone = isQwenCloneEngine(engineName);
+    const isOmniClone = isOmniVoiceCloneEngine(engineName);
+    const isCloneStyle = isQwenClone || isOmniClone;
     getAssignmentRows().forEach(row => {
         const kokoroControl = row.querySelector('[data-role="kokoro-control"]');
         const turboControl = row.querySelector('[data-role="turbo-control"]');
         const qwenControl = row.querySelector('[data-role="qwen3-control"]');
         const kokoroPanel = row.querySelector('[data-role="kokoro-panel"]');
         if (kokoroControl) {
-            kokoroControl.style.display = (isTurbo || isQwenClone) ? 'none' : 'flex';
+            kokoroControl.style.display = (isTurbo || isCloneStyle) ? 'none' : 'flex';
             const label = kokoroControl.querySelector('label');
             if (label) {
                 label.textContent = isQwen ? 'Qwen3 Speaker' : row.dataset.speaker || 'Voice';
             }
         }
         if (turboControl) {
-            turboControl.style.display = (isTurbo || isQwenClone) ? 'flex' : 'none';
+            turboControl.style.display = (isTurbo || isCloneStyle) ? 'flex' : 'none';
         }
         if (qwenControl) {
             qwenControl.style.display = isQwen ? 'flex' : 'none';
@@ -1222,6 +1246,8 @@ const ENGINE_MIN_DURATION = {
     'pocket_tts': 0,
     'qwen3_custom': 0,
     'qwen3_clone': 0,
+    'omnivoice_clone': 0,
+    'omnivoice_design': 0,
     'kokoro': 0,
     'kokoro_replicate': 0,
 };
@@ -1910,7 +1936,10 @@ function resolveVoiceSampleSelection(speaker) {
     ) || document.querySelector(
         `#inline-voice-assignment-list .reference-select[data-speaker="${speaker}"]`
     );
-    return selector?.value?.trim() || '';
+    const fromSelect = selector?.value?.trim() || '';
+    if (fromSelect) return fromSelect;
+    // Fall back to in-memory turbo selection state, then global reference
+    return turboSelectionState[speaker] || getGlobalReferenceSelection() || '';
 }
 
 async function previewVoiceSampleFx({ promptPath, pitch, speed }) {
@@ -2228,8 +2257,9 @@ function applySectionHeadingEdit(newHeading) {
     // then re-run text analysis so speaker/chapter info stays in sync.
     (async () => {
         try {
+            const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
             const payload = { text: updated };
-            payload.custom_heading = getCustomHeadingList();
+            if (customHeading) payload.custom_heading = customHeading;
             const response = await fetch('/api/sections/preview', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2447,7 +2477,7 @@ async function processWithGemini(buttonEl) {
 
 async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
     const inputEl = document.getElementById('input-text');
-    const customHeading = getCustomHeadingList();
+    const customHeading = document.getElementById('custom-heading-input')?.value?.trim() || '';
     const promptOverride = getSelectedGeminiPromptOverride();
     updateGeminiProgress({ visible: true, label: 'Preparing Gemini request…', count: '', fill: 5 });
 
@@ -2514,7 +2544,7 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
                 body: JSON.stringify({
                     text,
                     prefer_chapters: true,
-                    custom_heading: customHeading.length ? customHeading : undefined
+                    custom_heading: customHeading || undefined
                 })
             });
 
@@ -2684,122 +2714,6 @@ function updateGeminiProgress({ visible, label, count, fill }) {
     }
 }
 
-// ============================================================
-// Heading Keyword Pill Manager
-// ============================================================
-
-const DEFAULT_HEADING_KEYWORDS = ['chapter', 'section', 'letter', 'part', 'prologue', 'epilogue'];
-
-// Internal state: array of { word: string, isDefault: boolean }
-let _headingPills = DEFAULT_HEADING_KEYWORDS.map(w => ({ word: w, isDefault: true }));
-
-function _renderHeadingPills() {
-    const wrap = document.getElementById('heading-pills-wrap');
-    if (!wrap) return;
-    wrap.innerHTML = '';
-    _headingPills.forEach((pill, idx) => {
-        const el = document.createElement('span');
-        el.className = 'heading-pill ' + (pill.isDefault ? 'default-pill' : 'custom-pill');
-        el.innerHTML = `${escapeHtml(pill.word)}<button class="heading-pill-remove" data-idx="${idx}" title="Remove '${escapeHtml(pill.word)}'" aria-label="Remove ${escapeHtml(pill.word)}">✕</button>`;
-        wrap.appendChild(el);
-    });
-}
-
-function _addHeadingPill(word, isDefault = false) {
-    const normalized = word.trim().toLowerCase();
-    if (!normalized) return false;
-    if (_headingPills.some(p => p.word.toLowerCase() === normalized)) return false;
-    _headingPills.push({ word: normalized, isDefault });
-    _renderHeadingPills();
-    _onHeadingPillsChanged();
-    return true;
-}
-
-function _removeHeadingPill(idx) {
-    if (idx < 0 || idx >= _headingPills.length) return;
-    _headingPills.splice(idx, 1);
-    _renderHeadingPills();
-    _onHeadingPillsChanged();
-}
-
-function _onHeadingPillsChanged() {
-    // Re-trigger section detection analysis when keyword list changes
-    if (typeof analyzeText === 'function') {
-        analyzeText({ auto: true });
-    }
-}
-
-function getCustomHeadingList() {
-    return _headingPills.map(p => p.word);
-}
-
-function setHeadingPillsFromValue(value) {
-    // Accepts a comma-separated string or array (for project load)
-    let words = [];
-    if (Array.isArray(value)) {
-        words = value.map(w => String(w).trim().toLowerCase()).filter(Boolean);
-    } else if (typeof value === 'string' && value.trim()) {
-        words = value.split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
-    }
-    if (!words.length) {
-        _headingPills = DEFAULT_HEADING_KEYWORDS.map(w => ({ word: w, isDefault: true }));
-    } else {
-        _headingPills = words.map(w => ({
-            word: w,
-            isDefault: DEFAULT_HEADING_KEYWORDS.includes(w),
-        }));
-    }
-    _renderHeadingPills();
-}
-
-function initHeadingPillManager() {
-    _renderHeadingPills();
-
-    const wrap = document.getElementById('heading-pills-wrap');
-    if (wrap) {
-        wrap.addEventListener('click', e => {
-            const btn = e.target.closest('.heading-pill-remove');
-            if (!btn) return;
-            const idx = parseInt(btn.dataset.idx, 10);
-            _removeHeadingPill(idx);
-        });
-    }
-
-    const addInput = document.getElementById('heading-add-input');
-    const addBtn = document.getElementById('heading-add-btn');
-    if (addBtn && addInput) {
-        addBtn.addEventListener('click', () => {
-            const word = addInput.value.trim();
-            if (word) {
-                if (_addHeadingPill(word, false)) {
-                    addInput.value = '';
-                } else {
-                    addInput.select();
-                }
-            }
-        });
-        addInput.addEventListener('keydown', e => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                addBtn.click();
-            }
-        });
-    }
-
-    const resetBtn = document.getElementById('heading-reset-btn');
-    if (resetBtn) {
-        resetBtn.addEventListener('click', () => {
-            _headingPills = DEFAULT_HEADING_KEYWORDS.map(w => ({ word: w, isDefault: true }));
-            _renderHeadingPills();
-            _onHeadingPillsChanged();
-        });
-    }
-}
-
-// ============================================================
-// End Heading Keyword Pill Manager
-// ============================================================
-
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
     initTabs();
@@ -2811,7 +2725,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (typeof loadLibraryItems === 'function') {
         loadLibraryItems();
     }
-    initHeadingPillManager();
     initAutoAnalyze();
     const chapterCheckbox = document.getElementById('split-chapters-checkbox');
     syncFullStoryOption(chapterCheckbox, true);
@@ -2959,6 +2872,17 @@ function setupEventListeners() {
     const batchCompleteSummary = document.getElementById('speaker-batch-complete-summary');
     const batchOkBtn = document.getElementById('speaker-batch-ok-btn');
     let batchGenerationInFlight = false;
+    let batchVoiceEngine = 'qwen3';
+    document.getElementById('batch-engine-qwen3-btn')?.addEventListener('click', () => {
+        batchVoiceEngine = 'qwen3';
+        document.getElementById('batch-engine-qwen3-btn')?.classList.add('active');
+        document.getElementById('batch-engine-omnivoice-btn')?.classList.remove('active');
+    });
+    document.getElementById('batch-engine-omnivoice-btn')?.addEventListener('click', () => {
+        batchVoiceEngine = 'omnivoice';
+        document.getElementById('batch-engine-omnivoice-btn')?.classList.add('active');
+        document.getElementById('batch-engine-qwen3-btn')?.classList.remove('active');
+    });
     const projectManageBtn = document.getElementById('project-manage-btn');
     const projectModalOverlay = document.getElementById('project-modal-overlay');
     const projectModalClose = document.getElementById('project-modal-close');
@@ -3012,8 +2936,11 @@ function setupEventListeners() {
             }
             sectionReviewInFlight = true;
             try {
+                const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
                 const payload = { text };
-                payload.custom_heading = getCustomHeadingList();
+                if (customHeading) {
+                    payload.custom_heading = customHeading;
+                }
                 const response = await fetch('/api/sections/preview', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -3142,7 +3069,7 @@ function setupEventListeners() {
         projectManageBtn.addEventListener('click', () => {
             openProjectModal();
             if (projectNameInput && !projectNameInput.value) {
-                const headingValue = getCustomHeadingList().join(', ');
+                const headingValue = document.getElementById('custom-heading-input')?.value?.trim() || '';
                 projectNameInput.value = headingValue || projectNameInput.value;
             }
         });
@@ -3226,7 +3153,7 @@ function setupEventListeners() {
             batchModalConfirm.disabled = true;
             batchModalConfirm.textContent = 'Generating...';
             try {
-                await runBatchVoiceGeneration(batchPrefixInput?.value || '', batchStatus, {
+                await runBatchVoiceGeneration(batchPrefixInput?.value || '', batchStatus, batchVoiceEngine, {
                     container: batchProgress,
                     fill: batchProgressFill,
                     label: batchProgressLabel
@@ -3621,7 +3548,10 @@ async function analyzeText(options = {}) {
     analyzeRerunRequested = false;
     try {
         const payload = { text };
-        payload.custom_heading = getCustomHeadingList();
+        const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
+        if (customHeading) {
+            payload.custom_heading = customHeading;
+        }
         const selectedEngine = getSelectedJobEngine() || runtimeSettings?.tts_engine;
         if (selectedEngine) {
             payload.tts_engine = selectedEngine;
@@ -3727,16 +3657,43 @@ function parseGenderFromSpeakerName(speaker) {
     return null;
 }
 
-async function pollQwenVoiceTask(taskId, statusLabel) {
+async function pollVoiceDesignTask(taskId, urlFactory, statusLabel) {
     if (!taskId) {
         throw new Error('Missing task id for queued request.');
+    }
+    if (statusLabel) {
+        showNotification(statusLabel, 'info');
     }
     const start = Date.now();
     const timeoutMs = 10 * 60 * 1000;
     while (Date.now() - start < timeoutMs) {
-        if (statusLabel) {
-            showNotification(statusLabel, 'info');
+        const url = typeof urlFactory === 'function' ? urlFactory(taskId) : `/api/qwen3/voice-design/tasks/${taskId}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Failed to fetch task status');
         }
+        if (data.status === 'completed') {
+            return data.result || {};
+        }
+        if (data.status === 'failed') {
+            throw new Error(data.error || 'Queued task failed');
+        }
+        await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+    throw new Error('Timed out waiting for voice generation.');
+}
+
+async function pollQwenVoiceTask(taskId, statusLabel) {
+    if (!taskId) {
+        throw new Error('Missing task id for queued request.');
+    }
+    if (statusLabel) {
+        showNotification(statusLabel, 'info');
+    }
+    const start = Date.now();
+    const timeoutMs = 10 * 60 * 1000;
+    while (Date.now() - start < timeoutMs) {
         const response = await fetch(`/api/qwen3/voice-design/tasks/${taskId}`);
         const data = await response.json();
         if (!data.success) {
@@ -4176,10 +4133,11 @@ function getProjectState() {
         qwen_default_instruct: document.getElementById('qwen3-default-instruct')?.value || '',
         split_chapters: document.getElementById('split-chapters-checkbox')?.checked || false,
         full_story: document.getElementById('full-story-checkbox')?.checked || false,
-        custom_heading: getCustomHeadingList(),
+        custom_heading: document.getElementById('custom-heading-input')?.value || '',
         book_title: latestGeminiBookTitle,
         output_format: document.getElementById('job-output-format')?.value || 'mp3',
         output_bitrate: document.getElementById('job-output-bitrate')?.value || '128',
+        acx_compliance: document.getElementById('acx-compliance-checkbox')?.checked || false,
         gemini_prompt: document.getElementById('gemini-prompt')?.value || '',
         gemini_preset: document.getElementById('gemini-preset-select')?.value || '',
         assignments: getVoiceAssignments(),
@@ -4271,7 +4229,8 @@ async function applyProjectState(project) {
     if (splitChapters) splitChapters.checked = project.split_chapters != null ? !!project.split_chapters : splitChapters.defaultChecked;
     const fullStory = document.getElementById('full-story-checkbox');
     if (fullStory) fullStory.checked = project.full_story != null ? !!project.full_story : fullStory.defaultChecked;
-    setHeadingPillsFromValue(project.custom_heading || []);
+    const heading = document.getElementById('custom-heading-input');
+    if (heading) heading.value = project.custom_heading || '';
     const projectNameInput = document.getElementById('project-name-input');
     if (projectNameInput && project.name) {
         projectNameInput.value = project.name;
@@ -4280,6 +4239,8 @@ async function applyProjectState(project) {
     if (formatSelect) formatSelect.value = project.output_format || 'mp3';
     const bitrateSelect = document.getElementById('job-output-bitrate');
     if (bitrateSelect) bitrateSelect.value = project.output_bitrate || '128';
+    const acxCheckbox = document.getElementById('acx-compliance-checkbox');
+    if (acxCheckbox) acxCheckbox.checked = !!project.acx_compliance;
     const geminiPrompt = document.getElementById('gemini-prompt');
     if (geminiPrompt) geminiPrompt.value = project.gemini_prompt || '';
     const geminiPreset = document.getElementById('gemini-preset-select');
@@ -4721,10 +4682,11 @@ async function generateAudio() {
     console.log('Voice assignments for generation:', voiceAssignments);
     
     const splitByChapter = document.getElementById('split-chapters-checkbox')?.checked || false;
-    const customHeading = getCustomHeadingList();
+    const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
     const generateFullStory = splitByChapter && (document.getElementById('full-story-checkbox')?.checked || false);
     const outputFormat = document.getElementById('job-output-format')?.value || undefined;
     const outputBitrate = document.getElementById('job-output-bitrate')?.value || undefined;
+    const acxCompliance = document.getElementById('acx-compliance-checkbox')?.checked || false;
 
     const selectedEngine = getSelectedJobEngine() || runtimeSettings?.tts_engine;
     const wordReplacements = getAltWordRegistry().filter(e => e.original && e.replacement);
@@ -4738,7 +4700,9 @@ async function generateAudio() {
     if (wordReplacements.length > 0) {
         payload.word_replacements = wordReplacements;
     }
-    payload.custom_heading = customHeading;
+    if (customHeading) {
+        payload.custom_heading = customHeading;
+    }
     if (selectedEngine) {
         payload.tts_engine = selectedEngine;
         const overrides = collectEngineOverrides(selectedEngine);
@@ -4752,6 +4716,7 @@ async function generateAudio() {
     if (outputFormat === 'mp3' && outputBitrate) {
         payload.output_bitrate_kbps = parseInt(outputBitrate, 10);
     }
+    payload.acx_compliance = acxCompliance;
     try {
         const response = await fetch('/api/generate', {
             method: 'POST',
@@ -4792,11 +4757,20 @@ function getSpeakerTagIssues(text) {
     const openRe = /\[([a-zA-Z0-9_\-]+)\]/g;
     const closeRe = /\[\/([a-zA-Z0-9_\-]+)\]/g;
 
-    const events = [];
+    // Collect the set of tags that have a closing form — only these can be speaker tags.
+    // Tags with no closing form are paralinguistic (e.g. [laugh], [grunt]) and are skipped.
+    const closedTags = new Set();
     let m;
+    while ((m = closeRe.exec(text)) !== null) {
+        closedTags.add(m[1].toLowerCase());
+    }
+
+    const events = [];
+    openRe.lastIndex = 0;
+    closeRe.lastIndex = 0;
     while ((m = openRe.exec(text)) !== null) {
         const tag = m[1].toLowerCase();
-        if (!_TAG_RESERVED.has(tag)) events.push({ pos: m.index, len: m[0].length, kind: 'open', tag });
+        if (!_TAG_RESERVED.has(tag) && closedTags.has(tag)) events.push({ pos: m.index, len: m[0].length, kind: 'open', tag });
     }
     while ((m = closeRe.exec(text)) !== null) {
         const tag = m[1].toLowerCase();
@@ -5435,10 +5409,65 @@ function getVoiceAssignments() {
     const pocketPresetDefault = pocketPresetEnabled
         ? document.getElementById('default-voice-select')?.value?.trim() || ''
         : '';
-    const turboSelections = (turboEnabled || qwenCloneEnabled) ? buildTurboSelectionMap() : {};
-    const globalReference = (turboEnabled || qwenCloneEnabled) ? getGlobalReferenceSelection() : '';
+    const omniDesignEnabled = isOmniVoiceDesignEngine(engineName);
+    const omniCloneEnabled = isOmniVoiceCloneEngine(engineName);
+    const turboSelections = (turboEnabled || qwenCloneEnabled || omniCloneEnabled) ? buildTurboSelectionMap() : {};
+    const globalReference = (turboEnabled || qwenCloneEnabled || omniCloneEnabled) ? getGlobalReferenceSelection() : '';
     const qwenSpeakerDefault = document.getElementById('qwen3-default-speaker')?.value || '';
     const qwenLanguage = document.getElementById('qwen3-default-language')?.value || 'Auto';
+
+    // OmniVoice Clone: build per-speaker assignment from the reference-select.
+    // If no reference is selected, emit an empty assignment so the empty-map
+    // guard doesn't fire — the backend will fall back to the configured default prompt.
+    if (omniCloneEnabled) {
+        const uiRows = getAssignmentRows();
+        const targets = uiRows.length
+            ? uiRows.map(r => r.dataset.speaker).filter(Boolean)
+            : (currentStats?.has_speaker_tags && currentStats.speakers?.length ? currentStats.speakers : ['Speaker 1']);
+        targets.forEach(speakerKey => {
+            const row = document.querySelector(`#inline-voice-assignment-list .voice-assignment-row[data-speaker="${speakerKey}"], #speaker-edit-modal-body .voice-assignment-row[data-speaker="${speakerKey}"]`);
+            const refSelect = row?.querySelector('.reference-select');
+            const refValue = refSelect?.value?.trim() || turboSelections[speakerKey]?.reference || globalReference || '';
+            const fxPayload = getFxPayload(speakerKey);
+            const state = getFxState(speakerKey);
+            const speedValue = Number(state?.speed) || 1;
+            const assignment = {};
+            if (refValue) {
+                assignment.audio_prompt_path = refValue;
+                const promptEntry = findReferencePromptByPath(refValue);
+                if (promptEntry?.transcript) {
+                    assignment.extra = { prompt_text: promptEntry.transcript };
+                }
+            }
+            if (fxPayload) assignment.fx = fxPayload;
+            if (Math.abs(speedValue - 1) > 0.01) assignment.speed = Number(speedValue.toFixed(2));
+            assignments[speakerKey] = assignment;
+        });
+        return assignments;
+    }
+
+    // OmniVoice Design needs no reference prompt — instruct string drives generation.
+    // Build a minimal assignment for every detected speaker so validation passes.
+    if (omniDesignEnabled) {
+        const uiRows = getAssignmentRows();
+        const targets = uiRows.length
+            ? uiRows.map(r => r.dataset.speaker).filter(Boolean)
+            : (currentStats?.has_speaker_tags && currentStats.speakers?.length ? currentStats.speakers : ['Speaker 1']);
+        targets.forEach(speakerKey => {
+            const row = document.querySelector(`#inline-voice-assignment-list .voice-assignment-row[data-speaker="${speakerKey}"]`);
+            const instructInput = row?.querySelector('.omnivoice-instruct-input');
+            const instruct = instructInput?.value?.trim() || '';
+            const fxPayload = getFxPayload(speakerKey);
+            const state = getFxState(speakerKey);
+            const speedValue = Number(state?.speed) || 1;
+            const assignment = {};
+            if (instruct) assignment.voice = instruct;
+            if (fxPayload) assignment.fx = fxPayload;
+            if (Math.abs(speedValue - 1) > 0.01) assignment.speed = Number(speedValue.toFixed(2));
+            assignments[speakerKey] = assignment;
+        });
+        return assignments;
+    }
 
     selects.forEach(select => {
         const speaker = select.dataset.speaker;

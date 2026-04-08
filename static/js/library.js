@@ -390,6 +390,8 @@ function formatEngineName(engine) {
         'pocket_tts_preset': 'Pocket TTS (Preset Voices)',
         'qwen3_custom': 'Qwen3-TTS (Custom Voice)',
         'qwen3_clone': 'Qwen3-TTS (Voice Clone)',
+        'omnivoice_clone': 'OmniVoice (Voice Clone)',
+        'omnivoice_design': 'OmniVoice (Voice Design)',
     };
     return engineMap[engine] || engine;
 }
@@ -449,50 +451,24 @@ function renderChapterControls(item) {
         `
         : '';
 
-    // Store chapter index on each pill using section.index (matches manifest chapter index)
-    const sectionPills = sections.map((section, idx) => {
-        const chapterIndex = section.index ?? idx;
-        return `
-            <button
-                class="btn btn-secondary btn-xs chapter-pill ${idx === 0 ? 'active' : ''}"
-                data-job-id="${item.job_id}"
-                data-relative-path="${section.relative_path}"
-                data-src="${section.output_file}"
-                data-index="${(section.index ?? (idx + 1))}"
-                data-chapter-index="${chapterIndex}"
-            >
-                ${formatSectionLabel(section, fallbackLabel)}
-            </button>
-        `;
-    }).join('');
-
     return `
         <div class="chapter-controls" data-job-id="${item.job_id}">
-            <div class="chapter-controls-header" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <div class="chapter-controls-header">
                 <strong>${label}</strong>
-                <button
-                    class="btn btn-secondary btn-xs chapter-select-toggle"
-                    type="button"
-                    data-job-id="${item.job_id}"
-                    title="Select chapters to export as a custom audio file"
-                >✦ Select</button>
             </div>
             <div class="chapter-pill-container">
-                ${sectionPills}
+                ${sections.map((section, idx) => `
+                    <button
+                        class="btn btn-secondary btn-xs chapter-pill ${idx === 0 ? 'active' : ''}"
+                        data-job-id="${item.job_id}"
+                        data-relative-path="${section.relative_path}"
+                        data-src="${section.output_file}"
+                        data-index="${(section.index ?? (idx + 1))}"
+                    >
+                        ${formatSectionLabel(section, fallbackLabel)}
+                    </button>
+                `).join('')}
                 ${reviewAllButton}
-            </div>
-            <div class="chapter-export-bar hidden" data-job-id="${item.job_id}">
-                <span class="chapter-export-count">0 chapters selected</span>
-                <input
-                    type="text"
-                    class="chapter-export-name-input"
-                    placeholder="Output file name (optional)"
-                    maxlength="80"
-                >
-                <button class="btn btn-primary btn-sm chapter-export-btn" type="button" disabled>
-                    Export Selected
-                </button>
-                <span class="chapter-export-spinner">⏳ Building…</span>
             </div>
         </div>
     `;
@@ -817,119 +793,6 @@ function displayLibraryItems(items) {
                 });
             });
         }
-
-        // ── Chapter selection / custom export ──────────────────────────────
-        const selectToggle = itemCard.querySelector(`.chapter-select-toggle[data-job-id="${item.job_id}"]`);
-        const exportBar = itemCard.querySelector(`.chapter-export-bar[data-job-id="${item.job_id}"]`);
-
-        if (selectToggle && chapterControls && exportBar) {
-            const exportCountEl = exportBar.querySelector('.chapter-export-count');
-            const exportNameInput = exportBar.querySelector('.chapter-export-name-input');
-            const exportBtn = exportBar.querySelector('.chapter-export-btn');
-            const exportSpinner = exportBar.querySelector('.chapter-export-spinner');
-
-            // Pills that represent actual chapters (exclude review-all and the toggle itself)
-            const selectablePills = Array.from(
-                itemCard.querySelectorAll(`.chapter-pill[data-job-id="${item.job_id}"]`)
-            ).filter(b => !b.classList.contains('chapter-review-all') && !b.classList.contains('chapter-select-toggle'));
-
-            function getSelectedIndices() {
-                return selectablePills
-                    .filter(b => b.classList.contains('ch-selected'))
-                    .map(b => parseInt(b.getAttribute('data-chapter-index'), 10));
-            }
-
-            function updateExportBar() {
-                const selected = getSelectedIndices();
-                exportCountEl.textContent = selected.length === 1
-                    ? '1 chapter selected'
-                    : `${selected.length} chapters selected`;
-                exportBtn.disabled = selected.length === 0;
-            }
-
-            function enterSelectMode() {
-                chapterControls.classList.add('select-mode');
-                selectToggle.classList.add('active-mode');
-                selectToggle.textContent = '✕ Cancel';
-                exportBar.classList.remove('hidden');
-                closeChapterActionMenus(chapterControls);
-                updateExportBar();
-            }
-
-            function exitSelectMode() {
-                chapterControls.classList.remove('select-mode');
-                selectToggle.classList.remove('active-mode');
-                selectToggle.textContent = '✦ Select';
-                exportBar.classList.add('hidden');
-                selectablePills.forEach(b => b.classList.remove('ch-selected'));
-                exportNameInput.value = '';
-            }
-
-            selectToggle.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (chapterControls.classList.contains('select-mode')) {
-                    exitSelectMode();
-                } else {
-                    enterSelectMode();
-                }
-            });
-
-            // In select-mode, clicking a chapter pill toggles selection instead of playing
-            selectablePills.forEach(pill => {
-                pill.addEventListener('click', (e) => {
-                    if (!chapterControls.classList.contains('select-mode')) return;
-                    e.stopPropagation();
-                    pill.classList.toggle('ch-selected');
-                    updateExportBar();
-                }, true); // capture phase so it fires before the normal play handler
-            });
-
-            exportBtn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                const indices = getSelectedIndices();
-                if (!indices.length) return;
-
-                const outputName = exportNameInput.value.trim();
-                exportBtn.disabled = true;
-                exportSpinner.classList.add('visible');
-                exportBtn.textContent = 'Building…';
-
-                try {
-                    const resp = await fetch(`/api/library/${item.job_id}/merge/custom`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ chapter_indices: indices, output_name: outputName }),
-                    });
-                    const data = await resp.json();
-                    if (!data.success) throw new Error(data.error || 'Export failed');
-
-                    // Trigger download via a temporary <a> tag
-                    const a = document.createElement('a');
-                    a.href = data.file_url;
-                    a.download = data.relative_path;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-
-                    exitSelectMode();
-                    if (typeof showNotification === 'function') {
-                        showNotification(`Export complete: ${data.relative_path}`, 'success');
-                    }
-                } catch (err) {
-                    console.error('Custom chapter export error:', err);
-                    if (typeof showNotification === 'function') {
-                        showNotification(err.message || 'Export failed', 'error');
-                    } else {
-                        alert(err.message || 'Export failed');
-                    }
-                } finally {
-                    exportSpinner.classList.remove('visible');
-                    exportBtn.disabled = false;
-                    exportBtn.textContent = 'Export Selected';
-                }
-            });
-        }
-        // ── end chapter selection ───────────────────────────────────────────
     });
 
     if (!document.body.dataset.chapterMenuBound) {
@@ -1714,13 +1577,13 @@ function renderLibraryChunkRow(jobId, chunk, engine, idx) {
                     <div class="chunk-fx-row">
                         <div class="chunk-fx-control">
                             <label>Speed</label>
-                            <input type="range" class="chunk-speed-slider" data-chunk-id="${chunkId}" min="0.5" max="2.0" step="0.05" value="1.0">
-                            <span class="chunk-speed-value">1.0x</span>
+                            <input type="range" class="chunk-speed-slider" data-chunk-id="${chunkId}" min="0.5" max="2.0" step="0.05" value="${(chunk.voice_assignment?.speed ?? chunk.fx_applied?.speed ?? 1.0).toFixed(2)}">
+                            <span class="chunk-speed-value">${(chunk.voice_assignment?.speed ?? chunk.fx_applied?.speed ?? 1.0).toFixed(2)}x</span>
                         </div>
                         <div class="chunk-fx-control">
                             <label>Pitch</label>
-                            <input type="range" class="chunk-pitch-slider" data-chunk-id="${chunkId}" min="-6" max="6" step="0.5" value="0">
-                            <span class="chunk-pitch-value">0</span>
+                            <input type="range" class="chunk-pitch-slider" data-chunk-id="${chunkId}" min="-6" max="6" step="0.5" value="${(chunk.voice_assignment?.fx?.pitch ?? chunk.fx_applied?.pitch ?? 0).toFixed(1)}">
+                            <span class="chunk-pitch-value">${(chunk.voice_assignment?.fx?.pitch ?? chunk.fx_applied?.pitch ?? 0).toFixed(1)}</span>
                         </div>
                         <button class="btn btn-sm btn-secondary library-chunk-preview-fx" data-chunk-id="${chunkId}" disabled>
                             ▶ Preview
@@ -2071,6 +1934,7 @@ function wireChunkReviewEvents(jobId, chunks, engine) {
                 || normalizedEngine.includes('voxcpm')
                 || normalizedEngine.includes('pockettts')
                 || (normalizedEngine.includes('qwen3') && normalizedEngine.includes('clone'))
+                || (normalizedEngine.includes('omnivoice') && normalizedEngine.includes('clone'))
             ) {
                 libraryChunkVoiceOverrides[chunkId] = { audio_prompt_path: value };
             } else {
@@ -2266,9 +2130,10 @@ async function populateLibraryVoiceSelects(engine) {
     const isVoxCPM = normalizedEngine.includes('voxcpm');
     const isQwen = normalizedEngine.includes('qwen3');
     const isQwenClone = normalizedEngine.includes('qwen3') && normalizedEngine.includes('clone');
+    const isOmniClone = normalizedEngine.includes('omnivoice') && normalizedEngine.includes('clone');
     const isPocketPreset = normalizedEngine.includes('pocketttspreset');
     const isPocket = normalizedEngine.includes('pockettts') && !isPocketPreset;
-    const usesVoicePrompts = isChatterbox || isVoxCPM || isQwenClone || isPocket;
+    const usesVoicePrompts = isChatterbox || isVoxCPM || isQwenClone || isOmniClone || isPocket;
 
     let voices = [];
     try {
@@ -2754,6 +2619,8 @@ async function populateLibraryVoiceSelects(engine) {
             <option value="pocket_tts_preset">Pocket TTS · Preset Voices</option>
             <option value="qwen3_custom">Qwen3-TTS</option>
             <option value="qwen3_clone">Qwen3-TTS · Voice Clone</option>
+            <option value="omnivoice_clone">OmniVoice · Voice Clone</option>
+            <option value="omnivoice_design">OmniVoice · Voice Design</option>
         `;
         if (normalizedCurrentEngine) {
             Array.from(select.options).forEach(option => {
@@ -2783,7 +2650,8 @@ async function populateLibraryVoiceSelects(engine) {
         const usesPrompts = normalizedEngineValue.includes('chatterbox')
             || normalizedEngineValue.includes('voxcpm')
             || (normalizedEngineValue.includes('pockettts') && !normalizedEngineValue.includes('pocketttspreset'))
-            || (normalizedEngineValue.includes('qwen3') && normalizedEngineValue.includes('clone'));
+            || (normalizedEngineValue.includes('qwen3') && normalizedEngineValue.includes('clone'))
+            || (normalizedEngineValue.includes('omnivoice') && normalizedEngineValue.includes('clone'));
         if (promptFilters) {
             promptFilters.style.display = usesPrompts ? 'block' : 'none';
             if (usesPrompts) {
@@ -2885,6 +2753,8 @@ async function populateLibraryVoiceSelects(engine) {
             <option value="pocket_tts_preset">Pocket TTS · Preset Voices</option>
             <option value="qwen3_custom">Qwen3-TTS</option>
             <option value="qwen3_clone">Qwen3-TTS · Voice Clone</option>
+            <option value="omnivoice_clone">OmniVoice · Voice Clone</option>
+            <option value="omnivoice_design">OmniVoice · Voice Design</option>
         `;
         
         // When engine changes, repopulate the voice dropdown for this speaker and show/hide Qwen3 options
@@ -2908,7 +2778,8 @@ async function populateLibraryVoiceSelects(engine) {
                 && !normalizedSelectedEngine.includes('clone');
             const usesPrompts = normalizedSelectedEngine.includes('chatterbox')
                 || normalizedSelectedEngine.includes('voxcpm')
-                || (normalizedSelectedEngine.includes('qwen3') && normalizedSelectedEngine.includes('clone'));
+                || (normalizedSelectedEngine.includes('qwen3') && normalizedSelectedEngine.includes('clone'))
+                || (normalizedSelectedEngine.includes('omnivoice') && normalizedSelectedEngine.includes('clone'));
             if (promptFilters) {
                 promptFilters.style.display = usesPrompts ? 'block' : 'none';
                 if (usesPrompts) {
@@ -2917,7 +2788,6 @@ async function populateLibraryVoiceSelects(engine) {
             }
             if (qwen3Options) {
                 qwen3Options.style.display = isQwen ? 'block' : 'none';
-                // Populate language dropdown if Qwen3 selected
                 if (isQwen) {
                     const langSelect = qwen3Options.querySelector('.bulk-qwen3-language');
                     if (langSelect && langSelect.options.length <= 1) {
@@ -2946,7 +2816,8 @@ async function populateLibraryVoiceSelects(engine) {
         const usesPrompts = normalizedEngine.includes('chatterbox')
             || normalizedEngine.includes('voxcpm')
             || (normalizedEngine.includes('pockettts') && !normalizedEngine.includes('pocketttspreset'))
-            || (normalizedEngine.includes('qwen3') && normalizedEngine.includes('clone'));
+            || (normalizedEngine.includes('qwen3') && normalizedEngine.includes('clone'))
+            || (normalizedEngine.includes('omnivoice') && normalizedEngine.includes('clone'));
         if (promptFilters) {
             promptFilters.style.display = usesPrompts ? 'block' : 'none';
             if (usesPrompts) {
@@ -3031,7 +2902,8 @@ async function triggerBulkSpeakerRegen(jobId, speaker, chunks, engine, button) {
     const isVoxCPM = normalizedEngine.includes('voxcpm');
     const isQwenEngine = normalizedEngine.includes('qwen3');
     const isQwenClone = normalizedEngine.includes('qwen3') && normalizedEngine.includes('clone');
-    const usesVoicePrompts = isChatterbox || isVoxCPM || isQwenClone;
+    const isOmniClone = normalizedEngine.includes('omnivoice') && normalizedEngine.includes('clone');
+    const usesVoicePrompts = isChatterbox || isVoxCPM || isQwenClone || isOmniClone;
 
     // Build voice payload based on engine type
     const voiceData = libraryVoiceMap.get(voiceValue || '');
@@ -3064,6 +2936,18 @@ async function triggerBulkSpeakerRegen(jobId, speaker, chunks, engine, button) {
         };
     } else {
         voicePayload = { voice: voiceValue, lang_code: voiceData?.langCode || 'a' };
+    }
+
+    // Attach fx/speed from the bulk speaker sliders
+    const bulkSpeedSlider = card?.querySelector('.bulk-speed-slider');
+    const bulkPitchSlider = card?.querySelector('.bulk-pitch-slider');
+    const bulkSpeed = parseFloat(bulkSpeedSlider?.value || 1.0);
+    const bulkPitch = parseFloat(bulkPitchSlider?.value || 0);
+    if (Math.abs(bulkSpeed - 1.0) > 0.01) {
+        voicePayload = { ...(voicePayload || {}), speed: parseFloat(bulkSpeed.toFixed(2)) };
+    }
+    if (Math.abs(bulkPitch) > 0.01) {
+        voicePayload = { ...(voicePayload || {}), fx: { ...((voicePayload || {}).fx || {}), pitch: parseFloat(bulkPitch.toFixed(1)) } };
     }
 
     button.disabled = true;
@@ -3159,7 +3043,8 @@ async function triggerLibraryChunkRegen(jobId, chunkId, button) {
     const isVoxCPM = normalizedEngine.includes('voxcpm');
     const isQwenEngine = normalizedEngine.includes('qwen3');
     const isQwenClone = normalizedEngine.includes('qwen3') && normalizedEngine.includes('clone');
-    const usesVoicePrompts = isChatterbox || isVoxCPM || isQwenClone;
+    const isOmniClone = normalizedEngine.includes('omnivoice') && normalizedEngine.includes('clone');
+    const usesVoicePrompts = isChatterbox || isVoxCPM || isQwenClone || isOmniClone;
     const voiceData = libraryVoiceMap.get(voiceValue);
 
     if (usesVoicePrompts) {
@@ -3192,6 +3077,19 @@ async function triggerLibraryChunkRegen(jobId, chunkId, button) {
         };
     } else if (selectedVoiceValue) {
         voicePayload = { voice: selectedVoiceValue, lang_code: voiceData?.langCode || 'a' };
+    }
+
+    // Attach fx/speed from the chunk's sliders so regeneration matches original settings
+    const chunkFxCard = card;
+    const chunkSpeedSlider = chunkFxCard?.querySelector('.chunk-speed-slider');
+    const chunkPitchSlider = chunkFxCard?.querySelector('.chunk-pitch-slider');
+    const chunkSpeed = parseFloat(chunkSpeedSlider?.value || 1.0);
+    const chunkPitch = parseFloat(chunkPitchSlider?.value || 0);
+    if (Math.abs(chunkSpeed - 1.0) > 0.01) {
+        voicePayload = { ...(voicePayload || {}), speed: parseFloat(chunkSpeed.toFixed(2)) };
+    }
+    if (Math.abs(chunkPitch) > 0.01) {
+        voicePayload = { ...(voicePayload || {}), fx: { ...((voicePayload || {}).fx || {}), pitch: parseFloat(chunkPitch.toFixed(1)) } };
     }
 
     if (Object.keys(voicePayload || {}).length > 0) {

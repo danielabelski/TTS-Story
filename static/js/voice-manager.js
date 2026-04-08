@@ -39,6 +39,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initEditVoiceModal();
     setupVoicesAccordion();
     setupQwenVoiceCreation();
+    setupOmniVoiceCreation();
+    setupVoiceCreationEngineToggle();
 });
 
 function setupVoicesAccordion() {
@@ -2246,4 +2248,236 @@ function getVoiceInfo(voiceName) {
     }
     
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// Voice Creation engine toggle (Qwen3 / OmniVoice)
+
+function setupVoiceCreationEngineToggle() {
+    const qwen3Btn = document.getElementById('voice-creation-qwen3-btn');
+    const omniBtn = document.getElementById('voice-creation-omnivoice-btn');
+    const qwen3Fields = document.getElementById('voice-creation-qwen3-fields');
+    const omniFields = document.getElementById('voice-creation-omnivoice-fields');
+    if (!qwen3Btn || !omniBtn) return;
+
+    qwen3Btn.addEventListener('click', () => {
+        qwen3Btn.classList.add('active');
+        omniBtn.classList.remove('active');
+        if (qwen3Fields) qwen3Fields.style.display = '';
+        if (omniFields) omniFields.style.display = 'none';
+    });
+
+    omniBtn.addEventListener('click', () => {
+        omniBtn.classList.add('active');
+        qwen3Btn.classList.remove('active');
+        if (omniFields) omniFields.style.display = '';
+        if (qwen3Fields) qwen3Fields.style.display = 'none';
+    });
+}
+
+// ---------------------------------------------------------------------------
+// OmniVoice voice creation (voice design)
+
+let omniVoicePreview = null;
+
+function getOmniVoiceInstruct() {
+    const selected = document.querySelectorAll('#omnivoice-vc-instruct-tags .omnivoice-tag.active');
+    return Array.from(selected).map(b => b.dataset.instruct).join(', ');
+}
+
+function setupOmniVoiceCreation() {
+    const generateBtn = document.getElementById('omnivoice-vc-generate-btn');
+    const saveBtn = document.getElementById('omnivoice-vc-save-btn');
+    const tagContainer = document.getElementById('omnivoice-vc-instruct-tags');
+    const instructPreview = document.getElementById('omnivoice-vc-instruct-preview');
+
+    if (tagContainer) {
+        tagContainer.addEventListener('click', event => {
+            const tag = event.target.closest('.omnivoice-tag');
+            if (!tag) return;
+            const isActive = tag.classList.contains('active');
+            // Find the category group (all tags between two group-labels)
+            const siblings = Array.from(tagContainer.querySelectorAll('.omnivoice-tag'));
+            const labels = Array.from(tagContainer.querySelectorAll('.omnivoice-tag-group-label'));
+            // Determine which group this tag belongs to
+            let groupStart = 0;
+            let groupEnd = siblings.length;
+            const tagIndex = siblings.indexOf(tag);
+            // Walk DOM children to find the label boundaries
+            const children = Array.from(tagContainer.children);
+            let currentGroup = [];
+            let groups = [];
+            children.forEach(child => {
+                if (child.classList.contains('omnivoice-tag-group-label')) {
+                    if (currentGroup.length) groups.push(currentGroup);
+                    currentGroup = [];
+                } else if (child.classList.contains('omnivoice-tag')) {
+                    currentGroup.push(child);
+                }
+            });
+            if (currentGroup.length) groups.push(currentGroup);
+            // Deselect all tags in the same group, then toggle this one
+            for (const group of groups) {
+                if (group.includes(tag)) {
+                    group.forEach(t => t.classList.remove('active'));
+                    break;
+                }
+            }
+            if (!isActive) tag.classList.add('active');
+            const instruct = getOmniVoiceInstruct();
+            if (instructPreview) {
+                instructPreview.textContent = instruct
+                    ? `Instruct: "${instruct}"`
+                    : 'No tags selected — select at least one above.';
+            }
+        });
+    }
+    if (generateBtn) {
+        generateBtn.addEventListener('click', generateOmniVoicePreview);
+    }
+    if (saveBtn) {
+        saveBtn.addEventListener('click', saveOmniVoicePrompt);
+    }
+}
+
+async function pollOmniVoiceTask(taskId, statusEl, message) {
+    if (!taskId) {
+        throw new Error('Missing task id for queued request.');
+    }
+    const start = Date.now();
+    const timeoutMs = 10 * 60 * 1000;
+    while (Date.now() - start < timeoutMs) {
+        if (statusEl && message) {
+            statusEl.textContent = message;
+        }
+        const response = await fetch(`/api/omnivoice/voice-design/tasks/${taskId}`);
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Failed to fetch task status');
+        }
+        if (data.status === 'completed') {
+            return data.result || {};
+        }
+        if (data.status === 'failed') {
+            throw new Error(data.error || 'Queued task failed');
+        }
+        await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+    throw new Error('Timed out waiting for the queued task.');
+}
+
+async function generateOmniVoicePreview() {
+    const textInput = document.getElementById('omnivoice-vc-text');
+    const previewAudio = document.getElementById('omnivoice-vc-preview');
+    const status = document.getElementById('omnivoice-vc-status');
+    const saveBtn = document.getElementById('omnivoice-vc-save-btn');
+    const generateBtn = document.getElementById('omnivoice-vc-generate-btn');
+    const text = textInput?.value.trim() || '';
+    const instruct = getOmniVoiceInstruct();
+
+    if (!text) {
+        showToast('Enter sample text for the preview.', 'warning');
+        return;
+    }
+    if (!instruct) {
+        showToast('Select at least one voice tag (e.g. female, low pitch, british accent).', 'warning');
+        return;
+    }
+
+    if (status) status.textContent = 'Generating preview...';
+    if (generateBtn) generateBtn.disabled = true;
+    if (saveBtn) saveBtn.disabled = true;
+    omniVoicePreview = null;
+
+    try {
+        const response = await fetch('/api/omnivoice/voice-design/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, instruct }),
+        });
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Failed to enqueue preview');
+        }
+        const result = await pollOmniVoiceTask(data.job_id, status, 'Generating preview...');
+        omniVoicePreview = {
+            audio_base64: result.audio_base64,
+            mime_type: result.mime_type || 'audio/wav',
+        };
+        if (previewAudio && result.audio_base64) {
+            previewAudio.src = `data:${omniVoicePreview.mime_type};base64,${result.audio_base64}`;
+            previewAudio.load();
+        }
+        if (saveBtn) saveBtn.disabled = false;
+        if (status) status.textContent = 'Preview ready. Save when you like it.';
+    } catch (error) {
+        console.error('Failed to generate OmniVoice preview', error);
+        showToast(error.message || 'Preview failed', 'error');
+        if (status) status.textContent = 'Preview failed.';
+    } finally {
+        if (generateBtn) generateBtn.disabled = false;
+    }
+}
+
+async function saveOmniVoicePrompt() {
+    const nameInput = document.getElementById('omnivoice-vc-name');
+    const genderSelect = document.getElementById('omnivoice-vc-gender');
+    const descriptionInput = document.getElementById('omnivoice-vc-description');
+    const textInput = document.getElementById('omnivoice-vc-text');
+    const status = document.getElementById('omnivoice-vc-status');
+    const saveBtn = document.getElementById('omnivoice-vc-save-btn');
+
+    const name = nameInput?.value.trim() || '';
+    const gender = genderSelect?.value || null;
+    const description = descriptionInput?.value.trim() || '';
+    const text = textInput?.value.trim() || '';
+    const instruct = getOmniVoiceInstruct();
+
+    if (!name) {
+        showToast('Add a name before saving the voice prompt.', 'warning');
+        return;
+    }
+    if (!text) {
+        showToast('Sample text is required to save this voice.', 'warning');
+        return;
+    }
+    if (!omniVoicePreview?.audio_base64) {
+        showToast('Generate a preview before saving.', 'warning');
+        return;
+    }
+
+    if (status) status.textContent = 'Saving voice prompt...';
+    if (saveBtn) saveBtn.disabled = true;
+
+    try {
+        const response = await fetch('/api/omnivoice/voice-design/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name,
+                gender,
+                description,
+                text,
+                instruct,
+                audio_base64: omniVoicePreview.audio_base64,
+            }),
+        });
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Failed to enqueue save');
+        }
+        await pollOmniVoiceTask(data.job_id, status, 'Saving voice prompt...');
+        showToast('OmniVoice prompt saved.', 'success');
+        if (status) status.textContent = 'Saved to Voice Prompts.';
+        if (nameInput) nameInput.value = '';
+        if (descriptionInput) descriptionInput.value = '';
+        omniVoicePreview = null;
+        if (saveBtn) saveBtn.disabled = true;
+        await loadChatterboxVoices();
+    } catch (error) {
+        console.error('Failed to save OmniVoice prompt', error);
+        showToast(error.message || 'Save failed', 'error');
+        if (status) status.textContent = 'Save failed.';
+        if (saveBtn) saveBtn.disabled = false;
+    }
 }

@@ -73,6 +73,7 @@ class AudioMerger:
         intro_silence_ms: int = 0,
         inter_chunk_silence_ms: int = 0,
         bitrate_kbps: Optional[int] = None,
+        acx_compliance: bool = False,
     ):
         """
         Initialize audio merger
@@ -81,10 +82,14 @@ class AudioMerger:
             crossfade_ms: Crossfade duration in milliseconds
             intro_silence_ms: Silence to prepend before the first chunk
             inter_chunk_silence_ms: Silence inserted between sequential chunks
+            acx_compliance: When True, enforce ACX audiobook standards:
+                MP3 192kbps CBR, 44100Hz, loudnorm to -19dB integrated
+                loudness (within ACX -23 to -18dB range), -3dBTP peak limit
         """
         self.crossfade_ms = crossfade_ms
         self.intro_silence_ms = max(0, intro_silence_ms)
         self.inter_chunk_silence_ms = max(0, inter_chunk_silence_ms)
+        self.acx_compliance = bool(acx_compliance)
         self.bitrate_kbps = None
         if bitrate_kbps:
             self.bitrate_kbps = max(32, min(int(bitrate_kbps), 512))
@@ -212,8 +217,35 @@ class AudioMerger:
                     handle.write(f"file '{Path(file_path).as_posix()}'\n")
 
             codec_args = []
+            filter_args = []
             fmt = format.lower()
-            if fmt == "mp3":
+
+            if self.acx_compliance:
+                # ACX standards: MP3 192kbps CBR, 44.1kHz, loudnorm targeting
+                # -19dB integrated (center of ACX -23 to -18dB window).
+                # TP target is set to -3.5dBTP (tighter than the -3dB ACX limit)
+                # and a hard alimiter at -3dB follows to guarantee peaks never
+                # overshoot — loudnorm alone can exceed its TP target by ~0.1dB.
+                # Gaussian noise at ~-70dBFS mixed in to avoid "dead silence"
+                # analyzer warnings. The noise floor sits around -70dB — well
+                # below ACX's -60dB requirement and inaudible to listeners.
+                filter_args = [
+                    "-filter_complex",
+                    (
+                        "[0:a]loudnorm=I=-19:TP=-3.5:LRA=7:print_format=none,"
+                        "alimiter=level_in=1:level_out=1:limit=0.708:attack=5:release=50:level=disabled,"
+                        "aresample=44100[main];"
+                        "anoisesrc=r=44100:color=white:amplitude=0.000316[noise];"
+                        "[main][noise]amix=inputs=2:weights=1 0.000316:normalize=0:duration=shortest[out]"
+                    ),
+                    "-map", "[out]",
+                ]
+                codec_args = [
+                    "-c:a", "libmp3lame",
+                    "-b:a", "192k",
+                    "-q:a", "0",
+                ]
+            elif fmt == "mp3":
                 codec_args = ["-c:a", "libmp3lame"]
                 if self.bitrate_kbps:
                     codec_args += ["-b:a", f"{self.bitrate_kbps}k"]
@@ -235,6 +267,7 @@ class AudioMerger:
                 "0",
                 "-i",
                 str(list_file),
+                *filter_args,
                 *codec_args,
                 "-y",
                 str(output_path),

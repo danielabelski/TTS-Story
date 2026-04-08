@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TTS-Story - Multi-Voice TTS</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%2326324a'/%3E%3Cpath d='M18 22h6v20h-6zM28 22h6v20h-6zM38 22h6v20h-6z' fill='%23a78bfa'/%3E%3Ccircle cx='32' cy='16' r='4' fill='%23fcd34d'/%3E%3Ccircle cx='32' cy='48' r='4' fill='%23fcd34d'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="/static/css/style.css?v=31">
+    <link rel="stylesheet" href="/static/css/style.css?v=32">
 </head>
 <body>
     <div class="container">
@@ -128,7 +128,7 @@
                         Insert paralinguistic tag:
                         <button type="button" class="help-icon" data-help-id="paralinguistic-tags" aria-label="Help: Paralinguistic Tags">?</button>
                     </span>
-                    <div class="tags-buttons">
+                    <div class="tags-buttons" id="paralinguistic-tags-kokoro">
                         <button type="button" class="btn btn-tag" data-tag="[clear throat]">[clear throat]</button>
                         <button type="button" class="btn btn-tag" data-tag="[sigh]">[sigh]</button>
                         <button type="button" class="btn btn-tag" data-tag="[sush]">[sush]</button>
@@ -138,6 +138,21 @@
                         <button type="button" class="btn btn-tag" data-tag="[gasp]">[gasp]</button>
                         <button type="button" class="btn btn-tag" data-tag="[chuckle]">[chuckle]</button>
                         <button type="button" class="btn btn-tag" data-tag="[laugh]">[laugh]</button>
+                    </div>
+                    <div class="tags-buttons" id="paralinguistic-tags-omnivoice" style="display:none">
+                        <button type="button" class="btn btn-tag" data-tag="[laughter]">[laughter]</button>
+                        <button type="button" class="btn btn-tag" data-tag="[sigh]">[sigh]</button>
+                        <button type="button" class="btn btn-tag" data-tag="[confirmation-en]">[confirmation-en]</button>
+                        <button type="button" class="btn btn-tag" data-tag="[question-en]">[question-en]</button>
+                        <button type="button" class="btn btn-tag" data-tag="[question-ah]">[question-ah]</button>
+                        <button type="button" class="btn btn-tag" data-tag="[question-oh]">[question-oh]</button>
+                        <button type="button" class="btn btn-tag" data-tag="[question-ei]">[question-ei]</button>
+                        <button type="button" class="btn btn-tag" data-tag="[question-yi]">[question-yi]</button>
+                        <button type="button" class="btn btn-tag" data-tag="[surprise-ah]">[surprise-ah]</button>
+                        <button type="button" class="btn btn-tag" data-tag="[surprise-oh]">[surprise-oh]</button>
+                        <button type="button" class="btn btn-tag" data-tag="[surprise-wa]">[surprise-wa]</button>
+                        <button type="button" class="btn btn-tag" data-tag="[surprise-yo]">[surprise-yo]</button>
+                        <button type="button" class="btn btn-tag" data-tag="[dissatisfaction-hnn]">[dissatisfaction-hnn]</button>
                     </div>
                 </div>
                 
@@ -210,6 +225,7 @@
                                                 <option value="pocket_tts_preset">Pocket TTS · Preset Voices</option>
                                                 <option value="qwen3_custom">Qwen3-TTS · Custom Voice</option>
                                                 <option value="qwen3_clone">Qwen3-TTS · Voice Clone</option>
+                                                <option value="omnivoice_clone">OmniVoice · Voice Clone</option>
                                                 <option value="kitten_tts">KittenTTS · CPU Lightweight</option>
                                                 <option value="index_tts">IndexTTS · Zero-Shot Clone</option>
                                             </select>
@@ -238,6 +254,13 @@
                                                 </select>
                                             </div>
                                         </div>
+                                        <div class="acx-compliance-row" style="margin-top: 8px;">
+                                            <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;" title="Enforces ACX audiobook standards on export: MP3 192kbps CBR, 44.1kHz, loudness normalized to -19dB integrated (ACX range: -23 to -18dB), true peak ≤ -3dBTP">
+                                                <input type="checkbox" id="acx-compliance-checkbox">
+                                                ACX Compliant Output
+                                            </label>
+                                            <p class="help-text" style="margin: 3px 0 0 24px; font-size: 11px;">MP3 192kbps · 44.1kHz · loudnorm -19dB · peak ≤ -3dBTP</p>
+                                        </div>
                                     </div>
                                     <div class="generate-button-section">
                                         <button id="generate-btn" class="btn btn-primary btn-large">🎙️ Generate Audio</button>
@@ -261,15 +284,11 @@
                                             </button>
                                         </div>
                                         <div class="chapter-custom-heading" style="margin-top: 10px;">
-                                            <label style="margin-bottom: 6px; display: block;">Section heading keywords</label>
-                                            <div class="heading-pills-wrap" id="heading-pills-wrap"></div>
-                                            <div class="heading-add-row">
-                                                <input type="text" id="heading-add-input" class="heading-add-input" placeholder="Add keyword…" maxlength="40">
-                                                <button type="button" id="heading-add-btn" class="btn btn-secondary btn-sm heading-add-btn">Add</button>
-                                                <button type="button" id="heading-reset-btn" class="btn btn-secondary btn-sm heading-reset-btn" title="Restore all default keywords">Reset defaults</button>
-                                            </div>
+                                            <label for="custom-heading-input">Custom section heading (optional)</label>
+                                            <input type="text" id="custom-heading-input" placeholder="e.g., Episode, Volume, Act">
                                             <p class="help-text" style="margin-top: 6px;">
-                                                Active keywords (blue = default, green = custom) are used to detect section headings. Click ✕ to remove any keyword.
+                                                We already detect headings like Book, Chapter, Section, Letter, Part, Prologue, and Epilogue.
+                                                Add extra heading words here to include them in section detection.
                                             </p>
                                         </div>
                                         <div id="full-story-option" class="chapter-sub-option" style="display: none;">
@@ -423,53 +442,132 @@
                     <div class="voices-section-header">
                         <div>
                             <div class="section-title-inline">
-                                <h2>Qwen Voice Creation</h2>
-                                <button type="button" class="help-icon" data-help-id="qwen-voice-creation" aria-label="Help: Qwen Voice Creation">?</button>
+                                <h2>Voice Creation</h2>
+                                <button type="button" class="help-icon" data-help-id="qwen-voice-creation" aria-label="Help: Voice Creation">?</button>
                             </div>
-                            <p class="help-text">Design a Qwen3 voice, preview it, then save it to your prompts.</p>
+                            <p class="help-text">Design a voice using AI, preview it, then save it to your prompts.</p>
                         </div>
                         <span class="voices-section-toggle">▶</span>
                     </div>
                     <div class="voices-section-content">
-                        <div class="qwen-voice-grid">
-                            <div class="form-group">
-                                <label for="qwen-voice-name">Voice Name</label>
-                                <input type="text" id="qwen-voice-name" placeholder="e.g. Velvet Noir">
-                            </div>
-                            <div class="form-group">
-                                <label for="qwen-voice-gender">Gender</label>
-                                <select id="qwen-voice-gender">
-                                    <option value="">— Not specified —</option>
-                                    <option value="Male">Male</option>
-                                    <option value="Female">Female</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label for="qwen-voice-language">Language</label>
-                                <select id="qwen-voice-language">
-                                    <option value="Auto">Auto</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label for="qwen-voice-description">Short Description</label>
-                                <input type="text" id="qwen-voice-description" placeholder="Moody, intimate noir narrator">
+                        <div class="form-group" style="margin-bottom: 16px;">
+                            <label>Voice Design Engine</label>
+                            <div class="btn-group" id="voice-creation-engine-toggle" role="group">
+                                <button type="button" class="btn btn-secondary active" data-voice-engine="qwen3" id="voice-creation-qwen3-btn">Qwen3-TTS</button>
+                                <button type="button" class="btn btn-secondary" data-voice-engine="omnivoice" id="voice-creation-omnivoice-btn">OmniVoice</button>
                             </div>
                         </div>
-                        <div class="form-group">
-                            <label for="qwen-voice-text">Sample Text</label>
-                            <textarea id="qwen-voice-text" rows="3" placeholder="Type a short script for the preview clip..."></textarea>
+
+                        <!-- Qwen3 fields -->
+                        <div id="voice-creation-qwen3-fields">
+                            <div class="qwen-voice-grid">
+                                <div class="form-group">
+                                    <label for="qwen-voice-name">Voice Name</label>
+                                    <input type="text" id="qwen-voice-name" placeholder="e.g. Velvet Noir">
+                                </div>
+                                <div class="form-group">
+                                    <label for="qwen-voice-gender">Gender</label>
+                                    <select id="qwen-voice-gender">
+                                        <option value="">— Not specified —</option>
+                                        <option value="Male">Male</option>
+                                        <option value="Female">Female</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="qwen-voice-language">Language</label>
+                                    <select id="qwen-voice-language">
+                                        <option value="Auto">Auto</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="qwen-voice-description">Short Description</label>
+                                    <input type="text" id="qwen-voice-description" placeholder="Moody, intimate noir narrator">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="qwen-voice-text">Sample Text</label>
+                                <textarea id="qwen-voice-text" rows="3" placeholder="Type a short script for the preview clip..."></textarea>
+                            </div>
+                            <div class="form-group">
+                                <label for="qwen-voice-instruct">Voice Style Instruction</label>
+                                <textarea id="qwen-voice-instruct" rows="3" placeholder="e.g., Speak with controlled intensity and a smoky, cinematic tone."></textarea>
+                            </div>
+                            <div class="qwen-voice-actions">
+                                <button type="button" class="btn btn-primary" id="qwen-voice-generate-btn">Generate Preview</button>
+                                <button type="button" class="btn btn-secondary" id="qwen-voice-save-btn" disabled>Save to Voice Prompts</button>
+                                <span class="help-text" id="qwen-voice-status"></span>
+                            </div>
+                            <div class="qwen-voice-preview">
+                                <audio id="qwen-voice-preview" controls></audio>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label for="qwen-voice-instruct">Voice Style Instruction</label>
-                            <textarea id="qwen-voice-instruct" rows="3" placeholder="e.g., Speak with controlled intensity and a smoky, cinematic tone."></textarea>
-                        </div>
-                        <div class="qwen-voice-actions">
-                            <button type="button" class="btn btn-primary" id="qwen-voice-generate-btn">Generate Preview</button>
-                            <button type="button" class="btn btn-secondary" id="qwen-voice-save-btn" disabled>Save to Voice Prompts</button>
-                            <span class="help-text" id="qwen-voice-status"></span>
-                        </div>
-                        <div class="qwen-voice-preview">
-                            <audio id="qwen-voice-preview" controls></audio>
+
+                        <!-- OmniVoice fields -->
+                        <div id="voice-creation-omnivoice-fields" style="display: none;">
+                            <div class="qwen-voice-grid">
+                                <div class="form-group">
+                                    <label for="omnivoice-vc-name">Voice Name</label>
+                                    <input type="text" id="omnivoice-vc-name" placeholder="e.g. Velvet Noir">
+                                </div>
+                                <div class="form-group">
+                                    <label for="omnivoice-vc-gender">Gender</label>
+                                    <select id="omnivoice-vc-gender">
+                                        <option value="">— Not specified —</option>
+                                        <option value="male">Male</option>
+                                        <option value="female">Female</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="omnivoice-vc-description">Short Description</label>
+                                    <input type="text" id="omnivoice-vc-description" placeholder="Moody, intimate noir narrator">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="omnivoice-vc-text">Sample Text</label>
+                                <textarea id="omnivoice-vc-text" rows="3" placeholder="Type a short script for the preview clip..."></textarea>
+                            </div>
+                            <div class="form-group">
+                                <label>Voice Instruction <small style="font-weight:normal;opacity:.7;">(click to toggle)</small></label>
+                                <div id="omnivoice-vc-instruct-tags" class="omnivoice-tag-picker">
+                                    <span class="omnivoice-tag-group-label">Gender</span>
+                                    <button type="button" class="omnivoice-tag" data-instruct="female">female</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="male">male</button>
+                                    <span class="omnivoice-tag-group-label">Age</span>
+                                    <button type="button" class="omnivoice-tag" data-instruct="child">child</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="teenager">teenager</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="young adult">young adult</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="middle-aged">middle-aged</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="elderly">elderly</button>
+                                    <span class="omnivoice-tag-group-label">Pitch</span>
+                                    <button type="button" class="omnivoice-tag" data-instruct="very low pitch">very low pitch</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="low pitch">low pitch</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="moderate pitch">moderate pitch</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="high pitch">high pitch</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="very high pitch">very high pitch</button>
+                                    <span class="omnivoice-tag-group-label">Style</span>
+                                    <button type="button" class="omnivoice-tag" data-instruct="whisper">whisper</button>
+                                    <span class="omnivoice-tag-group-label">Accent</span>
+                                    <button type="button" class="omnivoice-tag" data-instruct="american accent">american accent</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="australian accent">australian accent</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="british accent">british accent</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="canadian accent">canadian accent</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="chinese accent">chinese accent</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="indian accent">indian accent</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="japanese accent">japanese accent</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="korean accent">korean accent</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="portuguese accent">portuguese accent</button>
+                                    <button type="button" class="omnivoice-tag" data-instruct="russian accent">russian accent</button>
+                                </div>
+                                <small id="omnivoice-vc-instruct-preview" style="display:block;margin-top:4px;opacity:.8;">No tags selected — select at least one above.</small>
+                            </div>
+                            <div class="qwen-voice-actions">
+                                <button type="button" class="btn btn-primary" id="omnivoice-vc-generate-btn">Generate Preview</button>
+                                <button type="button" class="btn btn-secondary" id="omnivoice-vc-save-btn" disabled>Save to Voice Prompts</button>
+                                <span class="help-text" id="omnivoice-vc-status"></span>
+                            </div>
+                            <div class="qwen-voice-preview">
+                                <audio id="omnivoice-vc-preview" controls></audio>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -640,6 +738,7 @@
                                     <option value="pocket_tts_preset">Pocket TTS · Preset Voices</option>
                                     <option value="qwen3_custom">Qwen3-TTS · Custom Voice</option>
                                     <option value="qwen3_clone">Qwen3-TTS · Voice Clone</option>
+                                    <option value="omnivoice_clone">OmniVoice · Voice Clone</option>
                                     <option value="kitten_tts">KittenTTS · CPU Lightweight</option>
                                     <option value="index_tts">IndexTTS · Zero-Shot Clone</option>
                                 </select>
@@ -685,6 +784,7 @@
                             <button type="button" class="engine-tab-btn" data-engine-tab="voxcpm">VoxCPM 1.5</button>
                             <button type="button" class="engine-tab-btn" data-engine-tab="pocket-tts">Pocket TTS</button>
                             <button type="button" class="engine-tab-btn" data-engine-tab="qwen3">Qwen3-TTS</button>
+                            <button type="button" class="engine-tab-btn" data-engine-tab="omnivoice">OmniVoice</button>
                             <button type="button" class="engine-tab-btn" data-engine-tab="kitten-tts">KittenTTS</button>
                             <button type="button" class="engine-tab-btn" data-engine-tab="index-tts">IndexTTS</button>
                             <button type="button" class="engine-tab-btn" data-engine-tab="api-keys">API Keys</button>
@@ -1153,6 +1253,74 @@
                             </div>
                         </div>
 
+                        <!-- OmniVoice Panel -->
+                        <div class="engine-panel" id="engine-panel-omnivoice">
+                            <div class="section-title-inline settings-panel-title">
+                                <h4>OmniVoice</h4>
+                                <button type="button" class="help-icon" data-help-id="engine-omnivoice" aria-label="Help: OmniVoice">?</button>
+                            </div>
+                            <p class="help-text" style="margin-top:0;">OmniVoice — 600+ language zero-shot TTS with voice cloning and voice design. Single model for both modes.</p>
+                            <p class="help-text">Install: <code>pip install omnivoice</code>. Model downloads automatically from HuggingFace on first use (~several GB).</p>
+                            <div class="settings-form-grid">
+                                <div class="form-group">
+                                    <label for="omnivoice-model-id">Model ID</label>
+                                    <input type="text" id="omnivoice-model-id" placeholder="k2-fsa/OmniVoice">
+                                </div>
+                                <div class="form-group">
+                                    <label for="omnivoice-chunk-size">Chunk Size (chars)</label>
+                                    <input type="number" id="omnivoice-chunk-size" min="100" max="1000" step="50" value="500">
+                                    <small>Applies to both Clone and Design modes.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="omnivoice-device">Device</label>
+                                    <input type="text" id="omnivoice-device" placeholder="auto">
+                                    <small>auto, cuda, cuda:1, cpu, mps</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="omnivoice-dtype">DType</label>
+                                    <select id="omnivoice-dtype">
+                                        <option value="float16">float16 (recommended)</option>
+                                        <option value="bfloat16">bfloat16</option>
+                                        <option value="float32">float32</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="omnivoice-num-step">Diffusion Steps</label>
+                                    <input type="number" id="omnivoice-num-step" min="8" max="64" step="8" value="32">
+                                    <small>32 = quality, 16 = faster inference</small>
+                                </div>
+                                <div class="form-group" style="align-self: end;">
+                                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                                        <input type="checkbox" id="omnivoice-post-process" checked>
+                                        Post-Process Output
+                                    </label>
+                                    <small>Uncheck to disable automatic silence trimming between sentences. Try disabling if short sentences run together without natural pauses.</small>
+                                </div>
+                            </div>
+                            <div class="settings-subsection" style="margin-top:16px;">
+                                <h4>Voice Clone Defaults</h4>
+                                <div class="settings-form-grid">
+                                    <div class="form-group">
+                                        <label for="omnivoice-clone-prompt">Default Prompt</label>
+                                        <input type="text" id="omnivoice-clone-prompt" placeholder="data/voice_prompts/...">
+                                    </div>
+                                </div>
+                                <div class="form-group" style="margin-top:12px;">
+                                    <label for="omnivoice-clone-prompt-text">Prompt Transcript</label>
+                                    <input type="text" id="omnivoice-clone-prompt-text" placeholder="Transcript of reference audio (auto-transcribed by Whisper if blank)">
+                                    <small>OmniVoice uses built-in Whisper ASR — leave blank to auto-transcribe.</small>
+                                </div>
+                            </div>
+                            <div class="settings-subsection" style="margin-top:16px;">
+                                <h4>Voice Design Defaults</h4>
+                                <div class="form-group">
+                                    <label for="omnivoice-design-instruct">Default Instruction</label>
+                                    <input type="text" id="omnivoice-design-instruct" placeholder="e.g., female, low pitch, british accent">
+                                    <small>Attributes: gender, age, pitch, style (whisper), English accent, Chinese dialect. Comma-separated.</small>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- API Keys Panel -->
                         <div class="engine-panel" id="engine-panel-api-keys">
                             <div class="section-title-inline settings-panel-title">
@@ -1396,7 +1564,14 @@
                 <button class="modal-close" id="speaker-batch-modal-close">&times;</button>
             </div>
             <div class="modal-body">
-                <p class="help-text">Add an optional prefix to prepend to every speaker name when creating Qwen voice samples.</p>
+                <p class="help-text">Generate voice samples for all detected speakers using AI voice design.</p>
+                <div class="form-group" style="margin-bottom: 12px;">
+                    <label>Voice Design Engine</label>
+                    <div class="btn-group" id="batch-voice-engine-toggle" role="group">
+                        <button type="button" class="btn btn-secondary active" data-batch-engine="qwen3" id="batch-engine-qwen3-btn">Qwen3-TTS</button>
+                        <button type="button" class="btn btn-secondary" data-batch-engine="omnivoice" id="batch-engine-omnivoice-btn">OmniVoice</button>
+                    </div>
+                </div>
                 <div class="form-group">
                     <label for="speaker-batch-prefix">Name prefix</label>
                     <input type="text" id="speaker-batch-prefix" placeholder="e.g., Dracula">
@@ -1825,10 +2000,10 @@
         </div>
     </div>
 
-    <script src="/static/js/main.js?v=23"></script>
-    <script src="/static/js/queue.js?v=3"></script>
-    <script src="/static/js/library.js?v=31"></script>
-    <script src="/static/js/voice-manager.js?v=12"></script>
-    <script src="/static/js/settings.js?v=7"></script>
+    <script src="/static/js/main.js?v=35"></script>
+    <script src="/static/js/queue.js?v=4"></script>
+    <script src="/static/js/library.js?v=33"></script>
+    <script src="/static/js/voice-manager.js?v=14"></script>
+    <script src="/static/js/settings.js?v=8"></script>
 </body>
 </html>

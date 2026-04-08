@@ -376,6 +376,8 @@ function toggleEngineSettingsSections(engineName) {
         'pocket_tts_preset': 'pocket-tts',
         'qwen3_custom': 'qwen3',
         'qwen3_clone': 'qwen3',
+        'omnivoice_clone': 'omnivoice',
+        'omnivoice_design': 'omnivoice',
         'kitten_tts': 'kitten-tts',
         'index_tts': 'index-tts',
         'api_keys': 'api-keys'
@@ -832,6 +834,44 @@ function applySettings(settings) {
         qwen3ClonePromptText.value = settings.qwen3_clone_default_prompt_text || '';
     }
 
+    // OmniVoice settings
+    const omnivoiceModelId = document.getElementById('omnivoice-model-id');
+    if (omnivoiceModelId) {
+        omnivoiceModelId.value = settings.omnivoice_clone_model_id || settings.omnivoice_design_model_id || 'k2-fsa/OmniVoice';
+    }
+    const omnivoiceChunkSize = document.getElementById('omnivoice-chunk-size');
+    if (omnivoiceChunkSize) {
+        omnivoiceChunkSize.value = settings.omnivoice_chunk_size ?? 500;
+    }
+    const omnivoiceDevice = document.getElementById('omnivoice-device');
+    if (omnivoiceDevice) {
+        omnivoiceDevice.value = settings.omnivoice_clone_device || settings.omnivoice_design_device || 'auto';
+    }
+    const omnivoiceDtype = document.getElementById('omnivoice-dtype');
+    if (omnivoiceDtype) {
+        omnivoiceDtype.value = settings.omnivoice_clone_dtype || settings.omnivoice_design_dtype || 'float16';
+    }
+    const omnivoiceNumStep = document.getElementById('omnivoice-num-step');
+    if (omnivoiceNumStep) {
+        omnivoiceNumStep.value = settings.omnivoice_clone_num_step || settings.omnivoice_design_num_step || 32;
+    }
+    const omnivoiceClonePrompt = document.getElementById('omnivoice-clone-prompt');
+    if (omnivoiceClonePrompt) {
+        omnivoiceClonePrompt.value = settings.omnivoice_clone_default_prompt || '';
+    }
+    const omnivoiceClonePromptText = document.getElementById('omnivoice-clone-prompt-text');
+    if (omnivoiceClonePromptText) {
+        omnivoiceClonePromptText.value = settings.omnivoice_clone_default_prompt_text || '';
+    }
+    const omnivoiceDesignInstruct = document.getElementById('omnivoice-design-instruct');
+    if (omnivoiceDesignInstruct) {
+        omnivoiceDesignInstruct.value = settings.omnivoice_design_default_instruct || '';
+    }
+    const omnivoicePostProcess = document.getElementById('omnivoice-post-process');
+    if (omnivoicePostProcess) {
+        omnivoicePostProcess.checked = settings.omnivoice_post_process !== false;
+    }
+
     // Pocket TTS settings
     const pocketVariant = document.getElementById('pocket-tts-model-variant');
     if (pocketVariant) {
@@ -1077,6 +1117,19 @@ async function saveSettings() {
         qwen3_clone_default_language: document.getElementById('qwen3-clone-language').value,
         qwen3_clone_default_prompt: document.getElementById('qwen3-clone-prompt').value,
         qwen3_clone_default_prompt_text: document.getElementById('qwen3-clone-prompt-text').value,
+        omnivoice_clone_model_id: document.getElementById('omnivoice-model-id')?.value || 'k2-fsa/OmniVoice',
+        omnivoice_design_model_id: document.getElementById('omnivoice-model-id')?.value || 'k2-fsa/OmniVoice',
+        omnivoice_chunk_size: parseInt(document.getElementById('omnivoice-chunk-size')?.value, 10) || 500,
+        omnivoice_clone_device: document.getElementById('omnivoice-device')?.value || 'auto',
+        omnivoice_design_device: document.getElementById('omnivoice-device')?.value || 'auto',
+        omnivoice_clone_dtype: document.getElementById('omnivoice-dtype')?.value || 'float16',
+        omnivoice_design_dtype: document.getElementById('omnivoice-dtype')?.value || 'float16',
+        omnivoice_clone_num_step: parseInt(document.getElementById('omnivoice-num-step')?.value, 10) || 32,
+        omnivoice_design_num_step: parseInt(document.getElementById('omnivoice-num-step')?.value, 10) || 32,
+        omnivoice_clone_default_prompt: document.getElementById('omnivoice-clone-prompt')?.value || '',
+        omnivoice_clone_default_prompt_text: document.getElementById('omnivoice-clone-prompt-text')?.value || '',
+        omnivoice_design_default_instruct: document.getElementById('omnivoice-design-instruct')?.value || '',
+        omnivoice_post_process: document.getElementById('omnivoice-post-process')?.checked !== false,
         pocket_tts_model_variant: document.getElementById('pocket-tts-model-variant')?.value || 'b6369a24',
         pocket_tts_chunk_size: parseInt(document.getElementById('pocket-tts-chunk-size')?.value, 10) || 450,
         pocket_tts_temp: parseFloat(document.getElementById('pocket-tts-temp')?.value) || 0.7,
@@ -1223,6 +1276,19 @@ async function resetSettings() {
         qwen3_clone_default_language: 'Auto',
         qwen3_clone_default_prompt: '',
         qwen3_clone_default_prompt_text: '',
+        omnivoice_clone_model_id: 'k2-fsa/OmniVoice',
+        omnivoice_design_model_id: 'k2-fsa/OmniVoice',
+        omnivoice_chunk_size: 500,
+        omnivoice_clone_device: 'auto',
+        omnivoice_design_device: 'auto',
+        omnivoice_clone_dtype: 'float16',
+        omnivoice_design_dtype: 'float16',
+        omnivoice_clone_num_step: 32,
+        omnivoice_design_num_step: 32,
+        omnivoice_clone_default_prompt: '',
+        omnivoice_clone_default_prompt_text: '',
+        omnivoice_design_default_instruct: '',
+        omnivoice_post_process: true,
         pocket_tts_model_variant: 'b6369a24',
         pocket_tts_temp: 0.7,
         pocket_tts_lsd_decode_steps: 1,

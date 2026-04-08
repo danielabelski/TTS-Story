@@ -44,6 +44,9 @@ funasr
 qwen-tts
 huggingface-hub
 
+# OmniVoice runtime runs in an isolated venv (engines/omnivoice/.venv) managed by setup.bat
+# It cannot be installed here due to torch/transformers version conflicts with other engines.
+
 # Pocket TTS runtime
 pocket-tts
 
