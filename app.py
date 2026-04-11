@@ -1244,7 +1244,21 @@ def _perform_chunk_regeneration(
         temp_file = Path(generated_files[0])
         target_path = job_dir / relative_file
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(temp_file), str(target_path))
+
+        # Extract leading/trailing silence from voice assignment
+        leading_silence_ms = int(effective_assignment.get("leading_silence_ms", 0) or 0)
+        trailing_silence_ms = int(effective_assignment.get("trailing_silence_ms", 0) or 0)
+
+        # Always apply silence (even if zero) to ensure any existing silence is removed
+        from src.audio_merger import apply_chunk_silence
+        temp_with_silence = tmp_dir / f"chunk_with_silence_{chunk_id}.wav"
+        apply_chunk_silence(
+            str(temp_file),
+            str(temp_with_silence),
+            leading_ms=leading_silence_ms,
+            trailing_ms=trailing_silence_ms,
+        )
+        shutil.move(str(temp_with_silence), str(target_path))
     finally:
         # Clean up temp directory - retry with longer delays on Windows
         for attempt in range(5):
@@ -2068,7 +2082,7 @@ def _create_engine(engine_name: str, config: Dict) -> TtsEngineBase:
 
     if engine_name == "omnivoice_clone":
         if not OMNIVOICE_AVAILABLE:
-            raise ImportError("omnivoice is not installed. Run: pip install omnivoice")
+            raise ImportError(f"OmniVoice engine not available. {_OMNIVOICE_UNAVAILABLE_REASON} Please run setup.bat to set up the OmniVoice isolated environment.")
         return get_engine(
             "omnivoice_clone",
             device=(config.get("omnivoice_clone_device") or "auto").strip() or "auto",
@@ -7421,6 +7435,156 @@ def download_audio_bundle(job_id):
         }), 500
 
 
+@app.route('/api/download/<job_id>/m4b', methods=['POST'])
+def download_m4b(job_id):
+    """Download audiobook as M4B format with chapter markers."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        bitrate_kbps = int(payload.get("bitrate", 128))
+        acx_compliance = bool(payload.get("acx_compliance", False))
+        cover_art_data = payload.get("cover_art")
+
+        job_dir = OUTPUT_DIR / job_id
+        if not job_dir.exists():
+            return jsonify({
+                "success": False,
+                "error": "Job directory not found"
+            }), 404
+
+        metadata = load_job_metadata(job_dir)
+        if not metadata:
+            return jsonify({
+                "success": False,
+                "error": "Metadata not found"
+            }), 404
+
+        # Only allow M4B for chapter-mode jobs
+        if not metadata.get("chapter_mode", False):
+            return jsonify({
+                "success": False,
+                "error": "M4B export is only available for jobs with chapter mode enabled"
+            }), 400
+
+        chapters = metadata.get("chapters", [])
+        if not chapters:
+            return jsonify({
+                "success": False,
+                "error": "No chapters found"
+            }), 400
+
+        # Get chapter audio files
+        chapter_files = []
+        chapter_metadata = []
+        current_start = 0.0
+
+        for chapter in chapters:
+            rel_path = chapter.get("relative_path")
+            if not rel_path:
+                continue
+            file_path = job_dir / rel_path
+            if not file_path.exists():
+                continue
+
+            chapter_files.append(str(file_path))
+            chapter_metadata.append({
+                "title": chapter.get("title", f"Chapter {len(chapter_metadata) + 1}"),
+                "start_time": current_start
+            })
+
+            # Calculate duration for next chapter start time
+            try:
+                from src.audio_merger import get_audio_duration
+                duration = get_audio_duration(str(file_path))
+                current_start += duration
+            except Exception as e:
+                logger.warning(f"Failed to get duration for {file_path}: {e}")
+
+        if not chapter_files:
+            return jsonify({
+                "success": False,
+                "error": "No chapter audio files found"
+            }), 404
+
+        # Handle cover art upload
+        cover_art_path = None
+        if cover_art_data:
+            try:
+                import base64
+                from PIL import Image
+                import io
+
+                # Parse base64 data URL
+                if cover_art_data.startswith("data:"):
+                    header, encoded = cover_art_data.split(",", 1)
+                    image_data = base64.b64decode(encoded)
+                else:
+                    image_data = base64.b64decode(cover_art_data)
+
+                # Validate and process cover art
+                img = Image.open(io.BytesIO(image_data))
+
+                # Convert to RGB if necessary (PNG might have alpha channel)
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    # Create white background
+                    background = Image.new('RGB', img.size, (255, 255, 255))
+                    if img.mode == 'P':
+                        img = img.convert('RGBA')
+                    if img.mode in ('RGBA', 'LA'):
+                        background.paste(img, mask=img.split()[-1])  # Use alpha channel as mask
+                        img = background
+                    else:
+                        img = img.convert('RGB')
+                elif img.mode != 'RGB':
+                    img = img.convert('RGB')
+
+                # Resize to reasonable dimensions if too large (max 3000x3000)
+                max_size = 3000
+                if img.width > max_size or img.height > max_size:
+                    img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+
+                # Save as JPEG for better M4B compatibility
+                cover_path = job_dir / "cover_art.jpg"
+                img.save(cover_path, "JPEG", quality=95)
+                cover_art_path = str(cover_path)
+                logger.info(f"Cover art saved to {cover_path} (size: {img.width}x{img.height})")
+            except Exception as e:
+                logger.warning(f"Failed to process cover art: {e}", exc_info=True)
+                cover_art_path = None
+
+        # Generate M4B
+        output_filename = f"{job_id}.m4b"
+        output_path = job_dir / output_filename
+
+        from src.audio_merger import AudioMerger
+        merger = AudioMerger()
+        merger.merge_to_m4b(
+            input_files=chapter_files,
+            output_path=str(output_path),
+            chapter_metadata=chapter_metadata,
+            bitrate_kbps=bitrate_kbps,
+            acx_compliance=acx_compliance,
+            cover_art_path=cover_art_path,
+        )
+
+        # Get audiobook metadata for filename
+        audiobook_title = metadata.get("audiobook_title") or f"audiobook_{job_id}"
+        download_name = f"{audiobook_title}.m4b"
+
+        return send_file(
+            output_path,
+            mimetype='audio/mp4',
+            as_attachment=True,
+            download_name=download_name
+        )
+
+    except Exception as e:
+        logger.error(f"Error generating M4B for {job_id}: {e}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 def _build_library_listing():
     """Scan disk and return library metadata list."""
     library_items = []
@@ -7568,6 +7732,11 @@ def _build_library_listing():
                     "engine": _lib_engine,
                     "timing_metrics": _lib_timing_metrics,
                     "word_replacements": _word_replacements,
+                    "audiobook_title": metadata.get("audiobook_title"),
+                    "audiobook_author": metadata.get("audiobook_author"),
+                    "audiobook_genre": metadata.get("audiobook_genre"),
+                    "audiobook_year": metadata.get("audiobook_year"),
+                    "audiobook_description": metadata.get("audiobook_description"),
                 })
             elif full_story_entry:
                 _word_replacements2 = (jobs.get(job_id) or {}).get("word_replacements") or metadata.get("word_replacements") or []
@@ -7588,6 +7757,11 @@ def _build_library_listing():
                     "engine": _lib_engine,
                     "timing_metrics": _lib_timing_metrics,
                     "word_replacements": _word_replacements2,
+                    "audiobook_title": metadata.get("audiobook_title"),
+                    "audiobook_author": metadata.get("audiobook_author"),
+                    "audiobook_genre": metadata.get("audiobook_genre"),
+                    "audiobook_year": metadata.get("audiobook_year"),
+                    "audiobook_description": metadata.get("audiobook_description"),
                 })
             continue
 
@@ -8711,6 +8885,81 @@ def library_job_word_replacements(job_id):
             logger.warning("Failed to persist word_replacements to metadata for %s: %s", job_id, exc)
     invalidate_library_cache()
     return jsonify({"success": True, "word_replacements": replacements})
+
+
+@app.route('/api/library/<job_id>/chapter/<int:chapter_index>/rename', methods=['POST'])
+def rename_library_chapter(job_id: str, chapter_index: int):
+    """Rename a chapter title in the library metadata."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        new_title = (payload.get("title") or "").strip()
+        if not new_title:
+            return jsonify({"success": False, "error": "Title cannot be empty"}), 400
+
+        job_dir = OUTPUT_DIR / job_id
+        if not job_dir.exists():
+            return jsonify({"success": False, "error": "Item not found"}), 404
+
+        metadata = load_job_metadata(job_dir) or {}
+        chapters = metadata.get("chapters", [])
+
+        if chapter_index < 0 or chapter_index >= len(chapters):
+            return jsonify({"success": False, "error": f"Chapter index {chapter_index} out of range"}), 404
+
+        # Store custom title in metadata (preserves original title if needed)
+        if "custom_chapter_titles" not in metadata:
+            metadata["custom_chapter_titles"] = {}
+        metadata["custom_chapter_titles"][str(chapter_index)] = new_title
+
+        # Also update the chapter title in the chapters array for display
+        chapters[chapter_index]["title"] = new_title
+        metadata["chapters"] = chapters
+
+        save_job_metadata(job_dir, metadata)
+        invalidate_library_cache()
+
+        return jsonify({"success": True, "title": new_title})
+    except Exception as exc:
+        logger.error("Failed to rename chapter %s for %s: %s", chapter_index, job_id, exc, exc_info=True)
+        return jsonify({"success": False, "error": "Failed to rename chapter"}), 500
+
+
+@app.route('/api/library/<job_id>/metadata', methods=['POST'])
+def update_library_metadata(job_id: str):
+    """Update audiobook metadata for a library item."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        job_dir = OUTPUT_DIR / job_id
+        if not job_dir.exists():
+            return jsonify({"success": False, "error": "Item not found"}), 404
+
+        metadata = load_job_metadata(job_dir) or {}
+
+        # Update audiobook metadata fields
+        if "title" in payload:
+            metadata["audiobook_title"] = payload["title"].strip()
+        if "author" in payload:
+            metadata["audiobook_author"] = payload["author"].strip()
+        if "genre" in payload:
+            metadata["audiobook_genre"] = payload["genre"].strip()
+        if "year" in payload:
+            metadata["audiobook_year"] = payload["year"].strip()
+        if "description" in payload:
+            metadata["audiobook_description"] = payload["description"].strip()
+
+        # Handle cover art upload
+        if "cover_art" in payload and payload["cover_art"]:
+            # In a real implementation, this would handle file upload
+            # For now, store the base64 or path
+            metadata["audiobook_cover_art"] = payload["cover_art"]
+
+        save_job_metadata(job_dir, metadata)
+        invalidate_library_cache()
+
+        return jsonify({"success": True})
+    except Exception as exc:
+        logger.error("Failed to update metadata for %s: %s", job_id, exc, exc_info=True)
+        return jsonify({"success": False, "error": "Failed to update metadata"}), 500
 
 
 @app.route('/api/library/<job_id>/repair', methods=['POST'])

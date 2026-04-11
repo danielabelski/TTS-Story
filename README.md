@@ -8,26 +8,20 @@ Thank you — it genuinely means a lot! 🙏
 
 ---
 
-# Current Updates and Notes - updated 04-08-2026
-- Added **OmniVoice** as two new TTS engine modes — **OmniVoice · Voice Clone** (zero-shot cloning from a reference audio prompt) and **OmniVoice · Voice Design** (generate a brand-new voice from a text description/instruction). Both modes support multi-speaker tagged text with per-speaker voice assignments.
-- Added **OmniVoice paralinguistic tags** — a dedicated tag bar surfaces OmniVoice-specific expressive tags (e.g. `[laughter]`, `[breath]`, `[surprise]`) that can be inserted inline. The existing Kokoro tag bar is hidden when an OmniVoice engine is active, and vice versa.
-- Added **Generate Voices** batch workflow for OmniVoice — the batch voice generation modal now supports OmniVoice Voice Design as an engine option, automatically generating and saving a voice sample per detected speaker using their profile description and voice type.
-- **Bug fix**: Speaker tag detection now requires a matching closing tag (`[/tag]`) before treating an opening tag as a speaker tag. This prevents paralinguistic tags (e.g. `[laughter]`) from being misidentified as speaker tags, which was causing false multi-speaker detection and broken voice assignment UI.
-- **Bug fix**: OmniVoice Clone voice assignments now correctly resolve to the selected reference audio when the default speaker ("Speaker 1") chip is shown for plain text. The frontend now reads speaker keys directly from the DOM voice-assignment rows instead of from backend stats, aligning the payload keys with the UI state.
-- **Bug fix**: Narration segments outside speaker tags (assigned internally to `"default"`) no longer cause a "missing reference audio for: default" error with OmniVoice Clone or Chatterbox Turbo. The backend now always ensures a `"default"` fallback assignment is present when multiple named speaker assignments exist.
-- **Bug fix**: The "Generating [voice name]…" toast notification was firing on every 1.5-second poll cycle during batch voice generation. The `showNotification` call is now made once before the polling loop begins.
-- **Bug fix**: Speaker pitch and speed settings set in the speaker editor are now correctly carried through to the library. Individual chunk speed/pitch sliders are pre-populated from the stored `voice_assignment` on load, and both individual chunk regeneration and bulk speaker regeneration include the current slider values in the voice payload sent to the backend.
+# Current Updates and Notes - updated 04-10-2026
+- Added **M4B audiobook export** for chapter-mode jobs — download audiobooks as M4B format with embedded chapter markers, cover art support, and configurable bitrate (64-192 kbps) and ACX compliance options for audiobook distribution platforms.
+- Added **audiobook metadata editing** — edit title, author, genre, year, and description for library items, with persistent storage that survives application reloads.
+- Added **chapter rename functionality** — rename individual chapters via the chapter chip dropdown menu or directly from the chunk review modal header.
+- **UI improvements**: Library item action buttons now wrap to multiple lines on narrow screens instead of overflowing; modal overlays use high z-index and proper backdrop styling for visibility.
+- **Bug fix**: M4B cover art now properly converts images to JPEG format with RGB mode and appropriate sizing for maximum compatibility across media players.
 
 ### Previous Updates
-- Added **Auto Assign** button to the speaker voice assignment panel — fuzzy-matches voice sample names to detected speaker names and proposes assignments in a modal. Includes an adjustable similarity threshold slider (10–100%) that re-evaluates and updates all matches in real time.
-- **Bug fix**: Voice sample assignments (reference-select) no longer reset to "Inherit from global" when text is re-analyzed or section headers are changed. Selections are now persisted in `turboSelectionState` across all re-renders.
-- **Bug fix**: The **Quick Test** button in the speaker editor now plays the selected voice sample file directly with pitch/speed applied — instead of generating new audio — for all voice-cloning engines (Chatterbox, Pocket TTS Clone, IndexTTS, VoxCPM, etc.). Preset-voice engines (Kokoro, KittenTTS) still generate a preview as before.
-- Added **Clear Queue** button in the Job Queue tab — removes all non-processing jobs from the database and disk in one click, with a confirmation prompt and a summary of how many were removed or skipped.
-- Added **Time Codes** button to each library item — opens a modal where you enter your video intro length in seconds and get auto-calculated YouTube chapter timestamps. Timestamps are calculated by walking the raw audio chunks in the exact order the full-story merger uses, giving near-perfect accuracy across even very long audiobooks. Output uses a uniform `CH. 00` / `CH. 01` ... format laid out in 3 columns with consistent spacing that survives YouTube's description editor. Includes **Drift adjust** (default 0.07 s/chapter) and **Intro offset** fields, plus one-click Copy.
-- Added **IndexTTS** as a new TTS engine — zero-shot voice cloning by Bilibili Research. High-quality GPU-accelerated synthesis with a single reference audio clip. Supports multi-chapter batch mode that pre-collects all chapters into a single subprocess call, eliminating per-chapter model-reload overhead (~30–60s per chapter saved).
-- **Bug fix**: Pausing and resuming a job no longer loses chapter/title data collected before the pause. The partial chapter manifest is now saved to disk on pause and restored on resume, so all chapters are present in the library when the job finishes.
-- **Bug fix**: Chunk timing history is now preserved across pause/resume cycles. Historical chunk timestamps are restored on resume so the live timing chart and final metrics reflect the full generation run, not just the post-resume portion.
-- Added **Generation Metrics** button to library items — shows a modal with full timing stats (started, completed, total time, avg/min/max chunk time) and a chunk duration line chart for completed jobs.
+- Added **OmniVoice** engine modes (Voice Clone & Voice Design) with paralinguistic tags and multi-speaker support.
+- Added **Auto Assign** button for fuzzy-matching voice samples to detected speakers with adjustable similarity threshold.
+- Added **Clear Queue** button and **Time Codes** modal for YouTube chapter timestamp generation.
+- Added **IndexTTS** zero-shot voice cloning engine with emotion control and isolated venv.
+- Added **Generation Metrics** modal with timing stats and chunk duration charts.
+- **Bug fixes**: Speaker tag detection, voice assignment persistence, pitch/speed settings, pause/resume data preservation.
 
 # TTS-Story
 

@@ -123,6 +123,7 @@ async function openChapterReviewModal(jobId, relativePath, fallbackTitle) {
     const body = document.getElementById('chunk-review-modal-body');
     const titleEl = document.getElementById('chunk-review-modal-title');
     const recompileBtn = document.getElementById('chunk-review-recompile-btn');
+    const renameBtn = document.getElementById('chunk-review-rename-btn');
     if (overlay) overlay.classList.remove('hidden');
     if (modal) modal.classList.remove('hidden');
     if (body) body.innerHTML = '<div class="chunk-review-loading">Loading chapter...</div>';
@@ -131,6 +132,10 @@ async function openChapterReviewModal(jobId, relativePath, fallbackTitle) {
         recompileBtn.disabled = true;
         recompileBtn.style.display = 'none';
     }
+
+    // Store chapter index for rename functionality
+    let chapterIndex = null;
+    let currentTitle = fallbackTitle || 'Chapter Review';
 
     try {
         const response = await fetch(`/api/library/${jobId}/chunks`);
@@ -147,11 +152,25 @@ async function openChapterReviewModal(jobId, relativePath, fallbackTitle) {
             throw new Error('Chapter details not found');
         }
 
+        chapterIndex = target.index ?? null;
+        currentTitle = target.title || fallbackTitle || 'Chapter Review';
+
         const filtered = filterChapterReviewData(data, target);
         chunkReviewModalData = filtered;
         if (titleEl) {
-            titleEl.textContent = target.title || fallbackTitle || 'Chapter Review';
+            titleEl.textContent = currentTitle;
         }
+
+        // Wire up rename button
+        if (renameBtn && chapterIndex !== null) {
+            renameBtn.style.display = 'inline-block';
+            renameBtn.onclick = () => {
+                openChapterRenameModal(jobId, chapterIndex, currentTitle);
+            };
+        } else if (renameBtn) {
+            renameBtn.style.display = 'none';
+        }
+
         renderChunkReviewModal(filtered);
     } catch (error) {
         console.error('Error loading chapter review:', error);
@@ -537,6 +556,9 @@ function displayLibraryItems(items) {
                     <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="openLibraryAwr('${item.job_id}')">Alt Words</button>
                     ${item.timing_metrics ? `<button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="openLibraryMetrics('${item.job_id}', this)">Metrics</button>` : ''}
                     <button class="btn btn-secondary btn-xs library-item-meta-action timecodes-open-btn" type="button" data-job-id="${item.job_id}" data-title="${escapeHtml(displayTitle)}">Time Codes</button>
+                    <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="downloadLibraryAudio('${item.job_id}')">Download</button>
+                    ${item.chapter_mode ? `<button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="openM4BDownloadModal('${item.job_id}', '${escapeHtml(displayTitle)}')">Download M4B</button>` : ''}
+                    <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="openAudiobookMetadataModal('${item.job_id}')">Edit Metadata</button>
                     <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="repairLibraryItem('${item.job_id}', this)">Repair</button>
                     <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="deleteLibraryItem('${item.job_id}')">Delete</button>
                     <button type="button" class="help-icon library-item-meta-action" data-help-id="audio-library-actions" aria-label="Help: Audio Library Actions">?</button>
@@ -752,6 +774,10 @@ function displayLibraryItems(items) {
                             onClick: () => openChapterReviewModal(jobId, relativePath, button.textContent.trim())
                         },
                         {
+                            label: 'Rename Chapter',
+                            onClick: () => openChapterRenameModal(jobId, (Number(button.getAttribute('data-index')) || 1) - 1, button.textContent.trim())
+                        },
+                        {
                             label: 'Download Chapter',
                             onClick: () => downloadLibraryItem(jobId)
                         }
@@ -912,6 +938,318 @@ function playFullStory(jobId, fileUrl, relativePath) {
 
 function downloadFullStory(jobId, relativePath) {
     window.location.href = `/api/download/${jobId}?file=${encodeURIComponent(relativePath)}`;
+}
+
+// Download regular audio format
+function downloadLibraryAudio(jobId) {
+    window.location.href = `/api/download/${jobId}`;
+}
+
+// Open M4B download options modal
+function openM4BDownloadModal(jobId, title) {
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(15, 23, 42, 0.95); display: flex; align-items: center; justify-content: center; z-index: 99999;';
+    modal.innerHTML = `
+        <div style="background: var(--card-bg); border-radius: 12px; border: 1px solid var(--border-color); max-width: 500px; width: 90%; max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);">
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border-color);">
+                <h2 style="margin: 0; font-size: 1.25rem;">Download M4B Audiobook</h2>
+                <button type="button" style="background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-muted); padding: 0; line-height: 1;" class="modal-close">&times;</button>
+            </div>
+            <div style="padding: 20px; overflow-y: auto;">
+                <p style="margin-top: 0;">Download "${escapeHtml(title)}" as an M4B audiobook with chapter markers.</p>
+                <div style="margin-bottom: 16px;">
+                    <label style="display: block; margin-bottom: 6px; font-weight: 500;">Bitrate:</label>
+                    <select id="m4b-bitrate" style="width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-color); color: var(--text-color);">
+                        <option value="64">64 kbps (smaller file)</option>
+                        <option value="96">96 kbps</option>
+                        <option value="128" selected>128 kbps (recommended)</option>
+                        <option value="192">192 kbps (higher quality)</option>
+                    </select>
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="m4b-acx-compliance" style="cursor: pointer;">
+                        ACX Compliance (apply audiobook loudness standards)
+                    </label>
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <label style="display: block; margin-bottom: 6px; font-weight: 500;">Cover Art (optional):</label>
+                    <input type="file" id="m4b-cover-art" accept="image/*" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-color); color: var(--text-color);">
+                    <small style="display: block; margin-top: 4px; color: var(--text-muted); font-size: 0.85rem;">Recommended: 3000x3000px PNG or JPG</small>
+                </div>
+                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+                    <button type="button" id="m4b-cancel" style="padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-color); color: var(--text-color); cursor: pointer;">Cancel</button>
+                    <button type="button" id="m4b-download" style="padding: 8px 16px; border-radius: 6px; border: none; background: var(--primary-color); color: white; cursor: pointer;">Download M4B</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    const closeModal = () => {
+        modal.remove();
+    };
+
+    modal.querySelector('.modal-close').addEventListener('click', closeModal);
+    modal.querySelector('#m4b-cancel').addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+    });
+
+    modal.querySelector('#m4b-download').addEventListener('click', async () => {
+        const bitrate = parseInt(document.getElementById('m4b-bitrate').value);
+        const acxCompliance = document.getElementById('m4b-acx-compliance').checked;
+        const coverArtInput = document.getElementById('m4b-cover-art');
+        let coverArtData = null;
+
+        if (coverArtInput.files.length > 0) {
+            const file = coverArtInput.files[0];
+            coverArtData = await new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target.result);
+                reader.readAsDataURL(file);
+            });
+        }
+
+        const downloadBtn = modal.querySelector('#m4b-download');
+        const originalText = downloadBtn.textContent;
+        downloadBtn.disabled = true;
+        downloadBtn.textContent = 'Generating...';
+        downloadBtn.style.opacity = '0.6';
+        downloadBtn.style.cursor = 'not-allowed';
+
+        // Add progress indicator
+        const progressDiv = document.createElement('div');
+        progressDiv.style.cssText = 'margin-top: 12px; padding: 8px; background: rgba(99, 102, 241, 0.1); border-radius: 6px; border: 1px solid rgba(99, 102, 241, 0.3);';
+        progressDiv.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <div style="width: 16px; height: 16px; border: 2px solid var(--primary-color); border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                <span style="font-size: 0.85rem; color: var(--text-color);">Generating M4B audiobook... This may take several minutes depending on file size.</span>
+            </div>
+            <style>
+                @keyframes spin {
+                    to { transform: rotate(360deg); }
+                }
+            </style>
+        `;
+        downloadBtn.parentNode.insertBefore(progressDiv, downloadBtn.nextSibling);
+
+        try {
+            const response = await fetch(`/api/download/${jobId}/m4b`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    bitrate,
+                    acx_compliance: acxCompliance,
+                    cover_art: coverArtData
+                })
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.error || 'Failed to generate M4B');
+            }
+
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${title.replace(/[^a-z0-9]/gi, '_')}.m4b`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            closeModal();
+        } catch (error) {
+            alert('Error: ' + error.message);
+            downloadBtn.disabled = false;
+            downloadBtn.textContent = originalText;
+            downloadBtn.style.opacity = '';
+            downloadBtn.style.cursor = '';
+            progressDiv.remove();
+        }
+    });
+}
+
+// Open chapter rename modal
+function openChapterRenameModal(jobId, chapterIndex, currentTitle) {
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(15, 23, 42, 0.95); display: flex; align-items: center; justify-content: center; z-index: 99999;';
+    modal.innerHTML = `
+        <div style="background: var(--card-bg); border-radius: 12px; border: 1px solid var(--border-color); max-width: 400px; width: 90%; max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);">
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border-color);">
+                <h2 style="margin: 0; font-size: 1.25rem;">Rename Chapter</h2>
+                <button type="button" style="background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-muted); padding: 0; line-height: 1;" class="modal-close">&times;</button>
+            </div>
+            <div style="padding: 20px; overflow-y: auto;">
+                <div style="margin-bottom: 16px;">
+                    <label style="display: block; margin-bottom: 6px; font-weight: 500;">Chapter Title:</label>
+                    <input type="text" id="chapter-title" value="${escapeHtml(currentTitle)}" style="width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-color); color: var(--text-color);">
+                </div>
+                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+                    <button type="button" id="chapter-rename-cancel" style="padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-color); color: var(--text-color); cursor: pointer;">Cancel</button>
+                    <button type="button" id="chapter-rename-save" style="padding: 8px 16px; border-radius: 6px; border: none; background: var(--primary-color); color: white; cursor: pointer;">Save</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    const closeModal = () => {
+        modal.remove();
+    };
+
+    modal.querySelector('.modal-close').addEventListener('click', closeModal);
+    modal.querySelector('#chapter-rename-cancel').addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+    });
+
+    modal.querySelector('#chapter-rename-save').addEventListener('click', async () => {
+        const newTitle = document.getElementById('chapter-title').value.trim();
+        if (!newTitle) {
+            alert('Title cannot be empty');
+            return;
+        }
+
+        const saveBtn = modal.querySelector('#chapter-rename-save');
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving...';
+
+        try {
+            const response = await fetch(`/api/library/${jobId}/chapter/${chapterIndex}/rename`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: newTitle })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                closeModal();
+                loadLibrary(); // Reload library to reflect changes
+            } else {
+                alert('Error: ' + data.error);
+                saveBtn.disabled = false;
+                saveBtn.textContent = 'Save';
+            }
+        } catch (error) {
+            alert('Error: ' + error.message);
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save';
+        }
+    });
+}
+
+// Open audiobook metadata edit modal
+async function openAudiobookMetadataModal(jobId) {
+    // Fetch existing metadata
+    let existingMetadata = {};
+    try {
+        const response = await fetch(`/api/library`);
+        const data = await response.json();
+        const item = data.items?.find(i => i.job_id === jobId);
+        if (item) {
+            existingMetadata = {
+                title: item.audiobook_title || item.collection_title || '',
+                author: item.audiobook_author || '',
+                genre: item.audiobook_genre || '',
+                year: item.audiobook_year || '',
+                description: item.audiobook_description || ''
+            };
+        }
+    } catch (e) {
+        console.warn('Failed to fetch existing metadata:', e);
+    }
+
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(15, 23, 42, 0.95); display: flex; align-items: center; justify-content: center; z-index: 99999;';
+    modal.innerHTML = `
+        <div style="background: var(--card-bg); border-radius: 12px; border: 1px solid var(--border-color); max-width: 500px; width: 90%; max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);">
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border-color);">
+                <h2 style="margin: 0; font-size: 1.25rem;">Edit Audiobook Metadata</h2>
+                <button type="button" style="background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-muted); padding: 0; line-height: 1;" class="modal-close">&times;</button>
+            </div>
+            <div style="padding: 20px; overflow-y: auto;">
+                <div style="margin-bottom: 16px;">
+                    <label style="display: block; margin-bottom: 6px; font-weight: 500;">Title:</label>
+                    <input type="text" id="metadata-title" value="${escapeHtml(existingMetadata.title)}" style="width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-color); color: var(--text-color);">
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <label style="display: block; margin-bottom: 6px; font-weight: 500;">Author:</label>
+                    <input type="text" id="metadata-author" value="${escapeHtml(existingMetadata.author)}" style="width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-color); color: var(--text-color);">
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <label style="display: block; margin-bottom: 6px; font-weight: 500;">Genre:</label>
+                    <input type="text" id="metadata-genre" value="${escapeHtml(existingMetadata.genre)}" style="width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-color); color: var(--text-color);">
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <label style="display: block; margin-bottom: 6px; font-weight: 500;">Year:</label>
+                    <input type="text" id="metadata-year" value="${escapeHtml(existingMetadata.year)}" style="width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-color); color: var(--text-color);">
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <label style="display: block; margin-bottom: 6px; font-weight: 500;">Description:</label>
+                    <textarea id="metadata-description" rows="3" style="width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-color); color: var(--text-color); resize: vertical;">${escapeHtml(existingMetadata.description)}</textarea>
+                </div>
+                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+                    <button type="button" id="metadata-cancel" style="padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-color); color: var(--text-color); cursor: pointer;">Cancel</button>
+                    <button type="button" id="metadata-save" style="padding: 8px 16px; border-radius: 6px; border: none; background: var(--primary-color); color: white; cursor: pointer;">Save</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    const closeModal = () => {
+        modal.remove();
+    };
+
+    modal.querySelector('.modal-close').addEventListener('click', closeModal);
+    modal.querySelector('#metadata-cancel').addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+    });
+
+    modal.querySelector('#metadata-save').addEventListener('click', async () => {
+        const metadata = {
+            title: document.getElementById('metadata-title').value.trim(),
+            author: document.getElementById('metadata-author').value.trim(),
+            genre: document.getElementById('metadata-genre').value.trim(),
+            year: document.getElementById('metadata-year').value.trim(),
+            description: document.getElementById('metadata-description').value.trim()
+        };
+
+        const saveBtn = modal.querySelector('#metadata-save');
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving...';
+
+        try {
+            const response = await fetch(`/api/library/${jobId}/metadata`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(metadata)
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                closeModal();
+                loadLibrary(); // Reload library to reflect changes
+            } else {
+                alert('Error: ' + data.error);
+                saveBtn.disabled = false;
+                saveBtn.textContent = 'Save';
+            }
+        } catch (error) {
+            alert('Error: ' + error.message);
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save';
+        }
+    });
 }
 
 // Delete library item
@@ -1115,6 +1453,17 @@ function renderChunkReviewModal(data) {
                             <button class="btn btn-sm btn-primary bulk-speaker-apply-fx" data-speaker="${escapeHtml(speaker)}" disabled>
                                 Apply FX
                             </button>
+                        </div>
+                    </div>
+                    <div class="bulk-silence-section">
+                        <div class="bulk-silence-row">
+                            <span style="margin-right: 8px; font-size: 0.85em;">Silence:</span>
+                            <label style="font-size: 0.85em;">Lead</label>
+                            <input type="number" class="bulk-leading-silence" data-speaker="${escapeHtml(speaker)}" min="0" max="30" step="0.1" value="0" style="width: 60px;">
+                            <span class="bulk-leading-silence-value" style="font-size: 0.85em; margin-right: 12px;">0s</span>
+                            <label style="font-size: 0.85em;">Trail</label>
+                            <input type="number" class="bulk-trailing-silence" data-speaker="${escapeHtml(speaker)}" min="0" max="30" step="0.1" value="0" style="width: 60px;">
+                            <span class="bulk-trailing-silence-value" style="font-size: 0.85em;">0s</span>
                         </div>
                     </div>
                     <div class="bulk-regen-section">
@@ -1593,6 +1942,17 @@ function renderLibraryChunkRow(jobId, chunk, engine, idx) {
                         </button>
                     </div>
                 </div>
+                <div class="chunk-detail-section chunk-silence-section">
+                    <div class="chunk-silence-row">
+                        <span style="margin-right: 8px; font-size: 0.85em;">Silence:</span>
+                        <label style="font-size: 0.85em;">Lead</label>
+                        <input type="number" class="chunk-leading-silence" data-chunk-id="${chunkId}" min="0" max="30" step="0.1" value="${((chunk.voice_assignment?.leading_silence_ms ?? chunk.silence_applied?.leading ?? 0) / 1000).toFixed(1)}" style="width: 60px;">
+                        <span class="chunk-leading-silence-value" style="font-size: 0.85em; margin-right: 12px;">${((chunk.voice_assignment?.leading_silence_ms ?? chunk.silence_applied?.leading ?? 0) / 1000).toFixed(1)}s</span>
+                        <label style="font-size: 0.85em;">Trail</label>
+                        <input type="number" class="chunk-trailing-silence" data-chunk-id="${chunkId}" min="0" max="30" step="0.1" value="${((chunk.voice_assignment?.trailing_silence_ms ?? chunk.silence_applied?.trailing ?? 0) / 1000).toFixed(1)}" style="width: 60px;">
+                        <span class="chunk-trailing-silence-value" style="font-size: 0.85em;">${((chunk.voice_assignment?.trailing_silence_ms ?? chunk.silence_applied?.trailing ?? 0) / 1000).toFixed(1)}s</span>
+                    </div>
+                </div>
                 <div class="chunk-detail-section chunk-regen-section">
                     <div class="chunk-regen-title">Regenerate</div>
                     <div class="chunk-regen-row">
@@ -2009,6 +2369,36 @@ function wireChunkReviewEvents(jobId, chunks, engine) {
             const valueSpan = slider.parentElement.querySelector('.chunk-pitch-value');
             if (valueSpan) valueSpan.textContent = parseFloat(slider.value).toFixed(1);
             updateChunkApplyFxButtonState(slider);
+        });
+    });
+
+    // Individual chunk silence inputs
+    body.querySelectorAll('.chunk-leading-silence').forEach(input => {
+        input.addEventListener('input', () => {
+            const valueSpan = input.parentElement.querySelector('.chunk-leading-silence-value');
+            if (valueSpan) valueSpan.textContent = `${parseFloat(input.value).toFixed(1)}s`;
+        });
+    });
+
+    body.querySelectorAll('.chunk-trailing-silence').forEach(input => {
+        input.addEventListener('input', () => {
+            const valueSpan = input.parentElement.querySelector('.chunk-trailing-silence-value');
+            if (valueSpan) valueSpan.textContent = `${parseFloat(input.value).toFixed(1)}s`;
+        });
+    });
+
+    // Bulk speaker silence inputs
+    body.querySelectorAll('.bulk-leading-silence').forEach(input => {
+        input.addEventListener('input', () => {
+            const valueSpan = input.parentElement.querySelector('.bulk-leading-silence-value');
+            if (valueSpan) valueSpan.textContent = `${parseFloat(input.value).toFixed(1)}s`;
+        });
+    });
+
+    body.querySelectorAll('.bulk-trailing-silence').forEach(input => {
+        input.addEventListener('input', () => {
+            const valueSpan = input.parentElement.querySelector('.bulk-trailing-silence-value');
+            if (valueSpan) valueSpan.textContent = `${parseFloat(input.value).toFixed(1)}s`;
         });
     });
 
@@ -2941,14 +3331,20 @@ async function triggerBulkSpeakerRegen(jobId, speaker, chunks, engine, button) {
     // Attach fx/speed from the bulk speaker sliders
     const bulkSpeedSlider = card?.querySelector('.bulk-speed-slider');
     const bulkPitchSlider = card?.querySelector('.bulk-pitch-slider');
+    const bulkLeadingSilence = card?.querySelector('.bulk-leading-silence');
+    const bulkTrailingSilence = card?.querySelector('.bulk-trailing-silence');
     const bulkSpeed = parseFloat(bulkSpeedSlider?.value || 1.0);
     const bulkPitch = parseFloat(bulkPitchSlider?.value || 0);
+    const leadingSilenceSec = parseFloat(bulkLeadingSilence?.value || 0);
+    const trailingSilenceSec = parseFloat(bulkTrailingSilence?.value || 0);
     if (Math.abs(bulkSpeed - 1.0) > 0.01) {
         voicePayload = { ...(voicePayload || {}), speed: parseFloat(bulkSpeed.toFixed(2)) };
     }
     if (Math.abs(bulkPitch) > 0.01) {
         voicePayload = { ...(voicePayload || {}), fx: { ...((voicePayload || {}).fx || {}), pitch: parseFloat(bulkPitch.toFixed(1)) } };
     }
+    // Always send silence values (even when zero) so backend knows to explicitly remove existing silence
+    voicePayload = { ...(voicePayload || {}), leading_silence_ms: Math.round(leadingSilenceSec * 1000), trailing_silence_ms: Math.round(trailingSilenceSec * 1000) };
 
     button.disabled = true;
     button.textContent = `Regenerating ${speakerChunks.length}...`;
@@ -3083,14 +3479,20 @@ async function triggerLibraryChunkRegen(jobId, chunkId, button) {
     const chunkFxCard = card;
     const chunkSpeedSlider = chunkFxCard?.querySelector('.chunk-speed-slider');
     const chunkPitchSlider = chunkFxCard?.querySelector('.chunk-pitch-slider');
+    const chunkLeadingSilence = chunkFxCard?.querySelector('.chunk-leading-silence');
+    const chunkTrailingSilence = chunkFxCard?.querySelector('.chunk-trailing-silence');
     const chunkSpeed = parseFloat(chunkSpeedSlider?.value || 1.0);
     const chunkPitch = parseFloat(chunkPitchSlider?.value || 0);
+    const leadingSilenceSec = parseFloat(chunkLeadingSilence?.value || 0);
+    const trailingSilenceSec = parseFloat(chunkTrailingSilence?.value || 0);
     if (Math.abs(chunkSpeed - 1.0) > 0.01) {
         voicePayload = { ...(voicePayload || {}), speed: parseFloat(chunkSpeed.toFixed(2)) };
     }
     if (Math.abs(chunkPitch) > 0.01) {
         voicePayload = { ...(voicePayload || {}), fx: { ...((voicePayload || {}).fx || {}), pitch: parseFloat(chunkPitch.toFixed(1)) } };
     }
+    // Always send silence values (even when zero) so backend knows to explicitly remove existing silence
+    voicePayload = { ...(voicePayload || {}), leading_silence_ms: Math.round(leadingSilenceSec * 1000), trailing_silence_ms: Math.round(trailingSilenceSec * 1000) };
 
     if (Object.keys(voicePayload || {}).length > 0) {
         libraryChunkVoiceOverrides[chunkId] = { ...voicePayload };

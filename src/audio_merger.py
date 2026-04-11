@@ -5,7 +5,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from pydub import AudioSegment
 import soundfile as sf
 import numpy as np
@@ -400,3 +400,230 @@ class AudioMerger:
         # Export
         normalized.export(output_path, format="wav")
         logging.info(f"Normalized audio saved to {output_path}")
+
+    def merge_to_m4b(
+        self,
+        input_files: List[str],
+        output_path: str,
+        chapter_metadata: List[Dict[str, Any]],
+        bitrate_kbps: int = 128,
+        acx_compliance: bool = False,
+        cover_art_path: Optional[str] = None,
+        progress_callback: Optional[Callable[[float], None]] = None,
+    ) -> str:
+        """
+        Merge audio files into M4B audiobook format with chapter markers.
+
+        Args:
+            input_files: List of input audio file paths
+            output_path: Output M4B file path
+            chapter_metadata: List of chapter dicts with 'title' and 'start_time' (seconds)
+            bitrate_kbps: AAC bitrate (64, 96, 128, 192)
+            acx_compliance: Apply ACX audiobook loudness standards
+            cover_art_path: Optional path to cover art image
+            progress_callback: Optional progress callback
+
+        Returns:
+            Path to M4B file
+        """
+        if not input_files:
+            raise ValueError("No input files provided")
+
+        logging.info(f"Merging {len(input_files)} files to M4B with {len(chapter_metadata)} chapters")
+
+        # Verify all input files exist
+        for f in input_files:
+            if not os.path.exists(f):
+                raise FileNotFoundError(f"Input file not found: {f}")
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        ffmpeg_path = _find_ffmpeg()
+        if not ffmpeg_path:
+            raise RuntimeError("ffmpeg not found; required for M4B export")
+
+        # Create concat list file
+        list_file = output_path.with_suffix(".concat.txt")
+        try:
+            with list_file.open("w", encoding="utf-8") as handle:
+                for file_path in input_files:
+                    handle.write(f"file '{Path(file_path).as_posix()}'\n")
+
+            # Build ffmpeg command
+            codec_args = ["-c:a", "aac", "-b:a", f"{bitrate_kbps}k"]
+            filter_args = []
+
+            if acx_compliance:
+                # ACX standards: 44.1kHz, loudnorm targeting -19dB integrated
+                filter_args = [
+                    "-filter_complex",
+                    (
+                        "[0:a]loudnorm=I=-19:TP=-3.5:LRA=7:print_format=none,"
+                        "alimiter=level_in=1:level_out=1:limit=0.708:attack=5:release=50:level=disabled,"
+                        "aresample=44100[main];"
+                        "anoisesrc=r=44100:color=white:amplitude=0.000316[noise];"
+                        "[main][noise]amix=inputs=2:weights=1 0.000316:normalize=0:duration=shortest[out]"
+                    ),
+                    "-map", "[out]",
+                ]
+            else:
+                # Without ACX compliance, map audio directly
+                filter_args = ["-map", "0:a"]
+
+            # Create chapter metadata file for ffmpeg
+            metadata_file = output_path.with_suffix(".metadata.txt")
+            with metadata_file.open("w", encoding="utf-8") as mf:
+                mf.write(";FFMETADATA1\n")
+                for idx, chapter in enumerate(chapter_metadata):
+                    title = chapter.get("title", f"Chapter {idx + 1}")
+                    start_time = chapter.get("start_time", 0)
+                    # Calculate end time (next chapter's start or total duration)
+                    if idx < len(chapter_metadata) - 1:
+                        end_time = chapter_metadata[idx + 1].get("start_time", start_time)
+                    else:
+                        # Last chapter - we'll let ffmpeg calculate it
+                        end_time = None
+                    # FFmpeg chapter metadata format
+                    mf.write("[CHAPTER]\n")
+                    mf.write(f"TIMEBASE=1/1000\n")
+                    mf.write(f"START={int(start_time * 1000)}\n")
+                    if end_time is not None:
+                        mf.write(f"END={int(end_time * 1000)}\n")
+                    mf.write(f"title={title}\n")
+
+            cmd = [
+                ffmpeg_path,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(list_file),
+            ]
+
+            # Add cover art if provided (before metadata to avoid mapping conflicts)
+            metadata_idx = 1  # Default metadata index
+            if cover_art_path and os.path.exists(cover_art_path):
+                cmd.extend(["-i", cover_art_path])
+                metadata_idx = 2  # Metadata is now input 2
+
+            cmd.extend([
+                "-i",
+                str(metadata_file),
+                "-map_metadata",
+                str(metadata_idx),
+            ])
+
+            # Add filter_args (includes audio mapping)
+            cmd.extend(filter_args)
+
+            # Add cover art mapping if provided (must come after audio mapping but before codec args)
+            if cover_art_path and os.path.exists(cover_art_path):
+                # Use mjpeg codec for cover art and mark as attached picture
+                cmd.extend(["-map", "1:v", "-c:v", "mjpeg", "-disposition:v", "attached_pic"])
+
+            cmd.extend([
+                *codec_args,
+                "-f",
+                "mp4",
+                "-movflags",
+                "+faststart",  # Optimizes for streaming
+                "-y",
+                str(output_path),
+            ])
+
+            logging.info(f"Merging to M4B with ffmpeg: {output_path}")
+            logging.info(f"FFmpeg command: {' '.join(cmd)}")
+            if progress_callback:
+                try:
+                    progress_callback(0.0)
+                except Exception:
+                    pass
+
+            import subprocess
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            logging.info(f"FFmpeg stdout: {result.stdout}")
+            logging.info(f"FFmpeg stderr: {result.stderr}")
+            if result.returncode != 0:
+                logging.error("ffmpeg M4B merge failed: %s", result.stderr.strip())
+                raise RuntimeError(f"ffmpeg M4B merge failed: {result.stderr.strip()}")
+
+            if progress_callback:
+                try:
+                    progress_callback(1.0)
+                except Exception:
+                    pass
+
+            logging.info(f"M4B export complete: {output_path}")
+            return str(output_path)
+
+        finally:
+            # Cleanup temp files
+            try:
+                if list_file.exists():
+                    list_file.unlink()
+            except Exception:
+                pass
+            try:
+                if "metadata_file" in locals() and metadata_file.exists():
+                    metadata_file.unlink()
+            except Exception:
+                pass
+
+
+def apply_chunk_silence(
+    input_path: str,
+    output_path: str,
+    leading_ms: int = 0,
+    trailing_ms: int = 0,
+):
+    """
+    Apply leading and trailing silence to an individual audio chunk.
+
+    Args:
+        input_path: Input file path
+        output_path: Output file path
+        leading_ms: Leading silence in milliseconds
+        trailing_ms: Trailing silence in milliseconds
+    """
+    if leading_ms <= 0 and trailing_ms <= 0:
+        # No silence needed, just copy the file
+        import shutil
+        shutil.copy(input_path, output_path)
+        return
+
+    logging.info(f"Applying chunk silence: leading={leading_ms}ms, trailing={trailing_ms}ms")
+
+    audio = AudioSegment.from_file(input_path)
+
+    # Add leading silence if specified
+    if leading_ms > 0:
+        leading_silence = AudioSegment.silent(duration=leading_ms)
+        audio = leading_silence + audio
+
+    # Add trailing silence if specified
+    if trailing_ms > 0:
+        trailing_silence = AudioSegment.silent(duration=trailing_ms)
+        audio = audio + trailing_silence
+
+    # Export
+    audio.export(output_path, format="wav")
+    logging.info(f"Silence applied, saved to {output_path}")
+
+
+def get_audio_duration(file_path: str) -> float:
+    """
+    Get the duration of an audio file in seconds (module-level helper).
+
+    Args:
+        file_path: Path to audio file
+
+    Returns:
+        Duration in seconds
+    """
+    audio = AudioSegment.from_file(file_path)
+    return len(audio) / 1000.0  # pydub returns milliseconds

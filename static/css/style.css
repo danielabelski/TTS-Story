@@ -2212,6 +2212,11 @@ audio {
     display: none;
 }
 
+/* Ensure dynamically created modals have proper z-index */
+.modal-overlay[style*="z-index"] {
+    z-index: 99999 !important;
+}
+
 .modal {
     background: var(--card-bg);
     border-radius: 12px;
@@ -3334,9 +3339,11 @@ audio {
     gap: 6px;
     color: var(--text-muted);
     align-items: center;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     margin-left: auto;
     flex-shrink: 0;
+    max-width: 60%;
+    justify-content: flex-end;
 }
 
 .library-item-meta-action {
