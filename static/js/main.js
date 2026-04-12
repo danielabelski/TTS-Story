@@ -2257,9 +2257,8 @@ function applySectionHeadingEdit(newHeading) {
     // then re-run text analysis so speaker/chapter info stays in sync.
     (async () => {
         try {
-            const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
-            const payload = { text: updated };
-            if (customHeading) payload.custom_heading = customHeading;
+            const enabledHeadings = getEnabledSectionHeadings();
+            const payload = { text: updated, section_headings: enabledHeadings };
             const response = await fetch('/api/sections/preview', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2477,7 +2476,7 @@ async function processWithGemini(buttonEl) {
 
 async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
     const inputEl = document.getElementById('input-text');
-    const customHeading = document.getElementById('custom-heading-input')?.value?.trim() || '';
+    const enabledHeadings = getEnabledSectionHeadings();
     const promptOverride = getSelectedGeminiPromptOverride();
     updateGeminiProgress({ visible: true, label: 'Preparing Gemini request…', count: '', fill: 5 });
 
@@ -2544,7 +2543,7 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
                 body: JSON.stringify({
                     text,
                     prefer_chapters: true,
-                    custom_heading: customHeading || undefined
+                    section_headings: enabledHeadings
                 })
             });
 
@@ -2714,6 +2713,153 @@ function updateGeminiProgress({ visible, label, count, fill }) {
     }
 }
 
+// Section heading chips management
+const DEFAULT_SECTION_HEADINGS = ['book', 'chapter', 'section', 'letter', 'part', 'prologue', 'epilogue'];
+let enabledSectionHeadings = [...DEFAULT_SECTION_HEADINGS];
+let customSectionHeadings = [];
+
+function initSectionHeadingChips() {
+    renderDefaultHeadingChips();
+    renderCustomHeadingChips();
+    setupHeadingChipEventListeners();
+}
+
+function renderDefaultHeadingChips() {
+    const container = document.getElementById('default-heading-chips');
+    if (!container) return;
+
+    container.innerHTML = '';
+    DEFAULT_SECTION_HEADINGS.forEach(heading => {
+        const chip = document.createElement('div');
+        const isEnabled = enabledSectionHeadings.includes(heading);
+        chip.className = 'heading-chip';
+        chip.dataset.heading = heading;
+        chip.dataset.type = 'default';
+        chip.style.cssText = `
+            padding: 6px 12px;
+            border-radius: 16px;
+            border: 1px solid ${isEnabled ? 'var(--primary-color, #6366f1)' : 'var(--border-color, #4a5568)'};
+            background: ${isEnabled ? 'var(--primary-color, #6366f1)' : 'transparent'};
+            color: ${isEnabled ? 'white' : 'var(--text-color, #e2e8f0)'};
+            cursor: pointer;
+            font-size: 0.85rem;
+            user-select: none;
+            transition: all 0.2s ease;
+        `;
+        chip.textContent = heading.charAt(0).toUpperCase() + heading.slice(1);
+        chip.addEventListener('click', () => toggleDefaultHeading(heading));
+        container.appendChild(chip);
+    });
+}
+
+function renderCustomHeadingChips() {
+    const container = document.getElementById('custom-heading-chips');
+    if (!container) return;
+
+    container.innerHTML = '';
+    customSectionHeadings.forEach(heading => {
+        const chip = document.createElement('div');
+        chip.className = 'heading-chip';
+        chip.dataset.heading = heading;
+        chip.dataset.type = 'custom';
+        chip.style.cssText = `
+            padding: 6px 12px;
+            border-radius: 16px;
+            border: 1px solid var(--success-color, #10b981);
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--success-color, #10b981);
+            cursor: pointer;
+            font-size: 0.85rem;
+            user-select: none;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s ease;
+        `;
+        chip.innerHTML = `
+            <span>${heading.charAt(0).toUpperCase() + heading.slice(1)}</span>
+            <span style="font-size: 1.1rem; line-height: 1; cursor: pointer; opacity: 0.7;">&times;</span>
+        `;
+        chip.addEventListener('click', (e) => {
+            if (e.target.tagName === 'SPAN' && e.target.textContent === '×') {
+                removeCustomHeading(heading);
+            }
+        });
+        container.appendChild(chip);
+    });
+}
+
+function toggleDefaultHeading(heading) {
+    const index = enabledSectionHeadings.indexOf(heading);
+    if (index > -1) {
+        enabledSectionHeadings.splice(index, 1);
+    } else {
+        enabledSectionHeadings.push(heading);
+    }
+    renderDefaultHeadingChips();
+    // Trigger re-analysis to update section detection
+    const input = document.getElementById('input-text');
+    if (input && input.value.trim()) {
+        analyzeText({ auto: true });
+    }
+}
+
+function addCustomHeading(heading) {
+    const normalized = heading.trim().toLowerCase();
+    if (!normalized) return;
+    if (DEFAULT_SECTION_HEADINGS.includes(normalized)) {
+        alert('This is already a default heading. Toggle it above instead.');
+        return;
+    }
+    if (customSectionHeadings.includes(normalized)) {
+        alert('This custom heading already exists.');
+        return;
+    }
+    customSectionHeadings.push(normalized);
+    renderCustomHeadingChips();
+    // Trigger re-analysis to update section detection
+    const input = document.getElementById('input-text');
+    if (input && input.value.trim()) {
+        analyzeText({ auto: true });
+    }
+}
+
+function removeCustomHeading(heading) {
+    const index = customSectionHeadings.indexOf(heading);
+    if (index > -1) {
+        customSectionHeadings.splice(index, 1);
+        renderCustomHeadingChips();
+        // Trigger re-analysis to update section detection
+        const input = document.getElementById('input-text');
+        if (input && input.value.trim()) {
+            analyzeText({ auto: true });
+        }
+    }
+}
+
+function setupHeadingChipEventListeners() {
+    const addBtn = document.getElementById('add-custom-heading-btn');
+    const input = document.getElementById('custom-heading-input');
+    if (addBtn && input) {
+        addBtn.addEventListener('click', () => {
+            const heading = input.value.trim();
+            if (heading) {
+                addCustomHeading(heading);
+                input.value = '';
+            }
+        });
+        input.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                addBtn.click();
+            }
+        });
+    }
+}
+
+function getEnabledSectionHeadings() {
+    return [...enabledSectionHeadings, ...customSectionHeadings];
+}
+
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
     initTabs();
@@ -2729,6 +2875,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const chapterCheckbox = document.getElementById('split-chapters-checkbox');
     syncFullStoryOption(chapterCheckbox, true);
     initVoiceDropdownFilters();
+    initSectionHeadingChips();
     if (!currentStats) {
         displayStatistics({
             speakers: [],
@@ -2930,17 +3077,10 @@ function setupEventListeners() {
                 return;
             }
 
-            const body = document.getElementById('section-review-modal-body');
-            if (body) {
-                body.innerHTML = '<div class="section-review-loading">Loading sections...</div>';
-            }
             sectionReviewInFlight = true;
             try {
-                const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
-                const payload = { text };
-                if (customHeading) {
-                    payload.custom_heading = customHeading;
-                }
+                const enabledHeadings = getEnabledSectionHeadings();
+                const payload = { text, section_headings: enabledHeadings };
                 const response = await fetch('/api/sections/preview', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -2949,6 +3089,7 @@ function setupEventListeners() {
                 const data = await response.json();
                 if (data && data.success) {
                     sectionReviewLastFetchedText = text;
+                    sectionReviewData = data;
                 }
                 renderSectionReview(data);
             } catch (error) {
@@ -3069,8 +3210,8 @@ function setupEventListeners() {
         projectManageBtn.addEventListener('click', () => {
             openProjectModal();
             if (projectNameInput && !projectNameInput.value) {
-                const headingValue = document.getElementById('custom-heading-input')?.value?.trim() || '';
-                projectNameInput.value = headingValue || projectNameInput.value;
+                const customHeadings = customSectionHeadings.join(', ') || '';
+                projectNameInput.value = customHeadings || projectNameInput.value;
             }
         });
     }
@@ -3547,11 +3688,8 @@ async function analyzeText(options = {}) {
     analyzeInFlight = true;
     analyzeRerunRequested = false;
     try {
-        const payload = { text };
-        const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
-        if (customHeading) {
-            payload.custom_heading = customHeading;
-        }
+        const enabledHeadings = getEnabledSectionHeadings();
+        const payload = { text, section_headings: enabledHeadings };
         const selectedEngine = getSelectedJobEngine() || runtimeSettings?.tts_engine;
         if (selectedEngine) {
             payload.tts_engine = selectedEngine;
@@ -4134,6 +4272,8 @@ function getProjectState() {
         split_chapters: document.getElementById('split-chapters-checkbox')?.checked || false,
         full_story: document.getElementById('full-story-checkbox')?.checked || false,
         custom_heading: document.getElementById('custom-heading-input')?.value || '',
+        enabled_headings: enabledSectionHeadings,
+        custom_headings: customSectionHeadings,
         book_title: latestGeminiBookTitle,
         output_format: document.getElementById('job-output-format')?.value || 'mp3',
         output_bitrate: document.getElementById('job-output-bitrate')?.value || '128',
@@ -4231,6 +4371,13 @@ async function applyProjectState(project) {
     if (fullStory) fullStory.checked = project.full_story != null ? !!project.full_story : fullStory.defaultChecked;
     const heading = document.getElementById('custom-heading-input');
     if (heading) heading.value = project.custom_heading || '';
+    // Load heading configuration if available
+    if (project.enabled_headings) {
+        enabledSectionHeadings = project.enabled_headings.filter(h => DEFAULT_SECTION_HEADINGS.includes(h));
+        customSectionHeadings = project.custom_headings || [];
+        renderDefaultHeadingChips();
+        renderCustomHeadingChips();
+    }
     const projectNameInput = document.getElementById('project-name-input');
     if (projectNameInput && project.name) {
         projectNameInput.value = project.name;
@@ -4680,9 +4827,9 @@ async function generateAudio() {
     }
     
     console.log('Voice assignments for generation:', voiceAssignments);
-    
+
     const splitByChapter = document.getElementById('split-chapters-checkbox')?.checked || false;
-    const customHeading = document.getElementById('custom-heading-input')?.value?.trim();
+    const enabledHeadings = getEnabledSectionHeadings();
     const generateFullStory = splitByChapter && (document.getElementById('full-story-checkbox')?.checked || false);
     const outputFormat = document.getElementById('job-output-format')?.value || undefined;
     const outputBitrate = document.getElementById('job-output-bitrate')?.value || undefined;
@@ -4700,9 +4847,7 @@ async function generateAudio() {
     if (wordReplacements.length > 0) {
         payload.word_replacements = wordReplacements;
     }
-    if (customHeading) {
-        payload.custom_heading = customHeading;
-    }
+    payload.section_headings = enabledHeadings;
     if (selectedEngine) {
         payload.tts_engine = selectedEngine;
         const overrides = collectEngineOverrides(selectedEngine);

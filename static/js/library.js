@@ -969,7 +969,7 @@ function openM4BDownloadModal(jobId, title) {
                 <div style="margin-bottom: 16px;">
                     <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
                         <input type="checkbox" id="m4b-acx-compliance" style="cursor: pointer;">
-                        ACX Compliance (apply audiobook loudness standards)
+                        <span id="m4b-acx-label">ACX Compliance (apply audiobook loudness standards)</span>
                     </label>
                 </div>
                 <div style="margin-bottom: 16px;">
@@ -986,6 +986,30 @@ function openM4BDownloadModal(jobId, title) {
     `;
 
     document.body.appendChild(modal);
+
+    // Check if files are already ACX compliant
+    (async () => {
+        try {
+            const response = await fetch('/api/library');
+            const data = await response.json();
+            const jobItem = data.items?.find(item => item.job_id === jobId);
+            if (jobItem && jobItem.acx_compliance) {
+                const acxCheckbox = modal.querySelector('#m4b-acx-compliance');
+                const acxLabel = modal.querySelector('#m4b-acx-label');
+                if (acxCheckbox && acxLabel) {
+                    acxCheckbox.checked = false;
+                    acxCheckbox.disabled = true;
+                    acxCheckbox.style.cursor = 'not-allowed';
+                    acxCheckbox.style.opacity = '0.5';
+                    acxLabel.textContent = 'Already ACX compliant (skipped)';
+                    acxLabel.style.color = '#10b981';
+                    acxLabel.style.cursor = 'default';
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to check ACX compliance status:', e);
+        }
+    })();
 
     const closeModal = () => {
         modal.remove();
@@ -1021,19 +1045,69 @@ function openM4BDownloadModal(jobId, title) {
 
         // Add progress indicator
         const progressDiv = document.createElement('div');
-        progressDiv.style.cssText = 'margin-top: 12px; padding: 8px; background: rgba(99, 102, 241, 0.1); border-radius: 6px; border: 1px solid rgba(99, 102, 241, 0.3);';
+        progressDiv.style.cssText = 'margin-top: 12px; padding: 12px; background: rgba(99, 102, 241, 0.1); border-radius: 6px; border: 1px solid rgba(99, 102, 241, 0.3);';
         progressDiv.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 8px;">
-                <div style="width: 16px; height: 16px; border: 2px solid var(--primary-color); border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-                <span style="font-size: 0.85rem; color: var(--text-color);">Generating M4B audiobook... This may take several minutes depending on file size.</span>
+            <div style="margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-size: 0.85rem; color: var(--text-color);">Generating M4B audiobook...</span>
+                <span id="m4b-progress-percent" style="font-size: 0.85rem; font-weight: 500; color: var(--primary-color);">0%</span>
             </div>
-            <style>
-                @keyframes spin {
-                    to { transform: rotate(360deg); }
-                }
-            </style>
+            <div style="width: 100%; height: 8px; background: rgba(99, 102, 241, 0.2); border-radius: 4px; overflow: hidden;">
+                <div id="m4b-progress-bar" style="width: 0%; height: 100%; background: var(--primary-color); transition: width 0.3s ease; border-radius: 4px;"></div>
+            </div>
+            <div id="m4b-progress-status" style="margin-top: 6px; font-size: 0.8rem; color: var(--text-muted);">Initializing...</div>
         `;
         downloadBtn.parentNode.insertBefore(progressDiv, downloadBtn.nextSibling);
+
+        const progressBar = progressDiv.querySelector('#m4b-progress-bar');
+        const progressPercent = progressDiv.querySelector('#m4b-progress-percent');
+        const progressStatus = progressDiv.querySelector('#m4b-progress-status');
+
+        // Poll for progress
+        const pollProgress = async () => {
+            try {
+                const response = await fetch(`/api/download/${jobId}/m4b/progress`);
+                const data = await response.json();
+                
+                if (data.progress !== undefined) {
+                    const percent = Math.round(data.progress * 100);
+                    progressBar.style.width = `${percent}%`;
+                    progressPercent.textContent = `${percent}%`;
+                    
+                    if (data.status === 'encoding') {
+                        if (data.progress < 0.5) {
+                            progressStatus.textContent = `Encoding chapters (${Math.round(data.progress * 200)}/${Math.round(chapters.length)})...`;
+                        } else if (data.progress < 0.75) {
+                            progressStatus.textContent = 'Merging audio files...';
+                        } else if (data.progress < 0.95) {
+                            progressStatus.textContent = 'Adding chapter markers...';
+                        } else {
+                            progressStatus.textContent = 'Finalizing...';
+                        }
+                    } else if (data.status === 'complete') {
+                        progressStatus.textContent = 'Complete!';
+                        progressBar.style.width = '100%';
+                        progressPercent.textContent = '100%';
+                        return true; // Done
+                    } else if (data.status === 'error') {
+                        progressStatus.textContent = `Error: ${data.error}`;
+                        progressStatus.style.color = '#ef4444';
+                        return false; // Error
+                    }
+                }
+                return false; // Not done yet
+            } catch (e) {
+                console.error('Error polling progress:', e);
+                return false;
+            }
+        };
+
+        // Start polling
+        const pollInterval = setInterval(async () => {
+            const done = await pollProgress();
+            if (done !== false) {
+                clearInterval(pollInterval);
+            }
+        }, 500);
 
         try {
             const response = await fetch(`/api/download/${jobId}/m4b`, {
@@ -1045,6 +1119,8 @@ function openM4BDownloadModal(jobId, title) {
                     cover_art: coverArtData
                 })
             });
+
+            clearInterval(pollInterval);
 
             if (!response.ok) {
                 const error = await response.json();
@@ -1063,6 +1139,7 @@ function openM4BDownloadModal(jobId, title) {
 
             closeModal();
         } catch (error) {
+            clearInterval(pollInterval);
             alert('Error: ' + error.message);
             downloadBtn.disabled = false;
             downloadBtn.textContent = originalText;

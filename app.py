@@ -800,6 +800,26 @@ SECTION_HEADING_KEYWORDS = [
     "epilogue",
 ]
 
+def _parse_section_headings_from_db(custom_heading: Optional[str]) -> Optional[Any]:
+    """Parse section headings from database custom_heading field.
+    Handles both old format (comma-separated string) and new format (JSON with enabled_headings).
+    """
+    if not custom_heading:
+        return None
+    try:
+        # Try to parse as JSON first (new format)
+        parsed = json.loads(custom_heading)
+        if isinstance(parsed, dict) and "enabled_headings" in parsed:
+            return parsed["enabled_headings"]
+        # If it's a list, return it directly
+        if isinstance(parsed, list):
+            return parsed
+    except (json.JSONDecodeError, TypeError):
+        pass
+    # Fall back to old comma-separated format
+    return str(custom_heading).split(",") if custom_heading else None
+
+
 def _normalize_custom_headings(value: Optional[Any]) -> List[str]:
     if not value:
         return []
@@ -832,12 +852,17 @@ def _clean_heading_text(value: Optional[str]) -> str:
     return cleaned
 
 
-def _build_section_heading_pattern(custom_heading: Optional[Any] = None) -> re.Pattern:
-    keywords = list(SECTION_HEADING_KEYWORDS)
-    for custom in _normalize_custom_headings(custom_heading):
-        lowered = custom.lower()
-        if lowered not in keywords:
-            keywords.append(lowered)
+def _build_section_heading_pattern(section_headings: Optional[Any] = None) -> re.Pattern:
+    keywords = []
+    if section_headings is not None:
+        for heading in _normalize_custom_headings(section_headings):
+            lowered = heading.lower()
+            if lowered not in keywords:
+                keywords.append(lowered)
+    # If no section_headings provided (None), use default keywords
+    # If section_headings is explicitly empty list, use no keywords
+    if section_headings is None and not keywords:
+        keywords = list(SECTION_HEADING_KEYWORDS)
     keyword_regex = "|".join(filter(None, (_keyword_to_regex(word) for word in keywords)))
     if not keyword_regex:
         keyword_regex = "chapter"
@@ -1494,7 +1519,7 @@ def _serialize_job_entry(job_id: str, job_entry: Dict[str, Any]) -> Dict[str, An
         "split_by_chapter": int(bool(job_entry.get("chapter_mode"))),
         "generate_full_story": int(bool(job_entry.get("full_story_requested"))),
         "review_mode": int(bool(job_entry.get("review_mode"))),
-        "custom_heading": job_entry.get("custom_heading"),
+        "custom_heading": json.dumps({"enabled_headings": job_entry.get("section_headings")}) if job_entry.get("section_headings") else None,
         "merge_options": json.dumps(job_entry.get("merge_options") or {}),
         "voice_assignments": json.dumps(job_entry.get("voice_assignments") or {}),
         "config_snapshot": json.dumps(job_entry.get("config_snapshot") or {}),
@@ -1610,6 +1635,7 @@ def _load_jobs_from_db() -> Dict[str, Dict[str, Any]]:
             "full_story_requested": bool(row["full_story_requested"]),
             "review_mode": bool(row["review_mode"]),
             "custom_heading": row["custom_heading"],
+            "section_headings": _parse_section_headings_from_db(row["custom_heading"]),
             "merge_options": json.loads(row["merge_options"] or "{}"),
             "voice_assignments": json.loads(row["voice_assignments"] or "{}"),
             "config_snapshot": json.loads(row["config_snapshot"] or "{}"),
@@ -1709,7 +1735,8 @@ def _build_job_payload(job_id: str, text: str, job_entry: Dict[str, Any]) -> Dic
         "review_mode": bool(job_entry.get("review_mode")),
         "merge_options": job_entry.get("merge_options") or {},
         "job_dir": job_entry.get("job_dir"),
-        "custom_heading": job_entry.get("custom_heading"),
+        "custom_heading": json.dumps({"enabled_headings": job_entry.get("section_headings")}) if job_entry.get("section_headings") else None,
+        "section_headings": job_entry.get("section_headings"),
         "total_chunks": job_entry.get("total_chunks"),
         "engine": job_entry.get("engine"),
         "text_preview": (text or "")[:200],
@@ -1732,7 +1759,7 @@ def _build_job_data_from_entry(job_id: str, job_entry: Dict[str, Any]) -> Dict[s
         "review_mode": bool(job_entry.get("review_mode")),
         "merge_options": job_entry.get("merge_options") or {},
         "job_dir": job_entry.get("job_dir"),
-        "custom_heading": job_entry.get("custom_heading"),
+        "section_headings": job_entry.get("section_headings"),
         "resume_from_chunk_index": job_entry.get("resume_from_chunk_index") or 0,
     }
 
@@ -2397,6 +2424,8 @@ def _build_sections_from_matches(
         pre_content = text[:first_start].strip()
         if pre_content:
             # Create a "Title" section for content before the first heading.
+            # Only do this if the first match is not at the very start (position 0),
+            # to allow custom headings at the beginning to be detected.
             sections.append({"title": "Title", "content": pre_content})
 
     # Matches a closing speaker tag at the very start of a string (possibly after whitespace)
@@ -2450,7 +2479,7 @@ def _build_sections_from_matches(
     return sections
 
 
-def split_text_into_sections(text: str, custom_heading: Optional[Any] = None) -> List[Dict[str, str]]:
+def split_text_into_sections(text: str, section_headings: Optional[Any] = None) -> List[Dict[str, str]]:
     """
     Split text into logical sections (book/chapter/section/letter/part).
     If book headings exist, split by book and include all chapters beneath each book.
@@ -2460,7 +2489,7 @@ def split_text_into_sections(text: str, custom_heading: Optional[Any] = None) ->
     if book_matches:
         return _build_sections_from_matches(text, book_matches, "Book")
 
-    section_pattern = _build_section_heading_pattern(custom_heading)
+    section_pattern = _build_section_heading_pattern(section_headings)
     section_matches = list(section_pattern.finditer(text))
     if section_matches:
         return _build_sections_from_matches(text, section_matches, "Section")
@@ -2469,10 +2498,10 @@ def split_text_into_sections(text: str, custom_heading: Optional[Any] = None) ->
     return [{"title": "Full Story", "content": clean_text}] if clean_text else []
 
 
-def split_text_into_book_sections(text: str, custom_heading: Optional[Any] = None) -> Dict[str, Any]:
+def split_text_into_book_sections(text: str, section_headings: Optional[Any] = None) -> Dict[str, Any]:
     """Return structured book->chapter hierarchy with fallbacks."""
     book_matches = list(BOOK_HEADING_PATTERN.finditer(text))
-    section_pattern = _build_section_heading_pattern(custom_heading)
+    section_pattern = _build_section_heading_pattern(section_headings)
 
     if book_matches:
         books = _build_sections_from_matches(text, book_matches, "Book")
@@ -2595,7 +2624,7 @@ def _append_llm_chunks(
         })
 
 
-def build_gemini_sections(text: str, prefer_chapters: bool, config: dict, custom_heading: Optional[Any] = None):
+def build_gemini_sections(text: str, prefer_chapters: bool, config: dict, section_headings: Optional[Any] = None):
     """Create sections for Gemini processing based on detected sections or chunks."""
     sections = []
     if not text:
@@ -2605,11 +2634,11 @@ def build_gemini_sections(text: str, prefer_chapters: bool, config: dict, custom
     llm_chunk_chapters = _resolve_llm_chunk_chapters(config)
 
     book_matches = list(BOOK_HEADING_PATTERN.finditer(text))
-    section_pattern = _build_section_heading_pattern(custom_heading)
+    section_pattern = _build_section_heading_pattern(section_headings)
     section_matches = list(section_pattern.finditer(text)) if not book_matches else []
 
     if prefer_chapters and book_matches:
-        hierarchy = split_text_into_book_sections(text, custom_heading)
+        hierarchy = split_text_into_book_sections(text, section_headings)
         for book_idx, book in enumerate(hierarchy.get("books") or [], start=1):
             book_title = (book.get("title") or f"Book {book_idx}").strip()
             for chapter in book.get("chapters") or []:
@@ -2630,7 +2659,7 @@ def build_gemini_sections(text: str, prefer_chapters: bool, config: dict, custom
                         "source": "section",
                     })
     elif prefer_chapters and section_matches:
-        for chapter in split_text_into_sections(text, custom_heading):
+        for chapter in split_text_into_sections(text, section_headings):
             if llm_chunk_chapters:
                 _append_llm_chunks(
                     sections,
@@ -2891,13 +2920,13 @@ def estimate_total_chunks(
     include_full_story: bool = False,
     engine_name: Optional[str] = None,
     config: Optional[Dict] = None,
-    custom_heading: Optional[Any] = None,
+    section_headings: Optional[Any] = None,
 ) -> int:
     """Estimate total chunk count for a job to power progress indicators."""
     processor = _create_text_processor_for_engine(engine_name or DEFAULT_CONFIG["tts_engine"], chunk_size, config)
     sections = [{"content": text}]
     if split_by_chapter:
-        detected = split_text_into_sections(text, custom_heading)
+        detected = split_text_into_sections(text, section_headings)
         if detected:
             sections = detected
 
@@ -3046,7 +3075,7 @@ def process_audio_job(job_data):
     config = job_data['config']
     split_by_chapter = job_data.get('split_by_chapter', False)
     generate_full_story = job_data.get('generate_full_story', False)
-    custom_heading = job_data.get('custom_heading')
+    section_headings = job_data.get('section_headings')
     word_replacements = job_data.get('word_replacements') or []
     job_log = None
     _job_log_handler = None
@@ -3229,7 +3258,7 @@ def process_audio_job(job_data):
         book_sections = []
         book_mode = False
         if split_by_chapter:
-            hierarchy = split_text_into_book_sections(text, custom_heading)
+            hierarchy = split_text_into_book_sections(text, section_headings)
             if hierarchy.get("kind") == "book" and hierarchy.get("books"):
                 book_mode = True
                 book_sections = hierarchy.get("books") or []
@@ -3957,6 +3986,7 @@ def process_audio_job(job_data):
             "full_story": full_story_entry,
             "intro_silence_ms": int(max(0, config.get('intro_silence_ms', 0) or 0)),
             "inter_chunk_silence_ms": int(max(0, config.get('inter_chunk_silence_ms', 0) or 0)),
+            "acx_compliance": bool(config.get('acx_compliance', False)),
         }
         save_job_metadata(job_dir, metadata)
         
@@ -5905,6 +5935,7 @@ def _merge_review_job(job_id: str, job_entry: Dict[str, Any], manifest: Dict[str
         "full_story": full_story_entry,
         "intro_silence_ms": int(max(0, merge_options.get("intro_silence_ms") or 0)),
         "inter_chunk_silence_ms": int(max(0, merge_options.get("inter_chunk_silence_ms") or 0)),
+        "acx_compliance": bool(merge_options.get("acx_compliance", False)),
     }
     save_job_metadata(job_dir, metadata)
 
@@ -6320,13 +6351,13 @@ def analyze_text():
 
             processor = _create_text_processor_for_engine(selected_engine, config["chunk_size"], config)
             stats = processor.get_statistics(text)
-            custom_heading = data.get("custom_heading")
+            section_headings = data.get("section_headings")
             book_matches = list(BOOK_HEADING_PATTERN.finditer(text))
-            section_pattern = _build_section_heading_pattern(custom_heading)
+            section_pattern = _build_section_heading_pattern(section_headings)
             section_matches = list(section_pattern.finditer(text))
 
             if book_matches:
-                hierarchy = split_text_into_book_sections(text, custom_heading)
+                hierarchy = split_text_into_book_sections(text, section_headings)
                 books = hierarchy.get("books") or []
                 chapters: List[Dict[str, Any]] = []
                 for book in books:
@@ -6340,7 +6371,7 @@ def analyze_text():
                     "section_count": len(chapters),
                 }
             elif section_matches:
-                sections = split_text_into_sections(text, custom_heading)
+                sections = split_text_into_sections(text, section_headings)
                 stats['section_detection'] = {
                     "detected": True,
                     "count": len(sections),
@@ -6629,7 +6660,7 @@ def preview_section_detection():
     try:
         data = request.json or {}
         text = (data.get('text') or '').strip()
-        custom_heading = data.get('custom_heading')
+        section_headings = data.get('section_headings')
         voice_assignments = data.get('voice_assignments', {})
 
         if not text:
@@ -6640,7 +6671,7 @@ def preview_section_detection():
 
         voice_assignments = _prepare_voice_assignments(text, voice_assignments)
 
-        hierarchy = split_text_into_book_sections(text, custom_heading)
+        hierarchy = split_text_into_book_sections(text, section_headings)
 
         def preview_content(content: str, limit: int = 220, heading: Optional[str] = None) -> str:
             snippet = (content or "").strip()
@@ -6736,12 +6767,12 @@ def update_library_title(job_id: str):
 
 @app.route('/api/gemini/process', methods=['POST'])
 def process_text_with_gemini():
-    """Send text (optionally chapterized) through Google Gemini."""
+    """Process text with Gemini using section-based chunking."""
     try:
         data = request.json or {}
         text = (data.get('text') or '').strip()
         prefer_chapters = bool(data.get('prefer_chapters', True))
-        custom_heading = data.get('custom_heading')
+        section_headings = data.get('section_headings')
         prompt_override = (data.get('prompt_override') or '').strip()
 
         if not text:
@@ -6762,7 +6793,7 @@ def process_text_with_gemini():
 
         prompt_prefix = prompt_override or (config.get('gemini_prompt') or '').strip()
 
-        sections = build_gemini_sections(text, prefer_chapters, config, custom_heading)
+        sections = build_gemini_sections(text, prefer_chapters, config, section_headings)
         if not sections:
             return jsonify({
                 "success": False,
@@ -6942,7 +6973,7 @@ def get_gemini_sections():
         data = request.json or {}
         text = (data.get('text') or '').strip()
         prefer_chapters = bool(data.get('prefer_chapters', True))
-        custom_heading = data.get('custom_heading')
+        section_headings = data.get('section_headings')
 
         if not text:
             return jsonify({
@@ -6951,7 +6982,7 @@ def get_gemini_sections():
             }), 400
 
         config = load_config()
-        sections = build_gemini_sections(text, prefer_chapters, config, custom_heading)
+        sections = build_gemini_sections(text, prefer_chapters, config, section_headings)
 
         sanitized = []
         for idx, section in enumerate(sections, start=1):
@@ -7118,7 +7149,7 @@ def generate_audio():
         logger.info("Received voice_assignments: %s", voice_assignments)
         split_by_chapter = bool(data.get('split_by_chapter', False))
         generate_full_story = bool(data.get('generate_full_story', False)) and split_by_chapter
-        custom_heading = data.get('custom_heading')
+        section_headings = data.get('section_headings')
         requested_format = (data.get('output_format') or '').strip().lower()
         requested_bitrate = data.get('output_bitrate_kbps')
         requested_engine = (data.get('tts_engine') or '').strip().lower()
@@ -7201,7 +7232,7 @@ def generate_audio():
             include_full_story=generate_full_story,
             engine_name=active_engine,
             config=config,
-            custom_heading=custom_heading,
+            section_headings=section_headings,
         )
         
         merge_options = {
@@ -7232,7 +7263,7 @@ def generate_audio():
                 "chunks": [],
                 "voice_assignments": voice_assignments,
                 "config_snapshot": copy.deepcopy(config),
-                "custom_heading": custom_heading,
+                "custom_heading": json.dumps({"enabled_headings": section_headings}) if section_headings else None,
                 "speakers": speakers,
                 "regen_tasks": {},
                 "engine": config.get("tts_engine"),
@@ -7253,7 +7284,7 @@ def generate_audio():
             "review_mode": review_mode,
             "merge_options": merge_options,
             "job_dir": job_dir,
-            "custom_heading": custom_heading,
+            "section_headings": section_headings,
             "resume_from_chunk_index": 0,
             "word_replacements": word_replacements,
         }
@@ -7435,13 +7466,17 @@ def download_audio_bundle(job_id):
         }), 500
 
 
+# Global progress tracking for M4B exports
+m4b_progress = {}
+
+
 @app.route('/api/download/<job_id>/m4b', methods=['POST'])
 def download_m4b(job_id):
     """Download audiobook as M4B format with chapter markers."""
     try:
         payload = request.get_json(silent=True) or {}
         bitrate_kbps = int(payload.get("bitrate", 128))
-        acx_compliance = bool(payload.get("acx_compliance", False))
+        requested_acx_compliance = bool(payload.get("acx_compliance", False))
         cover_art_data = payload.get("cover_art")
 
         job_dir = OUTPUT_DIR / job_id
@@ -7458,6 +7493,11 @@ def download_m4b(job_id):
                 "error": "Metadata not found"
             }), 404
 
+        # Check if original files are already ACX compliant
+        original_acx_compliant = metadata.get("acx_compliance", False)
+        # Skip ACX processing if original files are already compliant
+        acx_compliance = requested_acx_compliance and not original_acx_compliant
+
         # Only allow M4B for chapter-mode jobs
         if not metadata.get("chapter_mode", False):
             return jsonify({
@@ -7472,99 +7512,81 @@ def download_m4b(job_id):
                 "error": "No chapters found"
             }), 400
 
-        # Get chapter audio files
+        # Collect chapter audio files
         chapter_files = []
         chapter_metadata = []
-        current_start = 0.0
-
         for chapter in chapters:
-            rel_path = chapter.get("relative_path")
-            if not rel_path:
+            relative_path = chapter.get("relative_path")
+            if not relative_path:
                 continue
-            file_path = job_dir / rel_path
-            if not file_path.exists():
-                continue
-
-            chapter_files.append(str(file_path))
-            chapter_metadata.append({
-                "title": chapter.get("title", f"Chapter {len(chapter_metadata) + 1}"),
-                "start_time": current_start
-            })
-
-            # Calculate duration for next chapter start time
-            try:
-                from src.audio_merger import get_audio_duration
-                duration = get_audio_duration(str(file_path))
-                current_start += duration
-            except Exception as e:
-                logger.warning(f"Failed to get duration for {file_path}: {e}")
+            chapter_path = job_dir / relative_path
+            if chapter_path.exists():
+                chapter_files.append(str(chapter_path))
+                chapter_metadata.append({
+                    "title": chapter.get("title", f"Chapter {chapter.get('index', 0)}"),
+                    "start_time": chapter.get("start_time", 0),
+                })
 
         if not chapter_files:
             return jsonify({
                 "success": False,
                 "error": "No chapter audio files found"
-            }), 404
+            }), 400
 
-        # Handle cover art upload
+        # Handle cover art
         cover_art_path = None
         if cover_art_data:
             try:
                 import base64
                 from PIL import Image
                 import io
-
-                # Parse base64 data URL
-                if cover_art_data.startswith("data:"):
-                    header, encoded = cover_art_data.split(",", 1)
-                    image_data = base64.b64decode(encoded)
-                else:
-                    image_data = base64.b64decode(cover_art_data)
-
-                # Validate and process cover art
-                img = Image.open(io.BytesIO(image_data))
-
-                # Convert to RGB if necessary (PNG might have alpha channel)
-                if img.mode in ('RGBA', 'LA', 'P'):
-                    # Create white background
-                    background = Image.new('RGB', img.size, (255, 255, 255))
-                    if img.mode == 'P':
-                        img = img.convert('RGBA')
-                    if img.mode in ('RGBA', 'LA'):
-                        background.paste(img, mask=img.split()[-1])  # Use alpha channel as mask
-                        img = background
-                    else:
-                        img = img.convert('RGB')
-                elif img.mode != 'RGB':
-                    img = img.convert('RGB')
-
-                # Resize to reasonable dimensions if too large (max 3000x3000)
-                max_size = 3000
-                if img.width > max_size or img.height > max_size:
-                    img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-
-                # Save as JPEG for better M4B compatibility
-                cover_path = job_dir / "cover_art.jpg"
-                img.save(cover_path, "JPEG", quality=95)
-                cover_art_path = str(cover_path)
-                logger.info(f"Cover art saved to {cover_path} (size: {img.width}x{img.height})")
+                
+                header, encoded = cover_art_data.split(",", 1)
+                img_data = base64.b64decode(encoded)
+                img = Image.open(io.BytesIO(img_data))
+                
+                # Convert to RGB if necessary (for JPEG)
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                
+                cover_art_path = job_dir / "cover_art.jpg"
+                img.save(cover_art_path, "JPEG", quality=95)
             except Exception as e:
-                logger.warning(f"Failed to process cover art: {e}", exc_info=True)
-                cover_art_path = None
+                logger.warning(f"Failed to process cover art: {e}")
 
-        # Generate M4B
         output_filename = f"{job_id}.m4b"
         output_path = job_dir / output_filename
 
+        # Initialize progress tracking
+        m4b_progress[job_id] = {"progress": 0, "status": "encoding", "error": None}
+
         from src.audio_merger import AudioMerger
         merger = AudioMerger()
-        merger.merge_to_m4b(
-            input_files=chapter_files,
-            output_path=str(output_path),
-            chapter_metadata=chapter_metadata,
-            bitrate_kbps=bitrate_kbps,
-            acx_compliance=acx_compliance,
-            cover_art_path=cover_art_path,
-        )
+        
+        def update_progress(progress):
+            m4b_progress[job_id] = {
+                "progress": progress,
+                "status": "encoding" if progress < 1.0 else "complete",
+                "error": None
+            }
+        
+        try:
+            merger.merge_to_m4b(
+                input_files=chapter_files,
+                output_path=str(output_path),
+                chapter_metadata=chapter_metadata,
+                bitrate_kbps=bitrate_kbps,
+                acx_compliance=acx_compliance,
+                cover_art_path=cover_art_path,
+                progress_callback=update_progress,
+            )
+        except Exception as e:
+            m4b_progress[job_id] = {
+                "progress": m4b_progress.get(job_id, {}).get("progress", 0),
+                "status": "error",
+                "error": str(e)
+            }
+            raise
 
         # Get audiobook metadata for filename
         audiobook_title = metadata.get("audiobook_title") or f"audiobook_{job_id}"
@@ -7583,6 +7605,13 @@ def download_m4b(job_id):
             "success": False,
             "error": str(e)
         }), 500
+
+
+@app.route('/api/download/<job_id>/m4b/progress', methods=['GET'])
+def m4b_progress_endpoint(job_id):
+    """Get progress of M4B generation."""
+    progress_info = m4b_progress.get(job_id, {"progress": 0, "status": "not_started", "error": None})
+    return jsonify(progress_info)
 
 
 def _build_library_listing():
@@ -7737,6 +7766,7 @@ def _build_library_listing():
                     "audiobook_genre": metadata.get("audiobook_genre"),
                     "audiobook_year": metadata.get("audiobook_year"),
                     "audiobook_description": metadata.get("audiobook_description"),
+                    "acx_compliance": metadata.get("acx_compliance", False),
                 })
             elif full_story_entry:
                 _word_replacements2 = (jobs.get(job_id) or {}).get("word_replacements") or metadata.get("word_replacements") or []
@@ -7762,6 +7792,7 @@ def _build_library_listing():
                     "audiobook_genre": metadata.get("audiobook_genre"),
                     "audiobook_year": metadata.get("audiobook_year"),
                     "audiobook_description": metadata.get("audiobook_description"),
+                    "acx_compliance": metadata.get("acx_compliance", False),
                 })
             continue
 

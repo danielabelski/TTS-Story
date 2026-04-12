@@ -3,6 +3,7 @@ Audio Merger - Combines audio chunks into single file
 """
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -401,6 +402,41 @@ class AudioMerger:
         normalized.export(output_path, format="wav")
         logging.info(f"Normalized audio saved to {output_path}")
 
+    def _encode_chapter_to_aac(
+        self,
+        input_file: str,
+        output_file: Path,
+        bitrate_kbps: int,
+        acx_compliance: bool,
+        ffmpeg_path: str,
+    ) -> None:
+        """Encode a single chapter to AAC format."""
+        cmd = [
+            ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-threads",
+            "0",
+            "-i",
+            str(input_file),
+            "-c:a",
+            "aac",
+            "-b:a",
+            f"{bitrate_kbps}k",
+        ]
+
+        if acx_compliance:
+            # Apply loudnorm, aresample, and alimiter during parallel encoding
+            # This reduces the filter complexity in the final merge
+            cmd.extend([
+                "-af",
+                "loudnorm=I=-19:TP=-3.5:LRA=7:print_format=none,alimiter=level_in=1:level_out=1:limit=0.708:attack=5:release=50:level=disabled,aresample=44100"
+            ])
+
+        cmd.extend(["-y", str(output_file)])
+        subprocess.run(cmd, capture_output=True, text=True)
+
     def merge_to_m4b(
         self,
         input_files: List[str],
@@ -443,19 +479,132 @@ class AudioMerger:
         if not ffmpeg_path:
             raise RuntimeError("ffmpeg not found; required for M4B export")
 
-        # Create concat list file
-        list_file = output_path.with_suffix(".concat.txt")
+        # Parallel pre-encode chapters to AAC
+        import concurrent.futures
+        import multiprocessing
+        import time
+
+        # Determine optimal worker count (leave one core free for system)
+        max_workers = min(len(input_files), max(1, (multiprocessing.cpu_count() or 4) - 1))
+        logging.info(f"Using {max_workers} workers for parallel encoding")
+
+        # Create temp directory for encoded files in the same location as output
+        temp_dir = output_path.parent / "temp_aac"
+        temp_dir.mkdir(exist_ok=True)
+
+        encoded_files = []
+        parallel_success = False
+        list_file = None
+        metadata_file = None
+
         try:
+            encode_start = time.time()
+            # Encode files in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {}
+                for i, input_file in enumerate(input_files):
+                    output_file = temp_dir / f"chapter_{i:03d}.aac"
+                    future = executor.submit(
+                        self._encode_chapter_to_aac,
+                        input_file,
+                        output_file,
+                        bitrate_kbps,
+                        acx_compliance,
+                        ffmpeg_path,
+                    )
+                    futures[future] = output_file
+
+                # Wait for all encodings to complete with progress tracking
+                completed_count = 0
+                total_files = len(futures)
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        future.result()
+                        encoded_files.append(futures[future])
+                        completed_count += 1
+                        # Update progress (0-50% for encoding phase)
+                        progress = (completed_count / total_files) * 0.5
+                        if progress_callback:
+                            try:
+                                progress_callback(progress)
+                            except Exception:
+                                pass
+                        logging.info(f"Encoded: {futures[future].name} ({completed_count}/{total_files})")
+                    except Exception as e:
+                        logging.error(f"Failed to encode {futures[future]}: {e}")
+                        raise
+
+            encode_time = time.time() - encode_start
+            logging.info(f"Parallel encoding completed in {encode_time:.2f} seconds")
+            parallel_success = True
+
+            # Sort encoded files to maintain order
+            encoded_files.sort(key=lambda x: int(x.stem.split('_')[1]))
+
+            # Create concat list file with encoded AAC files using absolute paths
+            list_file = output_path.with_suffix(".concat.txt")
+            with list_file.open("w", encoding="utf-8") as handle:
+                for file_path in encoded_files:
+                    handle.write(f"file '{file_path.absolute().as_posix()}'\n")
+
+            # Verify encoded files exist and log their sizes
+            for file_path in encoded_files:
+                if file_path.exists():
+                    size = file_path.stat().st_size
+                    logging.info(f"Encoded file: {file_path.name} - Size: {size} bytes")
+                else:
+                    logging.error(f"Encoded file missing: {file_path.name}")
+
+            # Log concat list contents
+            logging.info(f"Concat list contents:")
+            with list_file.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    logging.info(f"  {line.strip()}")
+
+            logging.info(f"Concat list created with {len(encoded_files)} encoded files")
+
+        except Exception as e:
+            logging.warning(f"Parallel encoding failed, falling back to sequential: {e}")
+            parallel_success = False
+            # Cleanup failed temp files
+            if temp_dir.exists():
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            temp_dir.mkdir(exist_ok=True)
+
+            # Fallback to original concat list with original files
+            list_file = output_path.with_suffix(".concat.txt")
             with list_file.open("w", encoding="utf-8") as handle:
                 for file_path in input_files:
-                    handle.write(f"file '{Path(file_path).as_posix()}'\n")
+                    handle.write(f"file '{Path(file_path).absolute().as_posix()}'\n")
 
-            # Build ffmpeg command
+            logging.info(f"Concat list created with {len(input_files)} original files")
+
+        # Build ffmpeg command for final merge
+        # Use copy codec when parallel encoding succeeds (concat protocol handles this correctly)
+        if parallel_success:
+            if acx_compliance:
+                # loudnorm, aresample, and alimiter already applied during parallel encoding
+                # Only add noise floor in final merge (requires re-encoding due to amix)
+                codec_args = ["-c:a", "aac", "-b:a", f"{bitrate_kbps}k"]
+                filter_args = [
+                    "-filter_complex",
+                    (
+                        "anoisesrc=r=44100:color=white:amplitude=0.000316[noise];"
+                        "[0:a][noise]amix=inputs=2:weights=1 0.000316:normalize=0:duration=shortest[out]"
+                    ),
+                    "-map", "[out]",
+                ]
+            else:
+                codec_args = ["-c:a", "copy"]
+                filter_args = ["-map", "0:a"]
+        else:
+            # Re-encode needed: parallel failed
             codec_args = ["-c:a", "aac", "-b:a", f"{bitrate_kbps}k"]
             filter_args = []
 
             if acx_compliance:
-                # ACX standards: 44.1kHz, loudnorm targeting -19dB integrated
+                # Full ACX processing in sequential mode
                 filter_args = [
                     "-filter_complex",
                     (
@@ -471,108 +620,248 @@ class AudioMerger:
                 # Without ACX compliance, map audio directly
                 filter_args = ["-map", "0:a"]
 
-            # Create chapter metadata file for ffmpeg
-            metadata_file = output_path.with_suffix(".metadata.txt")
-            with metadata_file.open("w", encoding="utf-8") as mf:
-                mf.write(";FFMETADATA1\n")
-                for idx, chapter in enumerate(chapter_metadata):
-                    title = chapter.get("title", f"Chapter {idx + 1}")
-                    start_time = chapter.get("start_time", 0)
-                    # Calculate end time (next chapter's start or total duration)
-                    if idx < len(chapter_metadata) - 1:
-                        end_time = chapter_metadata[idx + 1].get("start_time", start_time)
-                    else:
-                        # Last chapter - we'll let ffmpeg calculate it
-                        end_time = None
-                    # FFmpeg chapter metadata format
-                    mf.write("[CHAPTER]\n")
-                    mf.write(f"TIMEBASE=1/1000\n")
-                    mf.write(f"START={int(start_time * 1000)}\n")
-                    if end_time is not None:
-                        mf.write(f"END={int(end_time * 1000)}\n")
-                    mf.write(f"title={title}\n")
-
-            cmd = [
-                ffmpeg_path,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                str(list_file),
-            ]
-
-            # Add cover art if provided (before metadata to avoid mapping conflicts)
-            metadata_idx = 1  # Default metadata index
-            if cover_art_path and os.path.exists(cover_art_path):
-                cmd.extend(["-i", cover_art_path])
-                metadata_idx = 2  # Metadata is now input 2
-
-            cmd.extend([
-                "-i",
-                str(metadata_file),
-                "-map_metadata",
-                str(metadata_idx),
-            ])
-
-            # Add filter_args (includes audio mapping)
-            cmd.extend(filter_args)
-
-            # Add cover art mapping if provided (must come after audio mapping but before codec args)
-            if cover_art_path and os.path.exists(cover_art_path):
-                # Use mjpeg codec for cover art and mark as attached picture
-                cmd.extend(["-map", "1:v", "-c:v", "mjpeg", "-disposition:v", "attached_pic"])
-
-            cmd.extend([
-                *codec_args,
-                "-f",
-                "mp4",
-                "-movflags",
-                "+faststart",  # Optimizes for streaming
-                "-y",
-                str(output_path),
-            ])
-
-            logging.info(f"Merging to M4B with ffmpeg: {output_path}")
-            logging.info(f"FFmpeg command: {' '.join(cmd)}")
-            if progress_callback:
-                try:
-                    progress_callback(0.0)
-                except Exception:
-                    pass
-
-            import subprocess
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            logging.info(f"FFmpeg stdout: {result.stdout}")
-            logging.info(f"FFmpeg stderr: {result.stderr}")
-            if result.returncode != 0:
-                logging.error("ffmpeg M4B merge failed: %s", result.stderr.strip())
-                raise RuntimeError(f"ffmpeg M4B merge failed: {result.stderr.strip()}")
-
-            if progress_callback:
-                try:
-                    progress_callback(1.0)
-                except Exception:
-                    pass
-
-            logging.info(f"M4B export complete: {output_path}")
-            return str(output_path)
-
-        finally:
-            # Cleanup temp files
+        # Calculate cumulative durations for chapter markers
+        # We need to know the actual duration of each input file to set correct chapter start times
+        cumulative_time = 0
+        chapter_durations = []
+        for input_file in input_files:
+            # Get duration of this file using ffprobe or audio info
             try:
-                if list_file.exists():
-                    list_file.unlink()
+                from pydub.utils import mediainfo
+                info = mediainfo(str(input_file))
+                duration = float(info.get('duration', 0))
+                chapter_durations.append(duration)
+                cumulative_time += duration
+            except Exception as e:
+                logging.warning(f"Could not get duration for {input_file}: {e}")
+                # Fallback: estimate based on file size or use default
+                chapter_durations.append(0)
+                cumulative_time += 0
+
+        # Step 1: Create M4B without chapter markers using concat protocol
+        # Read concat list to build concat protocol string
+        with list_file.open("r", encoding="utf-8") as handle:
+            concat_files = [line.strip().replace("file '", "").replace("'", "") for line in handle if line.strip()]
+        
+        concat_input = "|".join(concat_files)
+        
+        cmd = [
+            ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-threads",
+            "0",  # Auto-detect optimal thread count for multi-core utilization
+            "-i",
+            f"concat:{concat_input}",
+        ]
+
+        # Add cover art if provided
+        if cover_art_path and os.path.exists(cover_art_path):
+            cmd.extend(["-i", cover_art_path])
+
+        # Map audio and optionally cover art
+        cmd.extend(["-map", "0:a"])
+        if cover_art_path and os.path.exists(cover_art_path):
+            cmd.extend(["-map", "1:v"])
+
+        # Add filter_args (includes audio mapping)
+        cmd.extend(filter_args)
+
+        # Add cover art codec if provided
+        if cover_art_path and os.path.exists(cover_art_path):
+            cmd.extend(["-c:v", "mjpeg", "-disposition:v", "attached_pic"])
+
+        cmd.extend([
+            *codec_args,
+            "-f",
+            "mp4",
+            "-movflags",
+            "+faststart",  # Optimizes for streaming
+            "-y",
+            str(output_path),
+        ])
+
+        logging.info(f"Step 1: Creating M4B without chapter markers")
+        logging.info(f"FFmpeg command: {' '.join(str(item) for item in cmd)}")
+        if progress_callback:
+            try:
+                progress_callback(0.5)  # Start of merge phase
             except Exception:
                 pass
+
+        import subprocess
+        # Run FFmpeg with progress tracking
+        cmd_with_progress = cmd[:2] + ["-progress", "pipe:1", "-nostats", "-loglevel", "info"] + cmd[2:]
+        cmd_with_progress = [str(item) for item in cmd_with_progress]
+        process = subprocess.Popen(
+            cmd_with_progress,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+        
+        # Parse progress output
+        while True:
+            line = process.stdout.readline()
+            if not line and process.poll() is not None:
+                break
+            if line:
+                line = line.strip()
+                if line.startswith("out_time_ms="):
+                    # Parse time progress (in microseconds)
+                    try:
+                        time_ms = int(line.split("=")[1])
+                        # Estimate progress based on time (assuming ~7 hours total)
+                        # This is rough estimation since we don't know exact duration beforehand
+                        # 50-75% range for step 1
+                        estimated_seconds = time_ms / 1_000_000
+                        max_estimated = 7 * 3600  # 7 hours in seconds
+                        progress = 0.5 + min((estimated_seconds / max_estimated) * 0.2, 0.2)
+                        if progress_callback:
+                            try:
+                                progress_callback(progress)
+                            except Exception:
+                                pass
+                    except (ValueError, IndexError):
+                        pass
+        
+        stderr_output = process.stderr.read()
+        process.wait()
+        
+        logging.info(f"FFmpeg stderr: {stderr_output}")
+        if process.returncode != 0:
+            logging.error("ffmpeg M4B merge failed: %s", stderr_output.strip())
+            raise RuntimeError(f"ffmpeg M4B merge failed: {stderr_output.strip()}")
+
+        # Step 2: Add chapter markers to the created M4B file
+        # Create chapter metadata file
+        metadata_file = output_path.with_suffix(".metadata.txt")
+        with metadata_file.open("w", encoding="utf-8") as mf:
+            mf.write(";FFMETADATA1\n")
+            current_time = 0
+            for idx, chapter in enumerate(chapter_metadata):
+                title = chapter.get("title", f"Chapter {idx + 1}")
+                # Use cumulative time as start time (position in merged file)
+                start_time = current_time
+                # Calculate end time based on this chapter's duration
+                if idx < len(chapter_durations) and chapter_durations[idx] > 0:
+                    end_time = current_time + chapter_durations[idx]
+                else:
+                    # Last chapter - use a large end time (ffmpeg will adjust to actual duration)
+                    end_time = start_time + 9999999
+                # FFmpeg chapter metadata format
+                mf.write("[CHAPTER]\n")
+                mf.write(f"TIMEBASE=1/1000\n")
+                mf.write(f"START={int(start_time * 1000)}\n")
+                mf.write(f"END={int(end_time * 1000)}\n")
+                mf.write(f"title={title}\n")
+                # Update cumulative time for next chapter
+                if idx < len(chapter_durations):
+                    current_time += chapter_durations[idx]
+
+        # Add metadata to existing M4B file
+        temp_output = output_path.with_suffix(".temp.m4b")
+        cmd_metadata = [
+            ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(output_path),
+            "-i",
+            str(metadata_file),
+            "-map",
+            "0",
+            "-map_metadata",
+            "1",
+            "-c",
+            "copy",  # Copy streams without re-encoding
+            "-y",
+            str(temp_output),
+        ]
+
+        logging.info(f"Step 2: Adding chapter markers to M4B")
+        logging.info(f"FFmpeg command: {' '.join(cmd_metadata)}")
+        if progress_callback:
             try:
-                if "metadata_file" in locals() and metadata_file.exists():
-                    metadata_file.unlink()
+                progress_callback(0.75)  # Start of metadata phase
             except Exception:
                 pass
+
+        # Run FFmpeg with progress tracking for metadata addition
+        cmd_metadata_with_progress = cmd_metadata[:2] + ["-progress", "pipe:1", "-nostats", "-loglevel", "info"] + cmd_metadata[2:]
+        process_metadata = subprocess.Popen(
+            cmd_metadata_with_progress,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+        
+        # Parse progress output for metadata step
+        while True:
+            line = process_metadata.stdout.readline()
+            if not line and process_metadata.poll() is not None:
+                break
+            if line:
+                line = line.strip()
+                if line.startswith("out_time_ms="):
+                    # Parse time progress (in microseconds)
+                    try:
+                        time_ms = int(line.split("=")[1])
+                        # Estimate progress based on time (assuming ~7 hours total)
+                        # 75-95% range for step 2
+                        estimated_seconds = time_ms / 1_000_000
+                        max_estimated = 7 * 3600  # 7 hours in seconds
+                        progress = 0.75 + min((estimated_seconds / max_estimated) * 0.2, 0.2)
+                        if progress_callback:
+                            try:
+                                progress_callback(progress)
+                            except Exception:
+                                pass
+                    except (ValueError, IndexError):
+                        pass
+        
+        stderr_metadata = process_metadata.stderr.read()
+        process_metadata.wait()
+        
+        logging.info(f"FFmpeg stderr: {stderr_metadata}")
+        
+        if process_metadata.returncode != 0:
+            logging.warning("Failed to add chapter metadata: %s", stderr_metadata.strip())
+            # Continue without chapter markers if this fails
+        else:
+            # Replace original file with metadata-enhanced version
+            import shutil
+            shutil.move(str(temp_output), str(output_path))
+            logging.info("Chapter markers added successfully")
+
+        if progress_callback:
+            try:
+                progress_callback(1.0)
+            except Exception:
+                pass
+
+        logging.info(f"M4B export complete: {output_path}")
+
+        # Cleanup temp files
+        try:
+            if list_file and list_file.exists():
+                list_file.unlink()
+            if metadata_file and metadata_file.exists():
+                metadata_file.unlink()
+            # Cleanup temp directory with encoded AAC files
+            if temp_dir.exists():
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception as e:
+            logging.warning(f"Error cleaning up temp files: {e}")
+
+        return str(output_path)
 
 
 def apply_chunk_silence(
