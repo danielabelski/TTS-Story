@@ -10,7 +10,7 @@ Thank you — it genuinely means a lot! 🙏
 
 # Current Updates and Notes - updated 04-12-2026
 - Added **dynamic section heading detection** with chip-based UI — enable/disable default section headings (book, chapter, section, letter, part, prologue, epilogue) and add custom headings via removable chips. Section detection now dynamically updates in real-time as you toggle headings or add custom ones.
-- Added **parallel chunk processing** for API-based engines — configure the number of chunks to process simultaneously (1-8) via the `parallel_chunks` setting for faster generation on cloud-based TTS engines like Replicate.
+- Added **parallel processing for M4B audio book export**  added parallel processing when exporting as M4B format, drastically speeding up export time.
 - Added **M4B audiobook export** for chapter-mode jobs — download audiobooks as M4B format with embedded chapter markers, cover art support, and configurable bitrate (64-192 kbps) and ACX compliance options for audiobook distribution platforms.
 - Added **audiobook metadata editing** — edit title, author, genre, year, and description for library items, with persistent storage that survives application reloads.
 - Added **chapter rename functionality** — rename individual chapters via the chapter chip dropdown menu or directly from the chunk review modal header.
