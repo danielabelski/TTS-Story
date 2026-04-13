@@ -82,4 +82,4 @@ tools/rubberband/
 
 # Third-party engine repos (cloned locally, not tracked in this repo)
 engines/index-tts/
-engines/omnivoice/
+engines/omnivoice/.venv

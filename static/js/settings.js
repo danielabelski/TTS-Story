@@ -421,6 +421,10 @@ function setupSettingsListeners() {
         ttsEngineSelect.addEventListener('change', (event) => {
             const engineName = (event.target.value || '').toLowerCase();
             toggleEngineSettingsSections(engineName);
+            // Update the header mode indicator
+            if (typeof updateModeIndicator === 'function') {
+                updateModeIndicator(engineName);
+            }
         });
     }
 

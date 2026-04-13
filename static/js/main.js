@@ -3634,18 +3634,24 @@ const engineDisplayNames = {
     'chatterbox_turbo_replicate': 'Chatterbox · Replicate',
     'voxcpm_local': 'VoxCPM 1.5 · Local GPU',
     'qwen3_custom': 'Qwen3-TTS · Custom Voice',
-    'qwen3_clone': 'Qwen3-TTS · Voice Clone'
+    'qwen3_clone': 'Qwen3-TTS · Voice Clone',
+    'pocket_tts': 'Pocket TTS · Clone',
+    'pocket_tts_preset': 'Pocket TTS · Preset',
+    'kitten_tts': 'KittenTTS',
+    'index_tts': 'IndexTTS',
+    'omnivoice_clone': 'OmniVoice · Clone',
+    'omnivoice_design': 'OmniVoice · Design'
 };
 
 // Update mode indicator based on engine name (called when dropdown changes)
 function updateModeIndicator(engineName) {
     const modeEl = document.getElementById('current-mode');
     if (!modeEl) return;
-    
+
     const normalizedEngine = (engineName || 'kokoro').toLowerCase();
-    const isLocal = ['kokoro', 'chatterbox_turbo_local', 'voxcpm_local', 'qwen3_custom', 'qwen3_clone']
+    const isLocal = ['kokoro', 'chatterbox_turbo_local', 'voxcpm_local', 'qwen3_custom', 'qwen3_clone', 'pocket_tts', 'pocket_tts_preset', 'kitten_tts', 'index_tts']
         .includes(normalizedEngine);
-    
+
     modeEl.textContent = engineDisplayNames[normalizedEngine] || normalizedEngine;
     modeEl.style.color = isLocal ? '#10b981' : '#f59e0b';
 }

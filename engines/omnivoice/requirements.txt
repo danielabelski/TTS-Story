@@ -1,0 +1,7 @@
+# OmniVoice isolated environment requirements
+# These conflict with the main venv (torch 2.8 vs 2.6, transformers 5.3 vs 4.57)
+# so OmniVoice runs in its own venv via subprocess, like IndexTTS.
+omnivoice
+numpy
+soundfile
+huggingface-hub
