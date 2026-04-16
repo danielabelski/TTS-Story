@@ -122,16 +122,11 @@ async function openChapterReviewModal(jobId, relativePath, fallbackTitle) {
     const modal = document.getElementById('chunk-review-modal');
     const body = document.getElementById('chunk-review-modal-body');
     const titleEl = document.getElementById('chunk-review-modal-title');
-    const recompileBtn = document.getElementById('chunk-review-recompile-btn');
     const renameBtn = document.getElementById('chunk-review-rename-btn');
     if (overlay) overlay.classList.remove('hidden');
     if (modal) modal.classList.remove('hidden');
     if (body) body.innerHTML = '<div class="chunk-review-loading">Loading chapter...</div>';
     if (titleEl) titleEl.textContent = fallbackTitle || 'Chapter Review';
-    if (recompileBtn) {
-        recompileBtn.disabled = true;
-        recompileBtn.style.display = 'none';
-    }
 
     // Store chapter index for rename functionality
     let chapterIndex = null;
@@ -355,7 +350,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalOverlay = document.getElementById('chunk-review-modal-overlay');
     const modalCloseBtn = document.getElementById('chunk-review-modal-close');
     const modalCloseFooterBtn = document.getElementById('chunk-review-close-btn');
-    const recompileBtn = document.getElementById('chunk-review-recompile-btn');
 
     if (modalOverlay) {
         modalOverlay.addEventListener('click', (e) => {
@@ -369,9 +363,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (modalCloseFooterBtn) {
         modalCloseFooterBtn.addEventListener('click', closeChunkReviewModal);
-    }
-    if (recompileBtn) {
-        recompileBtn.addEventListener('click', recompileLibraryAudio);
     }
 });
 
@@ -559,7 +550,7 @@ function displayLibraryItems(items) {
                     <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="downloadLibraryAudio('${item.job_id}')">Download</button>
                     ${item.chapter_mode ? `<button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="openM4BDownloadModal('${item.job_id}', '${escapeHtml(displayTitle)}')">Download M4B</button>` : ''}
                     <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="openAudiobookMetadataModal('${item.job_id}')">Edit Metadata</button>
-                    <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="repairLibraryItem('${item.job_id}', this)">Repair</button>
+                    <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="repairLibraryItem('${item.job_id}', this)">Rebuild</button>
                     <button class="btn btn-secondary btn-xs library-item-meta-action" type="button" onclick="deleteLibraryItem('${item.job_id}')">Delete</button>
                     <button type="button" class="help-icon library-item-meta-action" data-help-id="audio-library-actions" aria-label="Help: Audio Library Actions">?</button>
                 </div>
@@ -1354,7 +1345,7 @@ async function deleteLibraryItem(jobId) {
 }
 
 async function repairLibraryItem(jobId, trigger) {
-    if (!confirm('Repair this library item? This will rebuild chapter metadata and missing outputs.')) {
+    if (!confirm('This will recompile all chapter audio files from the individual audio file chunks and also recompile the full audiobook from the chapter audio files. Continue?')) {
         return;
     }
     const button = trigger instanceof HTMLElement ? trigger : null;
@@ -1362,31 +1353,30 @@ async function repairLibraryItem(jobId, trigger) {
     if (button) {
         button.disabled = true;
         button.classList.add('is-busy');
-        button.innerHTML = 'Repairing <span class="library-action-spinner" aria-hidden="true"></span>';
+        button.innerHTML = 'Rebuilding <span class="library-action-spinner" aria-hidden="true"></span>';
     }
     try {
-        const response = await fetch(`/api/library/${jobId}/repair`, {
+        const response = await fetch(`/api/library/${jobId}/rebuild/all`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ force_rebuild: true })
+            }
         });
         const data = await response.json();
         if (!data.success) {
-            alert(`Repair failed: ${data.error || 'Unknown error'}`);
+            alert(`Rebuild failed: ${data.error || 'Unknown error'}`);
             return;
         }
-        alert('Repair completed. Reloading library...');
+        alert('Rebuild completed. Reloading library...');
         loadLibrary();
     } catch (error) {
-        console.error('Repair library item error:', error);
-        alert('Repair failed. Check the console for details.');
+        console.error('Rebuild library item error:', error);
+        alert('Rebuild failed. Check the console for details.');
     } finally {
         if (button) {
             button.disabled = false;
             button.classList.remove('is-busy');
-            button.innerHTML = originalLabel || 'Repair';
+            button.innerHTML = originalLabel || 'Rebuild';
         }
     }
 }
@@ -1402,14 +1392,11 @@ async function restoreToReview(jobId) {
     const overlay = document.getElementById('chunk-review-modal-overlay');
     const modal = document.getElementById('chunk-review-modal');
     const body = document.getElementById('chunk-review-modal-body');
-    const recompileBtn = document.getElementById('chunk-review-recompile-btn');
     const titleEl = document.getElementById('chunk-review-modal-title');
 
     if (overlay) overlay.classList.remove('hidden');
     if (modal) modal.classList.remove('hidden');
     if (body) body.innerHTML = '<div class="chunk-review-loading">Loading chunks...</div>';
-    if (recompileBtn) recompileBtn.disabled = true;
-    if (recompileBtn) recompileBtn.style.display = '';
     if (titleEl) titleEl.textContent = 'Review Chunks';
 
     try {
@@ -1423,7 +1410,6 @@ async function restoreToReview(jobId) {
 
         chunkReviewModalData = data;
         renderChunkReviewModal(data);
-        if (recompileBtn) recompileBtn.disabled = false;
 
     } catch (error) {
         console.error('Error loading chunks:', error);
@@ -1435,7 +1421,6 @@ function closeChunkReviewModal() {
     const overlay = document.getElementById('chunk-review-modal-overlay');
     const modal = document.getElementById('chunk-review-modal');
     const titleEl = document.getElementById('chunk-review-modal-title');
-    const recompileBtn = document.getElementById('chunk-review-recompile-btn');
 
     if (overlay) overlay.classList.add('hidden');
     if (modal) modal.classList.add('hidden');
@@ -1456,11 +1441,6 @@ function closeChunkReviewModal() {
     chunkReviewModalData = null;
     libraryChunkVoiceOverrides = {};
     chapterReviewMode = false;
-    if (recompileBtn) {
-        recompileBtn.style.display = '';
-        recompileBtn.disabled = false;
-        recompileBtn.textContent = 'Recompile Audio';
-    }
     if (titleEl) titleEl.textContent = 'Review Chunks';
 }
 
@@ -1679,14 +1659,7 @@ function renderChunkReviewModal(data) {
     const chapterInfo = hasBooks
         ? `<span><strong>Books:</strong> ${books.length}</span><span><strong>Chapters:</strong> ${chapters.length}</span>`
         : (hasChapters ? `<span><strong>Chapters:</strong> ${chapters.length}</span>` : '');
-    const fullStoryControls = fullStoryAvailable
-        ? `
-            <div class="chunk-review-full-story">
-                <button class="btn btn-sm btn-secondary" id="chunk-review-rebuild-full" type="button">Rebuild Full Story</button>
-                <button type="button" class="help-icon" data-help-id="audio-library-rebuild-full-story" aria-label="Help: Rebuild Full Story">?</button>
-            </div>
-        `
-        : '';
+    const fullStoryControls = '';
     const chapterRebuildControls = chapterReviewMode && data.review_chapter_index !== null
         ? `
             <button class="btn btn-sm btn-secondary" id="chunk-review-rebuild-chapter" type="button">
@@ -1750,7 +1723,6 @@ function renderChunkReviewModal(data) {
 
     wireChunkReviewEvents(jobId, chunks, engine);
     wireChapterRebuildEvents(jobId);
-    wireFullStoryRebuildEvent(jobId, fullStoryAvailable);
     wireChapterReviewRebuildEvent(jobId, data.review_chapter_index);
     wireBatchRebuildEvents(jobId, chunks, engine);
     if (typeof initHelpSystem === 'function') {
@@ -1898,35 +1870,6 @@ function wireChapterRebuildEvents(jobId) {
                 btn.textContent = originalText;
             }
         });
-    });
-}
-
-function wireFullStoryRebuildEvent(jobId, fullStoryAvailable) {
-    if (!fullStoryAvailable) return;
-    const button = document.getElementById('chunk-review-rebuild-full');
-    if (!button) return;
-    button.addEventListener('click', async (event) => {
-        event.stopPropagation();
-        const originalText = button.textContent;
-        button.disabled = true;
-        button.textContent = 'Rebuilding...';
-        try {
-            const response = await fetch(`/api/library/${jobId}/rebuild/full-story`, {
-                method: 'POST'
-            });
-            const data = await response.json();
-            if (!data.success) {
-                throw new Error(data.error || 'Failed to rebuild full story');
-            }
-            alert('Full story rebuilt successfully.');
-            loadLibrary();
-        } catch (error) {
-            console.error('Rebuild full story error:', error);
-            alert(error.message || 'Failed to rebuild full story');
-        } finally {
-            button.disabled = false;
-            button.textContent = originalText;
-        }
     });
 }
 
@@ -3710,43 +3653,6 @@ async function pollLibraryChunkStatus(jobId, chunkId, entry) {
     }
 
     entry.timer = setTimeout(() => pollLibraryChunkStatus(jobId, chunkId, entry), LIBRARY_CHUNK_POLL_INTERVAL_MS);
-}
-
-async function recompileLibraryAudio() {
-    const jobId = chunkReviewModalJobId;
-    if (!jobId) return;
-
-    const recompileBtn = document.getElementById('chunk-review-recompile-btn');
-    if (recompileBtn) {
-        recompileBtn.disabled = true;
-        recompileBtn.textContent = 'Recompiling...';
-    }
-
-    try {
-        // Finish review to recompile
-        const response = await fetch(`/api/jobs/${jobId}/review/finish`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-        });
-
-        const data = await response.json();
-        if (!data.success) {
-            throw new Error(data.error || 'Failed to recompile audio');
-        }
-
-        alert('Audio recompiled successfully!');
-        closeChunkReviewModal();
-        loadLibrary();
-
-    } catch (error) {
-        console.error('Recompile error:', error);
-        alert(error.message || 'Failed to recompile audio');
-    } finally {
-        if (recompileBtn) {
-            recompileBtn.disabled = false;
-            recompileBtn.textContent = 'Recompile Audio';
-        }
-    }
 }
 
 // FX button state helpers

@@ -2395,7 +2395,7 @@ def _get_raw_custom_voice(identifier: str) -> Optional[dict]:
     return get_custom_voice(voice_id)
 
 
-def slugify_filename(value: str, default: str = "chapter", max_length: int = 120) -> str:
+def slugify_filename(value: str, default: str = "chapter", max_length: int = 60) -> str:
     """Create a filesystem-friendly slug."""
     if not value:
         return default
@@ -3769,8 +3769,11 @@ def process_audio_job(job_data):
                     if not review_mode:
                         post_total = total_chunks * (2 if generate_full_story else 1)
                         init_post_process(post_total)
-                        merge_chunk_offset = 0
+                    
+                    # Phase 1: Generate chunks for all chapters (sequential)
                     chapter_folder_idx = 1
+                    merge_tasks = []  # Collect merge tasks for parallel processing
+                    
                     for idx, chapter in enumerate(chapter_sections, start=1):
                         if cancel_flags.get(job_id, False):
                             raise JobCancelled()
@@ -3819,38 +3822,91 @@ def process_audio_job(job_data):
                                 })
                                 review_manifest["chunk_dirs_to_cleanup"].append(rel_chunk_dir)
                         else:
+                            # Collect merge task for parallel processing
+                            merge_tasks.append({
+                                "idx": idx,
+                                "title": chapter['title'],
+                                "audio_files": audio_files,
+                                "output_path": output_path,
+                                "chapter_dir": chapter_dir,
+                                "chunk_dir": chunk_dir,
+                                "relative_path": Path(chapter_dir.name) / output_filename
+                            })
+                    
+                    # Phase 2: Process merges in parallel
+                    if merge_tasks and not review_mode:
+                        merge_chunk_offset = 0
+                        total_merge_tasks = len(merge_tasks)
+                        completed_merges = [0]  # Use list for mutable shared state in threads
+                        
+                        def merge_task_wrapper(task):
+                            """Wrapper function for parallel merge execution"""
+                            if cancel_flags.get(job_id, False):
+                                raise JobCancelled()
+                            
+                            idx = task["idx"]
+                            title = task["title"]
+                            audio_files = task["audio_files"]
+                            output_path = task["output_path"]
+                            chapter_dir = task["chapter_dir"]
+                            chunk_dir = task["chunk_dir"]
+                            
+                            # Calculate offset for this task
+                            task_offset = merge_chunk_offset + sum(len(t["audio_files"]) for t in merge_tasks if t["idx"] < idx)
+                            
                             if job_log:
                                 job_log.info("Merging chapter %d ('%s'): %d chunks -> %s",
-                                             idx, chapter.get('title', ''), len(audio_files), output_path)
+                                             idx, title, len(audio_files), output_path)
+                            
                             merger.merge_wav_files(
                                 input_files=audio_files,
                                 output_path=str(output_path),
                                 format=output_format,
                                 cleanup_chunks=not generate_full_story,
-                                progress_callback=lambda ratio, offset=merge_chunk_offset, count=len(audio_files): (
+                                progress_callback=lambda ratio, offset=task_offset, count=len(audio_files): (
                                     update_post_process_progress(offset, count, ratio)
                                 ),
                             )
+                            
                             if job_log:
                                 job_log.info("Merge complete: %s (exists=%s)", output_path.name, output_path.exists())
-                            update_progress()
-                            update_post_process(len(audio_files))
-                            merge_chunk_offset += len(audio_files)
-
+                            
+                            # Update progress and cleanup
+                            with queue_lock:
+                                update_progress()
+                                update_post_process(len(audio_files))
+                                completed_merges[0] += 1
+                            
                             # Cleanup empty chunk directory
                             if chunk_dir.exists() and not generate_full_story:
                                 try:
                                     chunk_dir.rmdir()
                                 except OSError:
                                     pass
-
-                            relative_path = Path(chapter_dir.name) / output_filename
-                            chapter_outputs.append({
-                                "index": idx,
-                                "title": chapter['title'],
-                                "file_url": f"/static/audio/{job_id}/{relative_path.as_posix()}",
-                                "relative_path": relative_path.as_posix()
-                            })
+                            
+                            return task
+                        
+                        # Execute merges in parallel using ThreadPoolExecutor
+                        # Use CPU count for dynamic worker allocation, capped at total tasks
+                        max_workers = min(os.cpu_count() or 4, total_merge_tasks)
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                            # Submit all merge tasks
+                            future_to_task = {executor.submit(merge_task_wrapper, task): task for task in merge_tasks}
+                            
+                            # Wait for all to complete
+                            for future in concurrent.futures.as_completed(future_to_task):
+                                try:
+                                    task = future.result()
+                                    # Append to chapter_outputs in original order
+                                    chapter_outputs.append({
+                                        "index": task["idx"],
+                                        "title": task["title"],
+                                        "file_url": f"/static/audio/{job_id}/{task['relative_path'].as_posix()}",
+                                        "relative_path": task["relative_path"].as_posix()
+                                    })
+                                except Exception as e:
+                                    logger.error(f"Merge task failed: {e}")
+                                    raise
             else:
                 if not review_mode:
                     init_post_process(total_chunks)
@@ -7391,7 +7447,13 @@ def download_audio(job_id):
                 "error": f"Audio file not found for job {job_id}"
             }), 404
 
-        download_name = f"kokoro_story_{job_id}.{output_format}"
+        # Use audiobook_title from metadata if available
+        metadata = load_job_metadata(job_dir) or {}
+        audiobook_title = metadata.get("audiobook_title")
+        if audiobook_title:
+            download_name = f"{audiobook_title}_{job_id}.{output_format}"
+        else:
+            download_name = f"audiobook_{job_id}.{output_format}"
         if requested_name:
             safe_name = Path(requested_name).name
             if safe_name:
@@ -8476,6 +8538,8 @@ def _rebuild_review_manifest_from_chunks(job_id: str, job_dir: Path, force_rebui
     chapter_entries = []
     chapter_outputs = []
 
+    # Collect merge tasks for parallel processing
+    merge_tasks = []
     for chapter_index in sorted(chapter_map.keys()):
         data = chapter_map[chapter_index]
         chunk_files = data.get("chunk_files") or []
@@ -8498,44 +8562,116 @@ def _rebuild_review_manifest_from_chunks(job_id: str, job_dir: Path, force_rebui
             "output_filename": output_filename,
         }
         output_path = _resolve_chapter_output_path(job_dir, target, output_format, chapter_index)
+        
         if force_rebuild:
             output_dir = output_path.parent
             if output_dir.exists():
                 for item in output_dir.iterdir():
                     if item.is_file():
                         _remove_existing_output(item)
+        
         if force_rebuild or not output_path.exists():
             chunk_paths = [str(job_dir / Path(rel_path)) for rel_path in chunk_files]
             missing = [p for p in chunk_paths if not Path(p).exists()]
-            if missing:
-                logger.warning("Missing chunk files for chapter %s: %s", chapter_index, missing)
+            if not missing:
+                merge_tasks.append({
+                    "chapter_index": chapter_index,
+                    "title": title,
+                    "chunk_files": chunk_files,
+                    "chunk_paths": chunk_paths,
+                    "output_path": output_path,
+                    "chapter_dir": chapter_dir,
+                    "output_filename": output_filename,
+                })
             else:
-                merger.merge_wav_files(
-                    input_files=chunk_paths,
-                    output_path=str(output_path),
-                    format=output_format,
-                    cleanup_chunks=False,
-                )
-
-        rel_output = (Path(chapter_dir) / output_path.name).as_posix()
-        if rel_output.startswith("./"):
-            rel_output = rel_output[2:]
-
-        chapter_entries.append({
-            "index": chapter_index,
-            "title": title,
-            "chunk_dir": data.get("chunk_dir"),
-            "chunk_files": chunk_files,
-            "chapter_dir": chapter_dir,
-            "output_filename": output_path.name,
-        })
-        chapter_outputs.append({
-            "index": chapter_index,
-            "title": title,
-            "file_url": f"/static/audio/{job_id}/{rel_output}",
-            "relative_path": rel_output,
-            "format": output_format,
-        })
+                logger.warning("Missing chunk files for chapter %s: %s", chapter_index, missing)
+                # Still add entry even if missing chunks
+                rel_output = (Path(chapter_dir) / output_path.name).as_posix()
+                if rel_output.startswith("./"):
+                    rel_output = rel_output[2:]
+                chapter_entries.append({
+                    "index": chapter_index,
+                    "title": title,
+                    "chunk_dir": data.get("chunk_dir"),
+                    "chunk_files": chunk_files,
+                    "chapter_dir": chapter_dir,
+                    "output_filename": output_path.name,
+                })
+                if output_path.exists():
+                    chapter_outputs.append({
+                        "index": chapter_index,
+                        "title": title,
+                        "file_url": f"/static/audio/{job_id}/{rel_output}",
+                        "relative_path": rel_output,
+                        "format": output_format,
+                    })
+        else:
+            # File exists, just add entries without merging
+            rel_output = (Path(chapter_dir) / output_path.name).as_posix()
+            if rel_output.startswith("./"):
+                rel_output = rel_output[2:]
+            chapter_entries.append({
+                "index": chapter_index,
+                "title": title,
+                "chunk_dir": data.get("chunk_dir"),
+                "chunk_files": chunk_files,
+                "chapter_dir": chapter_dir,
+                "output_filename": output_path.name,
+            })
+            chapter_outputs.append({
+                "index": chapter_index,
+                "title": title,
+                "file_url": f"/static/audio/{job_id}/{rel_output}",
+                "relative_path": rel_output,
+                "format": output_format,
+            })
+    
+    # Execute merges in parallel with dynamic worker allocation
+    if merge_tasks:
+        def repair_merge_wrapper(task):
+            """Wrapper function for parallel merge in repair operation"""
+            chapter_index = task["chapter_index"]
+            chunk_paths = task["chunk_paths"]
+            output_path = task["output_path"]
+            
+            merger.merge_wav_files(
+                input_files=chunk_paths,
+                output_path=str(output_path),
+                format=output_format,
+                cleanup_chunks=False,
+            )
+            return task
+        
+        # Use CPU count for dynamic worker allocation, capped at total tasks
+        max_workers = min(os.cpu_count() or 4, len(merge_tasks))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_task = {executor.submit(repair_merge_wrapper, task): task for task in merge_tasks}
+            
+            for future in concurrent.futures.as_completed(future_to_task):
+                try:
+                    task = future.result()
+                    rel_output = (Path(task["chapter_dir"]) / task["output_path"].name).as_posix()
+                    if rel_output.startswith("./"):
+                        rel_output = rel_output[2:]
+                    
+                    chapter_entries.append({
+                        "index": task["chapter_index"],
+                        "title": task["title"],
+                        "chunk_dir": task["chapter_dir"],
+                        "chunk_files": task["chunk_files"],
+                        "chapter_dir": task["chapter_dir"],
+                        "output_filename": task["output_path"].name,
+                    })
+                    chapter_outputs.append({
+                        "index": task["chapter_index"],
+                        "title": task["title"],
+                        "file_url": f"/static/audio/{job_id}/{rel_output}",
+                        "relative_path": rel_output,
+                        "format": output_format,
+                    })
+                except Exception as e:
+                    logger.error(f"Merge task failed for chapter {task['chapter_index']}: {e}")
+                    raise
 
     full_story_entry = None
     full_story_path = job_dir / f"full_story.{output_format}"
@@ -8744,6 +8880,8 @@ def rebuild_library_selected_chapters(job_id):
         merger = _build_review_merger(config_snapshot)
         rebuilt = []
 
+        # Collect merge tasks for parallel processing
+        merge_tasks = []
         for target in targets:
             chunk_files = target.get("chunk_files") or []
             if not chunk_files:
@@ -8755,25 +8893,56 @@ def rebuild_library_selected_chapters(job_id):
 
             chapter_index = int(target.get("index") or 0)
             output_path = _resolve_chapter_output_path(job_dir, target, output_format, chapter_index)
-            _remove_existing_output(output_path)
-            merger.merge_wav_files(
-                input_files=chunk_paths,
-                output_path=str(output_path),
-                format=output_format,
-                cleanup_chunks=False,
-            )
-            rel_path = (Path(target.get("chapter_dir") or ".") / output_path.name).as_posix()
-            if rel_path.startswith("./"):
-                rel_path = rel_path[2:]
-            chapter_entry = {
-                "index": target.get("index"),
-                "title": target.get("title"),
-                "file_url": f"/static/audio/{job_id}/{rel_path}",
-                "relative_path": rel_path,
-                "format": output_format,
-            }
-            _update_metadata_chapter(job_id, job_dir, chapter_entry)
-            rebuilt.append(chapter_entry)
+            merge_tasks.append({
+                "target": target,
+                "chapter_index": chapter_index,
+                "chunk_paths": chunk_paths,
+                "output_path": output_path,
+            })
+        
+        # Execute merges in parallel with dynamic worker allocation
+        if merge_tasks:
+            def selected_merge_wrapper(task):
+                """Wrapper function for parallel merge in selected chapters rebuild"""
+                target = task["target"]
+                chunk_paths = task["chunk_paths"]
+                output_path = task["output_path"]
+                
+                _remove_existing_output(output_path)
+                merger.merge_wav_files(
+                    input_files=chunk_paths,
+                    output_path=str(output_path),
+                    format=output_format,
+                    cleanup_chunks=False,
+                )
+                return task
+            
+            # Use CPU count for dynamic worker allocation, capped at total tasks
+            max_workers = min(os.cpu_count() or 4, len(merge_tasks))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_task = {executor.submit(selected_merge_wrapper, task): task for task in merge_tasks}
+                
+                for future in concurrent.futures.as_completed(future_to_task):
+                    try:
+                        task = future.result()
+                        target = task["target"]
+                        output_path = task["output_path"]
+                        
+                        rel_path = (Path(target.get("chapter_dir") or ".") / output_path.name).as_posix()
+                        if rel_path.startswith("./"):
+                            rel_path = rel_path[2:]
+                        chapter_entry = {
+                            "index": target.get("index"),
+                            "title": target.get("title"),
+                            "file_url": f"/static/audio/{job_id}/{rel_path}",
+                            "relative_path": rel_path,
+                            "format": output_format,
+                        }
+                        _update_metadata_chapter(job_id, job_dir, chapter_entry)
+                        rebuilt.append(chapter_entry)
+                    except Exception as e:
+                        logger.error(f"Merge task failed for chapter {task['target'].get('index')}: {e}")
+                        raise
 
         invalidate_library_cache()
         return jsonify({"success": True, "chapters": rebuilt})
@@ -8805,6 +8974,8 @@ def rebuild_library_all(job_id):
         merger = _build_review_merger(config_snapshot)
         rebuilt_chapters = []
 
+        # Collect chapter merge tasks for parallel processing
+        merge_tasks = []
         for target in chapters:
             chunk_files = target.get("chunk_files") or []
             if not chunk_files:
@@ -8816,25 +8987,56 @@ def rebuild_library_all(job_id):
 
             chapter_index = int(target.get("index") or 0)
             output_path = _resolve_chapter_output_path(job_dir, target, output_format, chapter_index)
-            _remove_existing_output(output_path)
-            merger.merge_wav_files(
-                input_files=chunk_paths,
-                output_path=str(output_path),
-                format=output_format,
-                cleanup_chunks=False,
-            )
-            rel_path = (Path(target.get("chapter_dir") or ".") / output_path.name).as_posix()
-            if rel_path.startswith("./"):
-                rel_path = rel_path[2:]
-            chapter_entry = {
-                "index": target.get("index"),
-                "title": target.get("title"),
-                "file_url": f"/static/audio/{job_id}/{rel_path}",
-                "relative_path": rel_path,
-                "format": output_format,
-            }
-            _update_metadata_chapter(job_id, job_dir, chapter_entry)
-            rebuilt_chapters.append(chapter_entry)
+            merge_tasks.append({
+                "target": target,
+                "chapter_index": chapter_index,
+                "chunk_paths": chunk_paths,
+                "output_path": output_path,
+            })
+        
+        # Execute chapter merges in parallel with dynamic worker allocation
+        if merge_tasks:
+            def all_merge_wrapper(task):
+                """Wrapper function for parallel merge in rebuild all operation"""
+                target = task["target"]
+                chunk_paths = task["chunk_paths"]
+                output_path = task["output_path"]
+                
+                _remove_existing_output(output_path)
+                merger.merge_wav_files(
+                    input_files=chunk_paths,
+                    output_path=str(output_path),
+                    format=output_format,
+                    cleanup_chunks=False,
+                )
+                return task
+            
+            # Use CPU count for dynamic worker allocation, capped at total tasks
+            max_workers = min(os.cpu_count() or 4, len(merge_tasks))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_task = {executor.submit(all_merge_wrapper, task): task for task in merge_tasks}
+                
+                for future in concurrent.futures.as_completed(future_to_task):
+                    try:
+                        task = future.result()
+                        target = task["target"]
+                        output_path = task["output_path"]
+                        
+                        rel_path = (Path(target.get("chapter_dir") or ".") / output_path.name).as_posix()
+                        if rel_path.startswith("./"):
+                            rel_path = rel_path[2:]
+                        chapter_entry = {
+                            "index": target.get("index"),
+                            "title": target.get("title"),
+                            "file_url": f"/static/audio/{job_id}/{rel_path}",
+                            "relative_path": rel_path,
+                            "format": output_format,
+                        }
+                        _update_metadata_chapter(job_id, job_dir, chapter_entry)
+                        rebuilt_chapters.append(chapter_entry)
+                    except Exception as e:
+                        logger.error(f"Merge task failed for chapter {task['target'].get('index')}: {e}")
+                        raise
 
         full_story_entry = None
         if all_full_story_chunks:

@@ -96,17 +96,6 @@ const HELP_TOPICS = {
             </ul>
         `
     },
-    'audio-library-rebuild-full-story': {
-        title: 'Rebuild Full Story',
-        body: `
-            <p>Rebuilds the audio in two stages:</p>
-            <ol>
-                <li><strong>Recombine chunks → chapters:</strong> All chunk audio is merged back into each chapter file.</li>
-                <li><strong>Recombine chapters → full story:</strong> The chapter files are then merged into the final full-story audio.</li>
-            </ol>
-            <p>Use this after updating speakers/chunks so the final full-story file matches the latest edits.</p>
-        `
-    },
     'audio-library-actions': {
         title: 'Audio Library Actions',
         body: `

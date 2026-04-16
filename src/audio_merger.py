@@ -11,6 +11,22 @@ from pydub import AudioSegment
 import soundfile as sf
 import numpy as np
 
+
+def _win_long_path(path) -> str:
+    """Return a Windows extended-length path string (\\\\?\\...) for paths that
+    may exceed the 260-character MAX_PATH limit.  On non-Windows platforms the
+    path is returned unchanged as a plain string."""
+    p = str(path)
+    if sys.platform != "win32":
+        return p
+    if p.startswith("\\\\?\\"):
+        return p
+    abs_path = os.path.abspath(p)
+    if len(abs_path) >= 240:
+        return "\\\\?\\" + abs_path
+    return abs_path
+
+
 # Configure pydub to find ffmpeg - prioritize Pinokio/conda paths over system
 def _find_ffmpeg():
     """Find ffmpeg executable, checking Pinokio/conda paths first."""
@@ -267,11 +283,11 @@ class AudioMerger:
                 "-safe",
                 "0",
                 "-i",
-                str(list_file),
+                _win_long_path(list_file),
                 *filter_args,
                 *codec_args,
                 "-y",
-                str(output_path),
+                _win_long_path(output_path),
             ]
 
             logging.info(f"Merging with ffmpeg concat: {output_path}")
@@ -419,7 +435,7 @@ class AudioMerger:
             "-threads",
             "0",
             "-i",
-            str(input_file),
+            _win_long_path(input_file),
             "-c:a",
             "aac",
             "-b:a",
@@ -434,7 +450,7 @@ class AudioMerger:
                 "loudnorm=I=-19:TP=-3.5:LRA=7:print_format=none,alimiter=level_in=1:level_out=1:limit=0.708:attack=5:release=50:level=disabled,aresample=44100"
             ])
 
-        cmd.extend(["-y", str(output_file)])
+        cmd.extend(["-f", "ipod", "-y", _win_long_path(output_file)])
         subprocess.run(cmd, capture_output=True, text=True)
 
     def merge_to_m4b(
@@ -503,7 +519,7 @@ class AudioMerger:
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {}
                 for i, input_file in enumerate(input_files):
-                    output_file = temp_dir / f"chapter_{i:03d}.aac"
+                    output_file = temp_dir / f"chapter_{i:03d}.m4a"
                     future = executor.submit(
                         self._encode_chapter_to_aac,
                         input_file,
@@ -620,31 +636,29 @@ class AudioMerger:
                 # Without ACX compliance, map audio directly
                 filter_args = ["-map", "0:a"]
 
-        # Calculate cumulative durations for chapter markers
-        # We need to know the actual duration of each input file to set correct chapter start times
+        # Calculate cumulative durations for chapter markers.
+        # When parallel encoding succeeded, measure from the encoded AAC files
+        # (the files actually being concatenated) to avoid cumulative drift from
+        # AAC encoder priming frames causing chapter markers to overshoot.
+        duration_source_files = encoded_files if (parallel_success and encoded_files) else input_files
         cumulative_time = 0
         chapter_durations = []
-        for input_file in input_files:
-            # Get duration of this file using ffprobe or audio info
+        for source_file in duration_source_files:
             try:
                 from pydub.utils import mediainfo
-                info = mediainfo(str(input_file))
+                info = mediainfo(str(source_file))
                 duration = float(info.get('duration', 0))
                 chapter_durations.append(duration)
                 cumulative_time += duration
             except Exception as e:
-                logging.warning(f"Could not get duration for {input_file}: {e}")
-                # Fallback: estimate based on file size or use default
+                logging.warning(f"Could not get duration for {source_file}: {e}")
                 chapter_durations.append(0)
                 cumulative_time += 0
 
-        # Step 1: Create M4B without chapter markers using concat protocol
-        # Read concat list to build concat protocol string
-        with list_file.open("r", encoding="utf-8") as handle:
-            concat_files = [line.strip().replace("file '", "").replace("'", "") for line in handle if line.strip()]
-        
-        concat_input = "|".join(concat_files)
-        
+        # Step 1: Create M4B without chapter markers using ffmpeg concat demuxer.
+        # We use "-f concat -safe 0 -i list_file" rather than the "concat:a|b|c"
+        # protocol to avoid Windows MAX_PATH / command-line length limits.
+        # The list_file was already written above with absolute POSIX paths.
         cmd = [
             ffmpeg_path,
             "-hide_banner",
@@ -652,21 +666,24 @@ class AudioMerger:
             "error",
             "-threads",
             "0",  # Auto-detect optimal thread count for multi-core utilization
+            "-f",
+            "concat",
+            "-safe",
+            "0",
             "-i",
-            f"concat:{concat_input}",
+            _win_long_path(list_file),
         ]
 
         # Add cover art if provided
         if cover_art_path and os.path.exists(cover_art_path):
-            cmd.extend(["-i", cover_art_path])
+            cmd.extend(["-i", _win_long_path(cover_art_path)])
 
-        # Map audio and optionally cover art
-        cmd.extend(["-map", "0:a"])
+        # Add filter_args (includes audio mapping via -map or -filter_complex)
+        cmd.extend(filter_args)
+
+        # Map cover art from second input if provided
         if cover_art_path and os.path.exists(cover_art_path):
             cmd.extend(["-map", "1:v"])
-
-        # Add filter_args (includes audio mapping)
-        cmd.extend(filter_args)
 
         # Add cover art codec if provided
         if cover_art_path and os.path.exists(cover_art_path):
@@ -679,7 +696,7 @@ class AudioMerger:
             "-movflags",
             "+faststart",  # Optimizes for streaming
             "-y",
-            str(output_path),
+            _win_long_path(output_path),
         ])
 
         logging.info(f"Step 1: Creating M4B without chapter markers")
@@ -737,8 +754,11 @@ class AudioMerger:
             raise RuntimeError(f"ffmpeg M4B merge failed: {stderr_output.strip()}")
 
         # Step 2: Add chapter markers to the created M4B file
-        # Create chapter metadata file
-        metadata_file = output_path.with_suffix(".metadata.txt")
+        # Use short fixed names for temp files — ffmpeg does not support the
+        # \\?\ extended-length prefix as an -i argument on Windows, so we must
+        # keep these paths short enough to never need that prefix.
+        metadata_file = output_path.parent / "m4b_chapters.txt"
+        temp_output = output_path.parent / "m4b_temp.m4b"
         with metadata_file.open("w", encoding="utf-8") as mf:
             mf.write(";FFMETADATA1\n")
             current_time = 0
@@ -763,14 +783,13 @@ class AudioMerger:
                     current_time += chapter_durations[idx]
 
         # Add metadata to existing M4B file
-        temp_output = output_path.with_suffix(".temp.m4b")
         cmd_metadata = [
             ffmpeg_path,
             "-hide_banner",
             "-loglevel",
             "error",
             "-i",
-            str(output_path),
+            _win_long_path(output_path),
             "-i",
             str(metadata_file),
             "-map",

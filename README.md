@@ -8,22 +8,24 @@ Thank you — it genuinely means a lot! 🙏
 
 ---
 
-# Current Updates and Notes - updated 04-12-2026
+# Current Updates and Notes - updated 04-15-2026
+- **UI consolidation**: Simplified rebuild/repair workflow — consolidated multiple rebuild options (rebuild full story, recompile audio, repair) into a single "Rebuild" button in the library view. The new Rebuild button recompiles all chapter audio files from individual audio chunks and then recompiles the full audiobook from the chapter files, with a confirmation dialog before execution.
+- **Performance improvement**: Parallel chapter merging — applied ThreadPoolExecutor with dynamic worker allocation (based on `os.cpu_count()`) to all chapter merging operations including main generation, repair/rebuild, rebuild selected chapters, and rebuild all operations. This significantly reduces post-processing time for multi-chapter audiobooks by merging chapters concurrently.
+- **Bug fix**: Download filename now uses project name — download filenames now use the audiobook title from metadata (e.g., `{audiobook_title}_{job_id}.{format}`) instead of the hardcoded "kokoro_story" prefix, making downloads easier to identify.
+- **Bug fix**: Long folder/file name handling and M4B export efficiency — fixed WinError 206 (path too long) by reducing `slugify_filename` max_length from 120 to 60, replacing the fragile `concat:pipe|joined` protocol with `-f concat -safe 0 -i list_file` for ffmpeg, adding Windows extended-length path (`\\?\`) prefix helper for subprocess calls, and encoding M4B temp intermediates to `.m4a` (AAC in MP4 container) instead of raw ADTS `.aac` for accurate duration metadata and proper bitrate control. Chapter markers now work correctly across all chapters with proper file sizes.
+- **Bug fix**: OmniVoice installation issue — fixed missing `omnivoice_worker.py` file on clean installs by removing `engines/omnivoice/` from .gitignore and only excluding the `.venv` subdirectory. The worker file is now properly tracked in version control.
 - Added **dynamic section heading detection** with chip-based UI — enable/disable default section headings (book, chapter, section, letter, part, prologue, epilogue) and add custom headings via removable chips. Section detection now dynamically updates in real-time as you toggle headings or add custom ones.
-- Added **parallel processing for M4B audio book export**  added parallel processing when exporting as M4B format, drastically speeding up export time.
+- Added **parallel AAC encoding** for M4B export — chapters are encoded to AAC format in parallel using a thread pool before concatenation, significantly reducing M4B export time for multi-chapter audiobooks.
 - Added **M4B audiobook export** for chapter-mode jobs — download audiobooks as M4B format with embedded chapter markers, cover art support, and configurable bitrate (64-192 kbps) and ACX compliance options for audiobook distribution platforms.
+
+### Previous Updates
 - Added **audiobook metadata editing** — edit title, author, genre, year, and description for library items, with persistent storage that survives application reloads.
 - Added **chapter rename functionality** — rename individual chapters via the chapter chip dropdown menu or directly from the chunk review modal header.
 - **UI improvements**: Library item action buttons now wrap to multiple lines on narrow screens instead of overflowing; modal overlays use high z-index and proper backdrop styling for visibility.
 - **Bug fix**: M4B cover art now properly converts images to JPEG format with RGB mode and appropriate sizing for maximum compatibility across media players.
-
-### Previous Updates
 - Added **OmniVoice** engine modes (Voice Clone & Voice Design) with paralinguistic tags and multi-speaker support.
 - Added **Auto Assign** button for fuzzy-matching voice samples to detected speakers with adjustable similarity threshold.
 - Added **Clear Queue** button and **Time Codes** modal for YouTube chapter timestamp generation.
-- Added **IndexTTS** zero-shot voice cloning engine with emotion control and isolated venv.
-- Added **Generation Metrics** modal with timing stats and chunk duration charts.
-- **Bug fixes**: Speaker tag detection, voice assignment persistence, pitch/speed settings, pause/resume data preservation.
 
 # TTS-Story
 
