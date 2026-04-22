@@ -101,6 +101,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress werkzeug INFO logs (polling requests to /api/queue)
+logging.getLogger('werkzeug').setLevel(logging.WARNING)
+
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
