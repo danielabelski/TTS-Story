@@ -1106,9 +1106,10 @@ def _validate_voice_assignments_for_engine(
                 missing_voices.append(speaker)
 
         if engine_name == "chatterbox_turbo_local":
+            # Reference audio prompt is optional - Chatterbox can use its default voice
+            # Only require prompt if explicitly configured in default_prompt
             default_prompt = (config.get("chatterbox_turbo_local_default_prompt") or "").strip()
-            if not prompt and not default_prompt:
-                missing_prompts.append(speaker)
+            # Don't require prompt - allow Chatterbox to use its default voice
 
         if engine_name == "qwen3_clone":
             default_prompt = (config.get("qwen3_clone_default_prompt") or "").strip()
@@ -4892,12 +4893,35 @@ def preview_voice_prompt_fx():
     try:
         use_sox = abs(speed - 1.0) > 1e-3 or abs(pitch) > 1e-3
         sox_path = Path("tools/sox/sox.exe")
+        ffmpeg_path = Path("tools/ffmpeg/ffmpeg.exe")
+        
+        # Convert MP3 to WAV if needed before SoX processing
+        input_for_sox = file_path
+        temp_mp3_conv = None
+        if file_path.suffix.lower() == ".mp3" and ffmpeg_path.exists():
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_out:
+                    temp_mp3_conv = Path(temp_out.name)
+                # Use FFmpeg to convert MP3 to WAV
+                result = subprocess.run(
+                    [str(ffmpeg_path), "-y", "-i", str(file_path), str(temp_mp3_conv)],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    input_for_sox = temp_mp3_conv
+            except Exception:
+                # If FFmpeg conversion fails, use original file
+                if temp_mp3_conv:
+                    temp_mp3_conv.unlink(missing_ok=True)
+                temp_mp3_conv = None
+        
         if use_sox and sox_path.exists():
             output_path = None
             try:
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_out:
                     output_path = Path(temp_out.name)
-                command = [str(sox_path), str(file_path), str(output_path)]
+                command = [str(sox_path), str(input_for_sox), str(output_path)]
                 if abs(pitch) > 1e-3:
                     command += ["pitch", f"{pitch * 100:.2f}"]
                 if abs(speed - 1.0) > 1e-3:
@@ -4909,6 +4933,8 @@ def preview_voice_prompt_fx():
             finally:
                 if output_path:
                     output_path.unlink(missing_ok=True)
+                if temp_mp3_conv:
+                    temp_mp3_conv.unlink(missing_ok=True)
         else:
             audio_data, sample_rate = sf.read(str(file_path), dtype='float32')
             if abs(speed - 1.0) < 1e-3 and abs(pitch) < 1e-3:
