@@ -27,17 +27,21 @@ def _win_long_path(path) -> str:
     return abs_path
 
 
-# Configure pydub to find ffmpeg - prioritize Pinokio/conda paths over system
+# Configure pydub to find ffmpeg - prioritize local tools folder
 def _find_ffmpeg():
-    """Find ffmpeg executable, checking Pinokio/conda paths first."""
-    # Priority paths to check BEFORE system PATH (Pinokio bundles newer ffmpeg)
+    """Find ffmpeg executable, checking local tools folder first."""
+    # Priority paths to check BEFORE system PATH
     priority_paths = []
-    
+
+    # Check local tools folder FIRST (contains correct version from GitHub)
+    script_dir = Path(__file__).resolve().parent.parent  # TTS-Story root
+    local_ffmpeg = script_dir / "tools" / "ffmpeg" / "ffmpeg.exe"
+    if local_ffmpeg.exists():
+        print(f"[audio_merger] Found ffmpeg in local tools folder: {local_ffmpeg}")
+        return str(local_ffmpeg)
+
     # Check for Pinokio installation by looking for pinokio folder structure
     # Pinokio apps are in: {pinokio_home}/api/{app_name}/
-    script_dir = Path(__file__).resolve().parent.parent  # TTS-Story root
-    
-    # If we're in a Pinokio app folder, find the pinokio bin directory
     # Structure: H:\...\pinokio\api\TTS-Story.git\src\audio_merger.py
     #            -> H:\...\pinokio\bin\miniconda\Library\bin\ffmpeg.exe
     if "pinokio" in str(script_dir).lower():
@@ -51,7 +55,7 @@ def _find_ffmpeg():
                 priority_paths.append(current / "bin" / "miniconda" / "Library" / "bin" / "ffmpeg.exe")
                 break
             current = current.parent
-    
+
     # Standard conda/venv paths
     priority_paths.extend([
         Path(sys.prefix) / "Library" / "bin" / "ffmpeg.exe",  # conda env on Windows
