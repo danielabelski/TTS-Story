@@ -375,8 +375,36 @@ class VoxCPMLocalEngine(TtsEngineBase):
         prompt_text = assignment.extra.get("prompt_text") or self.default_prompt_text
         fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
 
+        # Convert MP3 voice prompts to WAV to prevent artifacts
+        temp_mp3_conv = None
         if prompt_path:
             prompt_path = self._resolve_prompt_path(prompt_path)
+            prompt_ext = Path(prompt_path).suffix.lower()
+            if prompt_ext == ".mp3":
+                try:
+                    ffmpeg_path = Path(__file__).parent.parent.parent / "tools" / "ffmpeg" / "ffmpeg.exe"
+                    if ffmpeg_path.exists():
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_out:
+                            temp_mp3_conv = Path(temp_out.name)
+                        import subprocess
+                        result = subprocess.run(
+                            [str(ffmpeg_path), "-y", "-i", str(prompt_path), str(temp_mp3_conv)],
+                            capture_output=True,
+                            text=True
+                        )
+                        if result.returncode == 0:
+                            logger.info("Converted MP3 voice prompt to WAV for better quality: %s", Path(prompt_path).name)
+                            prompt_path = str(temp_mp3_conv)
+                        else:
+                            if temp_mp3_conv:
+                                temp_mp3_conv.unlink(missing_ok=True)
+                                temp_mp3_conv = None
+                except Exception as e:
+                    logger.warning("Failed to convert MP3 voice prompt to WAV: %s", e)
+                    if temp_mp3_conv:
+                        temp_mp3_conv.unlink(missing_ok=True)
+                        temp_mp3_conv = None
 
         # VoxCPM requires BOTH prompt_wav_path and prompt_text, or NEITHER
         # If we have a prompt audio but no transcript, try automatic transcription
@@ -415,6 +443,8 @@ class VoxCPMLocalEngine(TtsEngineBase):
         finally:
             if temp_prompt:
                 Path(temp_prompt).unlink(missing_ok=True)
+            if temp_mp3_conv:
+                temp_mp3_conv.unlink(missing_ok=True)
 
         if fx_settings:
             wav = self.post_processor.apply(wav, self.sample_rate, fx_settings)

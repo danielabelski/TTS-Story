@@ -84,7 +84,10 @@ class AudioPostProcessor:
         if audio is None:
             return audio
         if not self.SOX_PATH.exists():
+            logger.warning("SoX not found at %s - skipping post-processing", self.SOX_PATH)
             return audio
+
+        logger.info("Applying SoX post-processing (normalize=%s, fade=%.2fs)", normalize, fade_seconds)
 
         is_stereo = audio.ndim == 2 and audio.shape[1] == 2
         if is_stereo:
