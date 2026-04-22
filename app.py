@@ -7513,23 +7513,11 @@ def download_audio_bundle(job_id):
                         zip_file.write(file_path, arcname=arc_name)
 
         zip_buffer.seek(0)
-        # Use engine name from job metadata for the download filename
-        with queue_lock:
-            _job_engine = (jobs.get(job_id) or {}).get("engine") or ""
-        if not _job_engine:
-            _chunks_meta_path = job_dir / "chunks_metadata.json"
-            if _chunks_meta_path.exists():
-                try:
-                    with _chunks_meta_path.open("r", encoding="utf-8") as _fh:
-                        _job_engine = json.load(_fh).get("engine") or ""
-                except Exception:
-                    pass
-        _engine_label = (_job_engine or "tts").replace("_", "-")
         return send_file(
             zip_buffer,
             mimetype='application/zip',
             as_attachment=True,
-            download_name=f"{_engine_label}_story_{job_id}.zip"
+            download_name=f"kokoro_story_{job_id}.zip"
         )
 
     except Exception as e:
