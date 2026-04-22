@@ -126,17 +126,24 @@ class Qwen3VoiceCloneEngine(TtsEngineBase):
         if not prompt_path:
             raise ValueError("Qwen3 Voice Clone requires a reference audio prompt.")
         prompt_path = self._resolve_prompt_path(prompt_path)
-        prompt_text = self._transcribe_audio(prompt_path) if prompt_path else ""
-        language = lang_code or self.default_language or "Auto"
-        wavs, sr = self.model.generate_voice_clone(
-            text=text,
-            language=language,
-            ref_audio=prompt_path,
-            ref_text=prompt_text or "",
-            x_vector_only_mode=not bool(prompt_text),
-        )
-        audio = np.asarray(wavs[0], dtype=np.float32)
-        self._sample_rate = int(sr)
+        # Convert MP3 to WAV to prevent artifacts
+        from ..audio_effects import convert_mp3_to_wav_if_needed
+        prompt_path, temp_mp3_conv = convert_mp3_to_wav_if_needed(prompt_path)
+        try:
+            prompt_text = self._transcribe_audio(prompt_path) if prompt_path else ""
+            language = lang_code or self.default_language or "Auto"
+            wavs, sr = self.model.generate_voice_clone(
+                text=text,
+                language=language,
+                ref_audio=prompt_path,
+                ref_text=prompt_text or "",
+                x_vector_only_mode=not bool(prompt_text),
+            )
+            audio = np.asarray(wavs[0], dtype=np.float32)
+            self._sample_rate = int(sr)
+        finally:
+            if temp_mp3_conv:
+                temp_mp3_conv.unlink(missing_ok=True)
         return self.post_processor.apply_post_pipeline(audio, int(sr), None)
 
     def generate_batch(
@@ -214,6 +221,9 @@ class Qwen3VoiceCloneEngine(TtsEngineBase):
 
             if prompt_path:
                 prompt_path = self._resolve_prompt_path(prompt_path)
+                # Convert MP3 to WAV to prevent artifacts
+                from ..audio_effects import convert_mp3_to_wav_if_needed
+                prompt_path, temp_mp3_conv = convert_mp3_to_wav_if_needed(prompt_path)
 
             if prompt_path and not prompt_text:
                 prompt_text = self._transcribe_audio(prompt_path)
@@ -278,6 +288,8 @@ class Qwen3VoiceCloneEngine(TtsEngineBase):
             finally:
                 if temp_prompt:
                     Path(temp_prompt).unlink(missing_ok=True)
+                if temp_mp3_conv:
+                    temp_mp3_conv.unlink(missing_ok=True)
 
         return [path for path in files if path]
 

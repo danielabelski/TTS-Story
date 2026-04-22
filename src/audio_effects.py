@@ -67,10 +67,66 @@ class VoiceFXSettings:
 logger = logging.getLogger(__name__)
 
 
+def convert_mp3_to_wav_if_needed(prompt_path: str) -> tuple[str, Optional[Path]]:
+    """
+    Convert MP3 voice prompts to WAV to prevent artifacts from lossy compression.
+    
+    Returns:
+        tuple: (prompt_path_to_use, temp_file_to_cleanup)
+        If conversion is not needed or fails, returns (original_path, None)
+    """
+    if not prompt_path:
+        return prompt_path, None
+    
+    prompt_ext = Path(prompt_path).suffix.lower()
+    if prompt_ext != ".mp3":
+        return prompt_path, None
+    
+    try:
+        # Find FFmpeg in local tools folder
+        script_dir = Path(__file__).resolve().parent.parent  # src/ -> TTS-Story root
+        ffmpeg_path = script_dir / "tools" / "ffmpeg" / "ffmpeg.exe"
+        
+        if not ffmpeg_path.exists():
+            # Try relative path calculation
+            ffmpeg_path = Path(__file__).resolve().parents[2] / "tools" / "ffmpeg" / "ffmpeg.exe"
+        
+        if ffmpeg_path.exists():
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_out:
+                temp_mp3_conv = Path(temp_out.name)
+            
+            result = subprocess.run(
+                [str(ffmpeg_path), "-y", "-i", str(prompt_path), str(temp_mp3_conv)],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                logger.info("Converted MP3 voice prompt to WAV for better quality: %s", Path(prompt_path).name)
+                return str(temp_mp3_conv), temp_mp3_conv
+            else:
+                temp_mp3_conv.unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning("Failed to convert MP3 voice prompt to WAV: %s", e)
+    
+    return prompt_path, None
+
+
 class AudioPostProcessor:
     """Applies pitch, speed, and tonal shaping to generated audio arrays."""
 
-    SOX_PATH = (Path(__file__).resolve().parents[2] / "tools" / "sox" / "sox.exe")
+    @staticmethod
+    def _find_sox() -> Path:
+        """Find SoX executable, checking local tools folder first."""
+        # Check local tools folder FIRST (contains correct version from GitHub)
+        script_dir = Path(__file__).resolve().parent.parent  # src/ -> TTS-Story root
+        local_sox = script_dir / "tools" / "sox" / "sox.exe"
+        if local_sox.exists():
+            return local_sox
+
+        # Fall back to relative path calculation
+        return Path(__file__).resolve().parents[2] / "tools" / "sox" / "sox.exe"
+
+    SOX_PATH = _find_sox.__func__()
 
     def apply_sox_post(
         self,

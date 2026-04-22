@@ -136,28 +136,35 @@ class OmniVoiceCloneEngine(TtsEngineBase):
         prompt_path = self._resolve_prompt_path(prompt_path)
         if not prompt_path:
             raise ValueError("Reference audio file not found.")
+        # Convert MP3 to WAV to prevent artifacts
+        from ..audio_effects import convert_mp3_to_wav_if_needed
+        prompt_path, temp_mp3_conv = convert_mp3_to_wav_if_needed(prompt_path)
         ref_text = self._get_ref_text(prompt_path)
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            output_path = str(Path(tmp_dir) / "preview.wav")
-            job = {
-                "mode": "clone",
-                "model_id": self.model_id,
-                "device": self.device,
-                "dtype": self.dtype,
-                "num_step": self.num_step,
-                "speed": speed,
-                "post_process": self.post_process,
-                "chunks": [{
-                    "text": text,
-                    "ref_audio": prompt_path,
-                    "ref_text": ref_text,
-                    "output_path": output_path,
-                    "_order_index": 0,
-                }],
-            }
-            self._run_worker(job)
-            audio, sr = sf.read(output_path, dtype="float32")
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                output_path = str(Path(tmp_dir) / "preview.wav")
+                job = {
+                    "mode": "clone",
+                    "model_id": self.model_id,
+                    "device": self.device,
+                    "dtype": self.dtype,
+                    "num_step": self.num_step,
+                    "speed": speed,
+                    "post_process": self.post_process,
+                    "chunks": [{
+                        "text": text,
+                        "ref_audio": prompt_path,
+                        "ref_text": ref_text,
+                        "output_path": output_path,
+                        "_order_index": 0,
+                    }],
+                }
+                self._run_worker(job)
+                audio, sr = sf.read(output_path, dtype="float32")
+        finally:
+            if temp_mp3_conv:
+                temp_mp3_conv.unlink(missing_ok=True)
         return self.post_processor.apply_post_pipeline(audio, self.sample_rate, None)
 
     def generate_batch(

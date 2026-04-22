@@ -376,35 +376,11 @@ class VoxCPMLocalEngine(TtsEngineBase):
         fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
 
         # Convert MP3 voice prompts to WAV to prevent artifacts
+        from ..audio_effects import convert_mp3_to_wav_if_needed
         temp_mp3_conv = None
         if prompt_path:
             prompt_path = self._resolve_prompt_path(prompt_path)
-            prompt_ext = Path(prompt_path).suffix.lower()
-            if prompt_ext == ".mp3":
-                try:
-                    ffmpeg_path = Path(__file__).parent.parent.parent / "tools" / "ffmpeg" / "ffmpeg.exe"
-                    if ffmpeg_path.exists():
-                        import tempfile
-                        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_out:
-                            temp_mp3_conv = Path(temp_out.name)
-                        import subprocess
-                        result = subprocess.run(
-                            [str(ffmpeg_path), "-y", "-i", str(prompt_path), str(temp_mp3_conv)],
-                            capture_output=True,
-                            text=True
-                        )
-                        if result.returncode == 0:
-                            logger.info("Converted MP3 voice prompt to WAV for better quality: %s", Path(prompt_path).name)
-                            prompt_path = str(temp_mp3_conv)
-                        else:
-                            if temp_mp3_conv:
-                                temp_mp3_conv.unlink(missing_ok=True)
-                                temp_mp3_conv = None
-                except Exception as e:
-                    logger.warning("Failed to convert MP3 voice prompt to WAV: %s", e)
-                    if temp_mp3_conv:
-                        temp_mp3_conv.unlink(missing_ok=True)
-                        temp_mp3_conv = None
+            prompt_path, temp_mp3_conv = convert_mp3_to_wav_if_needed(prompt_path)
 
         # VoxCPM requires BOTH prompt_wav_path and prompt_text, or NEITHER
         # If we have a prompt audio but no transcript, try automatic transcription

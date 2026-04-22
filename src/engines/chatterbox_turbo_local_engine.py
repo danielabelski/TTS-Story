@@ -385,10 +385,14 @@ class ChatterboxTurboLocalEngine(TtsEngineBase):
         fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
         reference_seconds = None
         temp_prompt = None
+        temp_mp3_conv = None
         resolved_prompt = None
         if prompt_path:
             try:
                 resolved_prompt = self._resolve_prompt_path(prompt_path)
+                # Convert MP3 to WAV to prevent artifacts
+                from ..audio_effects import convert_mp3_to_wav_if_needed
+                resolved_prompt, temp_mp3_conv = convert_mp3_to_wav_if_needed(resolved_prompt)
                 if fx_settings:
                     temp_prompt = self.post_processor.prepare_prompt_audio(str(resolved_prompt), fx_settings)
                     if temp_prompt:
@@ -451,6 +455,8 @@ class ChatterboxTurboLocalEngine(TtsEngineBase):
         finally:
             if temp_prompt:
                 temp_prompt.unlink(missing_ok=True)
+            if temp_mp3_conv:
+                temp_mp3_conv.unlink(missing_ok=True)
 
         audio = wav.squeeze(0).detach().cpu().numpy().astype("float32")
         audio = self.post_processor.apply_post_pipeline(audio, self.sample_rate, fx_settings)

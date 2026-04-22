@@ -179,6 +179,9 @@ class PocketTTSEngine(TtsEngineBase):
                 raise ValueError("Pocket TTS requires a voice sample prompt or a built-in voice name.")
 
             prompt_path = self._resolve_prompt_path(prompt_source)
+            # Convert MP3 to WAV to prevent artifacts
+            from ..audio_effects import convert_mp3_to_wav_if_needed
+            prompt_path, temp_mp3_conv = convert_mp3_to_wav_if_needed(prompt_path)
             voice_state = self._get_voice_state(prompt_path, allow_predefined=True)
             fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
 

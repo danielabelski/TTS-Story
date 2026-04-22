@@ -681,6 +681,8 @@ class IndexTTSEngine(TtsEngineBase):
         if assignment.audio_prompt_path:
             try:
                 resolved = str(self._resolve_prompt_path(assignment.audio_prompt_path))
+                from ..audio_effects import convert_mp3_to_wav_if_needed
+                resolved, temp_mp3_conv = convert_mp3_to_wav_if_needed(resolved)
                 logger.info("[index-tts] resolved prompt: %s", resolved)
                 return resolved
             except FileNotFoundError as e:
@@ -688,10 +690,12 @@ class IndexTTSEngine(TtsEngineBase):
         if self._default_prompt:
             try:
                 resolved = str(self._resolve_prompt_path(self._default_prompt))
+                from ..audio_effects import convert_mp3_to_wav_if_needed
+                resolved, temp_mp3_conv = convert_mp3_to_wav_if_needed(resolved)
                 logger.info("[index-tts] resolved default prompt: %s", resolved)
                 return resolved
             except FileNotFoundError as e:
-                logger.warning("[index-tts] default prompt path failed: %s", e)
+                logger.warning("[index-tts] default prompt failed: %s", e)
         raise ValueError(
             "IndexTTS requires a reference audio prompt. "
             "Assign a voice prompt to each speaker in the Generate tab."

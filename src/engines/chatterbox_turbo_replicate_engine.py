@@ -328,10 +328,17 @@ class ChatterboxTurboReplicateEngine(TtsEngineBase):
         reference_url = None
         prompt_fx, output_fx = self._split_prompt_fx(assignment)
         if assignment.audio_prompt_path:
-            reference_url = self._upload_reference_audio(
-                assignment.audio_prompt_path,
-                prompt_fx,
-            )
+            # Convert MP3 to WAV to prevent artifacts
+            from ..audio_effects import convert_mp3_to_wav_if_needed
+            prompt_path, temp_mp3_conv = convert_mp3_to_wav_if_needed(assignment.audio_prompt_path)
+            try:
+                reference_url = self._upload_reference_audio(
+                    prompt_path,
+                    prompt_fx,
+                )
+            finally:
+                if temp_mp3_conv:
+                    temp_mp3_conv.unlink(missing_ok=True)
 
         params = self._build_payload(text, assignment, reference_url)
         try:
