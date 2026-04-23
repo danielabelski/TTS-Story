@@ -54,6 +54,17 @@ class PocketTTSEngine(TtsEngineBase):
         if not POCKET_TTS_AVAILABLE:
             raise ImportError("pocket-tts is not installed. Run setup to enable Pocket TTS.")
 
+        # Set HF_TOKEN environment variable for voice cloning model download if available
+        # This is required for Pocket TTS voice cloning models on HuggingFace
+        hf_token = os.getenv("HF_TOKEN")
+        if hf_token:
+            logger.info("HF_TOKEN environment variable is set for Pocket TTS voice cloning")
+        else:
+            logger.warning(
+                "HF_TOKEN not set. Voice cloning may fail. Set HF_TOKEN environment variable "
+                "or accept terms at https://huggingface.co/kyutai/pocket-tts and run 'huggingface-cli login'"
+            )
+
         resolved_device = (device or "cpu").strip().lower()
         if resolved_device not in {"cpu", "auto"}:
             logger.info("Pocket TTS runs on CPU; ignoring device=%s", resolved_device)
@@ -335,10 +346,21 @@ class PocketTTSEngine(TtsEngineBase):
             voice_state = self.model.get_state_for_audio_prompt(prompt_path, truncate=False)
             self._voice_cache[cache_key] = voice_state
             return voice_state
-        voice_state = self.model.get_state_for_audio_prompt(
-            prompt_path,
-            truncate=self.prompt_truncate,
-        )
+        try:
+            voice_state = self.model.get_state_for_audio_prompt(
+                prompt_path,
+                truncate=self.prompt_truncate,
+            )
+        except ValueError as e:
+            if "voice cloning" in str(e).lower():
+                raise ValueError(
+                    f"Pocket TTS voice cloning requires HuggingFace authentication. "
+                    f"Please: 1) Accept terms at https://huggingface.co/kyutai/pocket-tts "
+                    f"2) Run 'huggingface-cli login' or set HF_TOKEN environment variable. "
+                    f"Alternatively, use a built-in voice: {list(self._builtin_voices())}. "
+                    f"Original error: {e}"
+                ) from e
+            raise
         self._voice_cache[cache_key] = voice_state
         return voice_state
 

@@ -8,24 +8,21 @@ Thank you — it genuinely means a lot! 🙏
 
 ---
 
-# Current Updates and Notes - updated 04-15-2026
-- **UI consolidation**: Simplified rebuild/repair workflow — consolidated multiple rebuild options (rebuild full story, recompile audio, repair) into a single "Rebuild" button in the library view. The new Rebuild button recompiles all chapter audio files from individual audio chunks and then recompiles the full audiobook from the chapter files, with a confirmation dialog before execution.
-- **Performance improvement**: Parallel chapter merging — applied ThreadPoolExecutor with dynamic worker allocation (based on `os.cpu_count()`) to all chapter merging operations including main generation, repair/rebuild, rebuild selected chapters, and rebuild all operations. This significantly reduces post-processing time for multi-chapter audiobooks by merging chapters concurrently.
-- **Bug fix**: Download filename now uses project name — download filenames now use the audiobook title from metadata (e.g., `{audiobook_title}_{job_id}.{format}`) instead of the hardcoded "kokoro_story" prefix, making downloads easier to identify.
-- **Bug fix**: Long folder/file name handling and M4B export efficiency — fixed WinError 206 (path too long) by reducing `slugify_filename` max_length from 120 to 60, replacing the fragile `concat:pipe|joined` protocol with `-f concat -safe 0 -i list_file` for ffmpeg, adding Windows extended-length path (`\\?\`) prefix helper for subprocess calls, and encoding M4B temp intermediates to `.m4a` (AAC in MP4 container) instead of raw ADTS `.aac` for accurate duration metadata and proper bitrate control. Chapter markers now work correctly across all chapters with proper file sizes.
-- **Bug fix**: OmniVoice installation issue — fixed missing `omnivoice_worker.py` file on clean installs by removing `engines/omnivoice/` from .gitignore and only excluding the `.venv` subdirectory. The worker file is now properly tracked in version control.
+# Current Updates and Notes - updated 04-22-2026
+- **Audio quality improvement**: MP3 to WAV conversion for voice prompts — added automatic conversion of MP3 voice prompts to WAV format before processing across all TTS engines (VoxCPM, Pocket TTS, Chatterbox local, Qwen3 Voice Clone, OmniVoice Clone, Index TTS, Chatterbox Turbo Replicate) to prevent audio artifacts from lossy compression when using audio processing tools like SoX.
+- **Bug fix**: SoX path resolution — fixed SOX_PATH calculation in `audio_effects.py` to correctly prioritize the local `tools/sox` directory, ensuring SoX post-processing is applied consistently across all engines.
+- **Bug fix**: Pocket TTS config parameter handling — fixed parameter order to prioritize `variant` over `config` when loading Pocket TTS models, preventing errors when the library expects a YAML file path for the `config` parameter.
+- **Pocket TTS authentication support** — added HF_TOKEN environment variable detection and improved error messages for Pocket TTS voice cloning, with clear guidance on HuggingFace authentication requirements.
 - Added **dynamic section heading detection** with chip-based UI — enable/disable default section headings (book, chapter, section, letter, part, prologue, epilogue) and add custom headings via removable chips. Section detection now dynamically updates in real-time as you toggle headings or add custom ones.
 - Added **parallel AAC encoding** for M4B export — chapters are encoded to AAC format in parallel using a thread pool before concatenation, significantly reducing M4B export time for multi-chapter audiobooks.
 - Added **M4B audiobook export** for chapter-mode jobs — download audiobooks as M4B format with embedded chapter markers, cover art support, and configurable bitrate (64-192 kbps) and ACX compliance options for audiobook distribution platforms.
 
 ### Previous Updates
-- Added **audiobook metadata editing** — edit title, author, genre, year, and description for library items, with persistent storage that survives application reloads.
-- Added **chapter rename functionality** — rename individual chapters via the chapter chip dropdown menu or directly from the chunk review modal header.
-- **UI improvements**: Library item action buttons now wrap to multiple lines on narrow screens instead of overflowing; modal overlays use high z-index and proper backdrop styling for visibility.
-- **Bug fix**: M4B cover art now properly converts images to JPEG format with RGB mode and appropriate sizing for maximum compatibility across media players.
-- Added **OmniVoice** engine modes (Voice Clone & Voice Design) with paralinguistic tags and multi-speaker support.
-- Added **Auto Assign** button for fuzzy-matching voice samples to detected speakers with adjustable similarity threshold.
-- Added **Clear Queue** button and **Time Codes** modal for YouTube chapter timestamp generation.
+- **UI consolidation**: Simplified rebuild/repair workflow — consolidated multiple rebuild options (rebuild full story, recompile audio, repair) into a single "Rebuild" button in the library view. The new Rebuild button recompiles all chapter audio files from individual audio chunks and then recompiles the full audiobook from the chapter files, with a confirmation dialog before execution.
+- **Performance improvement**: Parallel chapter merging — applied ThreadPoolExecutor with dynamic worker allocation (based on `os.cpu_count()`) to all chapter merging operations including main generation, repair/rebuild, rebuild selected chapters, and rebuild all operations. This significantly reduces post-processing time for multi-chapter audiobooks by merging chapters concurrently.
+- **Bug fix**: Download filename now uses project name — download filenames now use the audiobook title from metadata (e.g., `{audiobook_title}_{job_id}.{format}`) instead of the hardcoded "kokoro_story" prefix, making downloads easier to identify.
+- **Bug fix**: Long folder/file name handling and M4B export efficiency — fixed WinError 206 (path too long) by reducing `slugify_filename` max_length from 120 to 60, replacing the fragile `concat:pipe|joined` protocol with `-f concat -safe 0 -i list_file` for ffmpeg, adding Windows extended-length path (`\\?\`) prefix helper for subprocess calls, and encoding M4B temp intermediates to `.m4a` (AAC in MP4 container) instead of raw ADTS `.aac` for accurate duration metadata and proper bitrate control. Chapter markers now work correctly across all chapters with proper file sizes.
+- **Bug fix**: OmniVoice installation issue — fixed missing `omnivoice_worker.py` file on clean installs by removing `engines/omnivoice/` from .gitignore and only excluding the `.venv` subdirectory. The worker file is now properly tracked in version control.
 
 # TTS-Story
 
