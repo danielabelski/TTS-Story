@@ -75,10 +75,11 @@ class PocketTTSEngine(TtsEngineBase):
             import inspect
 
             signature = inspect.signature(TTSModel.load_model)
-            if "config" in signature.parameters:
-                load_kwargs["config"] = model_variant
-            elif "variant" in signature.parameters:
+            # Use variant parameter if available, as config expects a YAML file path
+            if "variant" in signature.parameters:
                 load_kwargs["variant"] = model_variant
+            elif "config" in signature.parameters and str(model_variant).lower().endswith(".yaml"):
+                load_kwargs["config"] = model_variant
         except Exception:
             load_kwargs.setdefault("variant", model_variant)
 
