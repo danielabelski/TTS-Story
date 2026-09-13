@@ -331,17 +331,24 @@ def install_chatterbox() -> None:
 
 def install_index_tts() -> None:
     engine_dir = ROOT / "engines/index-tts"
-    if not (engine_dir / "pyproject.toml").is_file():
+    revision = "ee40fa7d6c6b8a2c7f06105f9f1e65775b74868c"
+    source_marker = engine_dir / ".tts-story-source-revision"
+    if not (engine_dir / "pyproject.toml").is_file() or not source_marker.is_file() or source_marker.read_text().strip() != revision:
         temporary = ROOT / "data/install/index-tts-source"
         if temporary.exists():
             shutil.rmtree(temporary)
         temporary.parent.mkdir(parents=True, exist_ok=True)
         env = dict(os.environ, GIT_LFS_SKIP_SMUDGE="1")
         subprocess.run(["git", "clone", "https://github.com/index-tts/index-tts.git", str(temporary)], check=True, env=env)
-        shutil.copytree(temporary, engine_dir, dirs_exist_ok=True)
+        run(["git", "checkout", "--detach", revision], cwd=temporary)
+        # Preserve the app worker, venv, models and user files; exclude the Git database.
+        shutil.copytree(temporary, engine_dir, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git", "tts_worker.py"))
         shutil.rmtree(temporary, ignore_errors=True)
     run([sys.executable, "-m", "pip", "install", "--upgrade", "uv"])
-    run([sys.executable, "-m", "uv", "sync"], cwd=engine_dir)
+    run([sys.executable, "-m", "uv", "sync", "--python", "3.11", "--locked"], cwd=engine_dir)
+    python = engine_dir / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    run([str(python), "-c", "from indextts.infer_v2_5 import IndexTTS2; import torch; print('IndexTTS 2.5 ready; CUDA available:', torch.cuda.is_available())"], cwd=engine_dir)
+    source_marker.write_text(revision + "\n", encoding="utf-8")
     if not (engine_dir / "tts_worker.py").is_file():
         raise RuntimeError("The TTS-Story IndexTTS worker is missing. Update TTS-Story and retry.")
     (engine_dir / ".indextts_ready").touch()

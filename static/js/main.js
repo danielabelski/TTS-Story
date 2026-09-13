@@ -6614,6 +6614,12 @@ async function generateAudio() {
         split_by_chapter: splitByChapter,
         generate_full_story: generateFullStory,
         voice_assignments: voiceAssignments,
+        // Profile storage keys strip punctuation; send the actual assignment IDs.
+        speaker_profiles: Object.fromEntries(Object.keys(voiceAssignments).map(speaker =>
+            [speaker, findSpeakerProfile(speaker).profile]
+        ).filter(([, profile]) => profile).map(([speaker, profile]) =>
+            [speaker, JSON.parse(JSON.stringify(profile))]
+        )),
         review_mode: true  // Always enabled - chunk review happens in library
     };
     if (selectedEngine === 'breeze_api' && Object.values(voiceAssignments).some(a => a.audio_prompt_path)) {

@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 from .openai_tts_engine import OpenAITTSEngine
 from .cloud_audio import apply_wav_effects
 from ..audio_effects import VoiceFXSettings
+from ..voice_directions import compose_voice_direction
 
 
 class BreezeAPIError(RuntimeError):
@@ -177,7 +178,7 @@ class BreezeAPIEngine(OpenAITTSEngine):
             raise BreezeAPIError("Unparsed direction tags reached Breeze API; refusing to speak instructions.")
         extra = assignment.extra or {}
         payload = {"text": text, "model_id": self.model_id,
-                   "instructions": extra.get("delivery_instruction") or extra.get("instructions") or self.instructions,
+                   "instructions": compose_voice_direction(extra, extra.get("delivery_instruction") or extra.get("instructions") or self.instructions),
                    "voice_settings": {"guidance_scale": self.guidance_scale}}
         language = str(assignment.lang_code or "").strip()
         if re.fullmatch(r"[a-zA-Z]{2}", language):

@@ -61,6 +61,16 @@ If profile generation fails or a provider omits one or more speakers, use **Buil
 
 Saved preparation progress is tied to the text being processed. Changing the source can make an older resume state inappropriate.
 
+## Strict Book Conversion V3 - Directed
+
+Choose **Strict Book Conversion V3 - Directed** to keep a stable vocal identity separate from delivery. V2 remains available unchanged, alongside a dated backup. V3 retains the source-preservation, matched-tag, speaker-identity, narrator-restraint, and existing pause-control rules.
+
+The profile-building stage assigns a concise **Voice Type**, such as `High-pitched, squeaky, comically pompous.` Review it in Speaker Properties. Voice Type describes pitch, timbre, and characteristic manner without gender/age labels or momentary emotions. The separate **Voice Design Prompt** incorporates this identity with the gender/age information needed to create the reference sample.
+
+The manuscript still contains only passage delivery, for example `[direction]Spoken with self-important confidence.[/direction]`. Local Breeze and Breeze API automatically prepend the saved Voice Type when synthesizing; do not repeat it in the manuscript. Other engines retain their existing behavior. Using the same reference sample and the existing local per-speaker seed helps consistency, but does not guarantee identical voice quality across different passages; this feature does not add seed control to the hosted API.
+
+New jobs save speaker properties with their voice assignments and chunks. In Library → Review Chunks, expand a speaker to edit and save those properties, then regenerate to apply them.
+
 ## Build one profile without running Prep Text
 
 An already tagged manuscript does not need to be rewritten just to obtain speaker profiles:

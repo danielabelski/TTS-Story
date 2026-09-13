@@ -1,5 +1,7 @@
 # Python
 __pycache__/
+.pytest_cache/
+.venv/
 *.py[cod]
 *$py.class
 *.so
@@ -69,6 +71,10 @@ models/
 *.safetensors
 *.onnx
 *.ckpt
+*.gguf
+
+# Local emotion inference caches (including SQLite transaction sidecars)
+.tts-story-emotions.sqlite3*
 
 # Voice prompts (user data)
 data/voice_prompts/*

@@ -20,6 +20,7 @@ import soundfile as sf
 
 from .base import EngineCapabilities, TtsEngineBase, VoiceAssignment
 from ..audio_effects import AudioPostProcessor, VoiceFXSettings, convert_mp3_to_wav_if_needed
+from ..voice_directions import compose_voice_direction
 
 
 logger = logging.getLogger(__name__)
@@ -251,9 +252,9 @@ class BreezeTTS2Engine(TtsEngineBase):
         extra = assignment.extra or {}
         prompt = assignment.audio_prompt_path or self.default_prompt
         transcript = str(extra.get("prompt_text") or self.default_prompt_text or "").strip()
-        direction = self._clean_instruction(
-            extra.get("delivery_instruction") or extra.get("instruction") or ""
-        )
+        direction = self._clean_instruction(compose_voice_direction(
+            extra, extra.get("delivery_instruction") or extra.get("instruction") or ""
+        ))
         design = self._clean_instruction(extra.get("voice_design_prompt") or "")
         instruction = direction or design or self.default_instruction
         temporary_conversion = None

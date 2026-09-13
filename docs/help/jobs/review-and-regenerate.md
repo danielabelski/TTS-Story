@@ -21,6 +21,7 @@ On a chunk card you can:
 
 - play the current audio;
 - edit its text;
+- edit **Voice Direction** separately from the spoken text (Breeze local/API and other direction-capable engines);
 - select a different engine and compatible voice;
 - adjust Qwen language or instruction where applicable;
 - adjust speed and pitch;
@@ -30,9 +31,15 @@ On a chunk card you can:
 
 Regeneration queues new synthesis for that chunk. Keep the review modal open long enough to see whether the chunk completes or fails, then listen to the replacement.
 
+**Voice Direction** shows the saved passage cue from the manuscript's `[direction]...[/direction]` block. Enter only the instruction, without tags. Click **Regenerate** to apply it; the edited cue is saved with the chunk after successful synthesis and remains available when you reopen review. Clearing the field removes that chunk's cue (engine/voice defaults may still apply). Existing jobs with no saved direction show an empty field; TTS-Story does not invent missing cues. Speaker-wide regeneration keeps each chunk's saved direction; use the individual chunk's Regenerate button to apply edits in its direction field.
+
 Changing an engine can expose a different kind of voice selector. A built-in voice ID is not interchangeable with a reference prompt path. If an engine or voice does not appear correctly, return to the original engine and verify its configuration in [Settings](app:settings).
 
 ## Repair a speaker in bulk
+
+Expand a speaker to edit **Character Profile**, **Voice Type**, and **Voice Design Prompt**. Click **Save Speaker Properties** before regenerating. These edits belong to this production, persist when review is reopened, and do not change the source project or existing audio automatically. New jobs capture these fields from the Generate page; older jobs may show empty fields that you can fill manually.
+
+For local Breeze and Breeze API, the saved **Voice Type** is prepended to each chunk's **Voice Direction** during synthesis. For example, `High-pitched, squeaky, comically pompous.` plus `Delivered with theatrical mystery and importance.` becomes one instruction. Keep the stable identity in Voice Type and the changing delivery in the chunk field. Clearing Voice Type removes the prefix. Character Profile and Voice Design Prompt are not prepended.
 
 The speaker-level controls can apply a selected engine, voice, speed, pitch, and leading/trailing silence across that speaker's chunks. **Regenerate All** queues each affected chunk; it can consume substantial local processing time or cloud quota.
 

@@ -34,7 +34,7 @@ MODEL_DEFAULTS = {
     "Qwen3 Voice Clone": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
     "KittenTTS": "KittenML/kitten-tts-mini-0.8",
     "OmniVoice (isolated)": "k2-fsa/OmniVoice",
-    "IndexTTS (isolated)": "IndexTTS-2",
+    "IndexTTS (isolated)": "IndexTTS-2.5",
     "Dot.TTS (isolated)": "rednote-hilab/dots.tts-soar",
     "Audio8 TTS (isolated)": "Audio8/Audio8-TTS-Preview-0.6b",
 }

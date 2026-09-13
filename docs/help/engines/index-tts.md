@@ -1,58 +1,48 @@
-# IndexTTS
+# IndexTTS 2.5
 
-TTS-Story uses IndexTTS as a local English-and-Chinese zero-shot cloning engine. It runs in its own environment and uses reference audio from the shared Voice Prompts library.
+IndexTTS runs locally in its own environment. Version 2.5 supports English, Chinese, Japanese, Spanish and Arabic; version 2 remains available for existing productions.
 
-## Best for
+## Install and select
 
-- Local English or Chinese reference cloning
-- Users with an NVIDIA GPU who want detailed speed/quality controls
-- Rebuilding individual chunks with the same reference identity
+1. Open [Settings → IndexTTS](app:settings/index-tts) and install the engine. Existing installations need reinstalling to obtain the 2.5 runtime.
+2. Select **IndexTTS-2.5**, choose the manuscript language, and save.
+3. Assign a clean reference from the shared Voice Prompts library to each speaker.
+4. Generate a short test before a full production.
 
-TTS-Story defaults to IndexTTS-2, but the adapter currently uses its cloning and sampling path only. It does **not** expose IndexTTS-2's upstream emotion-reference, emotion-vector, emotion-text, or duration-control interfaces.
+The installer uses Python 3.11, the official dependency lock and a pinned upstream source revision in an isolated environment. Model files download on first use into separate version folders. Existing version-2 checkpoints are not overwritten by 2.5. No models or environments used by Breeze are changed.
 
-## Requirements and setup
+## Emotional direction
 
-![Voice Prompts library used to store cloning references](../../../static/help/screenshots/voice-prompts.png)
+Enable **Use passage directions for emotion** and start with **Emotion strength 0.6** or lower.
 
-*Store the clean reference in Voice Prompts, then select it for IndexTTS in the speaker or engine settings.*
+```text
+[direction]Speak with restrained sadness.[/direction]
+[narrator]The house was empty when she returned.[/narrator]
+```
 
-The normal setup clones the official IndexTTS repository into `engines/index-tts`, creates its isolated environment with `uv`, and installs dependencies. Model weights are downloaded automatically on first use and are approximately 2–4 GB.
+The direction is not spoken. IndexTTS translates it into its eight emotion dimensions: happy, angry, sad, afraid, disgusted, melancholic, surprised and calm. It is not an unrestricted acting prompt: precise timbre, pitch or accent instructions may not be reproduced. The reference sample supplies the voice identity; TTS-Story does not prepend Breeze's Voice Type instruction.
 
-A CUDA GPU is strongly recommended. CPU is selectable but large jobs can be very slow. The Windows setup deliberately skips the optional DeepSpeed extra because it usually cannot build without specialized CUDA tooling.
+Zero strength or disabling the option bypasses text-emotion guidance. Without a direction, normal reference-based cloning is used. Repeated directions are cached within a batch and on disk for retries/resumes. The cache stores hashed instruction keys and emotion vectors under the model's checkpoint directory, automatically invalidates when the classifier files change, and applies the current emotion strength at synthesis time. The model stays loaded for the batch.
 
-Assign a clean prompt for each speaker or configure a Default Prompt under [Settings → Engine Settings](app:settings/index-tts). See [Reference Voice Prompts](help:voice-prompts).
+In **Library → Review Chunks**, edit **Voice Direction** and regenerate. The saved direction is also retained for bulk speaker regeneration and resumed jobs.
 
-## Controls TTS-Story exposes
+For IndexTTS chunks, **IndexTTS emotion strength** appears beneath Voice Direction. Set a value from 0 to 1 and click Regenerate. The value overrides the saved job strength for that chunk only, is saved after successful regeneration, and is reused for later chunk regenerations. Changing global engine settings does not replace this value. Existing chunks start with their saved job strength when available (older items without that information use 0.6). Zero disables guidance; a positive override enables it for the chunk. The control hides when another engine is selected; Breeze does not use this IndexTTS-specific setting. Recompile the chapter/full story afterward to include the updated chunk.
 
-- **Model Version:** IndexTTS-2, 1.5, or legacy 1.0
-- **Device**, **Default Prompt**, and **Chunk Size** (400 by default)
-- **Beam Search Width:** 1 is fastest; wider search adds GPT-stage work
-- **Diffusion Steps:** TTS-Story starts at 12; more steps increase the slow synthesis stage
-- **Temperature, top-p, and top-k:** sampling variation
-- **Repetition Penalty:** raise cautiously if audio stutters or loops
-- **Max Mel Tokens:** output-length safety cap; 1500 is roughly 68 seconds according to the UI estimate
-- **Max Text Tokens per Segment:** internal splitting limit
-- **FP16, DeepSpeed, torch.compile, and Accel:** optional performance paths whose support depends on the isolated runtime and GPU
+## Performance and compatibility
 
-Saved application defaults leave DeepSpeed, torch.compile, and Accel off. FP16 can reduce memory on supported GPUs, but make a baseline before enabling several acceleration paths together.
+- **Device:** auto chooses an available accelerator. CUDA is strongly recommended for long jobs. Explicit CUDA requests fail clearly if CUDA is unavailable.
+- **BF16:** used by 2.5 on supported GPUs; unsupported devices use full precision. FP16 is a separate version-2 option.
+- **Beam width:** start at one.
+- **Diffusion steps:** fixed at 25 upstream. The former editable control did not adjust the decoder and is now read-only.
+- **Temperature, top-p, top-k, repetition penalty and token limits:** apply consistently to previews and batch generation.
+- **DeepSpeed, Accel and torch.compile:** optional, off by default. They require additional compatible dependencies; do not enable all of them without a baseline test. Missing Flash Attention no longer disables ordinary half-precision inference.
 
-## Effective-use tips
+Fresh chapter-split jobs use one worker across chapters when eligible. Resumed jobs use the safe section-rendering path to preserve completed filenames; this can reload the model between sections. Initial downloads, model loading and optional compilation are not representative of steady-state synthesis speed.
 
-1. Start with one beam, 12 diffusion steps, and the supplied sampling defaults.
-2. Use a clean single-speaker prompt. A noisy reference is usually a larger quality problem than a sampling value.
-3. If output loops, shorten the chunk first, then test a small repetition-penalty increase.
-4. If a chunk is cut short, check Max Mel Tokens and sentence length before raising every limit.
-5. `torch.compile` can make the first compiled request much slower while later requests improve. Benchmark after warm-up.
-6. Treat DeepSpeed as unsupported unless you intentionally installed and verified it inside the IndexTTS environment.
+The worker reuses prepared voice-reference tensors for up to eight speakers, with a 128 MiB cache budget. Replacing a sample invalidates its cached conditioning. This cache lasts only for the worker's lifetime and does not retain models after a batch ends.
 
-## Time, privacy, and limitations
+Terminal logs report emotion-model device placement, emotion decode time/token count, emotion cache hits, and synthesis time/reference cache hits separately. CPU/disk offloading of the emotion model is reported rather than forcing it onto a full GPU. Emotion decoding uses inference mode and a bounded output budget; truncated responses are retried once with a larger budget, then rejected instead of silently using incomplete directions. Unique directions are still classified individually; emotion batching is not enabled.
 
-The first job includes model download, weight loading, and possibly compilation. Later speed varies with diffusion steps, beams, precision, text length, and GPU. Changing model versions can trigger another download.
+## Reference
 
-After assets are cached, synthesis is local and has no provider usage charge. The isolated environment occupies additional disk space by design.
-
-This adapter supports English and Chinese. Despite upstream IndexTTS-2 capabilities and older interface text that may mention emotion control, TTS-Story does not currently send emotion or duration parameters to the worker.
-
-## Authoritative reference
-
-- [IndexTTS official repository](https://github.com/index-tts/index-tts)
+[Official IndexTTS repository and usage](https://github.com/index-tts/index-tts)

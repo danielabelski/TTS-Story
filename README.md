@@ -8,13 +8,18 @@ If you appreciate what we do and would like to support ongoing development:
 
 ---
 
-# Current Updates and Notes - updated 09-09-2026
+# Current Updates and Notes - updated 09-13-2026
+
+- **IndexTTS 2.5 and emotional direction** - upgraded isolated installation with multilingual voice cloning, GPU/BF16 support, and passage directions translated into IndexTTS emotion controls. Version 2 remains selectable. Existing users can reinstall IndexTTS from Engine Settings to obtain the updated runtime.
+- **Per-chunk IndexTTS emotion strength** - Review Chunks now exposes a 0–1 strength control when IndexTTS is selected. It starts with the saved strength when available and saves successful overrides per chunk without changing global settings. Regenerate the chunk, then recompile the chapter/full story to include the edit.
+- **IndexTTS runtime efficiency and diagnostics** - bounded multi-speaker reference caching, persistent emotion-result caching for repeated directions and retries, inference-only emotion decoding, and separate GPU placement/timing logs. Models stay loaded within a batch; first-run downloads and startup still take additional time.
+- **Strict Book Conversion V3 - Directed** - adds a consistent speaker Voice Type alongside passage-specific delivery cues. Breeze synthesis combines the voice identity with each passage direction; speaker properties and editable directions are available in Library review. The V2 prompt and a dated backup are preserved.
+
+### Previous Updates
 
 - **Breeze API production workflow** - use selected TTS-Story voice samples for hosted, directed narration. Samples are uploaded as needed, isolated by production, reused on resume, and explicitly released from Breeze after delivery while local voices and audio are preserved.
 - **More resilient Breeze generation** - longer voice-upload timeouts, recovery controls for interrupted uploads, and configurable speech retries that check Breeze history first. Uncertain history results stop automatic retries; missing history can still result in duplicate charges. Set retries to zero to disable them.
 - **Stronger directed-text validation** - improved speaker detection when closing tags are mistyped, visible speaker/direction mismatch warnings, and a targeted repair for speaker blocks incorrectly closed with `[/direction]`. Invalid tags are blocked before generation.
-
-### Previous Updates
 
 - **Breeze TTS 2 local integration** - PyTorch and community Q8 generation, voice design, cloning, and passage-level direction. Hosted commercial use requires an active paid subscription; local model restrictions still apply.
 - **Audio8 TTS integration** - added the compact multilingual Audio8 0.6B engine with isolated installation, 44.1 kHz output, transcript-conditioned voice cloning, safe chunk limits, and reproducible retry handling.
@@ -135,7 +140,7 @@ The figures below are practical planning ranges for the current adapters and def
 | **[OmniVoice Clone](docs/help/engines/omnivoice.md)** | NVIDIA CUDA, Apple MPS, or CPU | Roughly **4–6 GB** in float16; **8 GB is safer** | Supported, but extremely slow | Isolated environment; transcription or float32 can increase memory use. |
 | **[Pocket TTS Preset / Clone](docs/help/engines/pocket-tts.md)** | CPU only | **0 GB** | **Designed for CPU** | English-only in the current adapter. |
 | **[KittenTTS](docs/help/engines/kitten-tts.md)** | CPU only | **0 GB** | **Designed for CPU** | Eight English voices; model variants are approximately 25–80 MB. |
-| **[IndexTTS](docs/help/engines/index-tts.md)** | NVIDIA CUDA strongly recommended | Roughly **6–8 GB with FP16**; allow **10–12 GB** for FP32 | Selectable, but very slow | English/Chinese zero-shot cloning in an isolated environment. |
+| **[IndexTTS 2.5](docs/help/engines/index-tts.md)** | NVIDIA CUDA strongly recommended | Plan for **8–12 GB** with emotion guidance; usage varies with precision and text | Selectable, but very slow | Isolated multilingual cloning with passage-level emotion guidance; version 2 also remains selectable. |
 | **[Dot.TTS](docs/help/engines/dots-tts.md)** | NVIDIA CUDA strongly recommended | Plan for roughly **10–12 GB** | Installation may work, but inference can be impractical | 2B-parameter, 48 kHz cloning model with multi-GB downloads. |
 | **[Audio8 TTS 0.6B](docs/help/engines/audio8-tts.md)** | NVIDIA CUDA recommended; CPU fallback | Benchmark pending; the BF16 model is compact but codec and generation state add overhead | Available in FP32, but potentially slow | 44.1 kHz multilingual cloning; exact reference transcript required; sentence-preserving soft and hard chunk limits. |
 | **[Breeze TTS 2](docs/help/engines/breeze-tts-2.md)** | NVIDIA CUDA required | About **7.7 GB** eager; **12 GB recommended**. Fast mode uses about **14.4 GB**; **24 GB recommended** | Not supported by the official runtime | English/Chinese voice design, cloning, and direction. Model weights and self-hosted outputs are research/non-commercial only. Linux is upstream-supported; native Windows integration is experimental. |

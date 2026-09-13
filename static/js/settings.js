@@ -2405,9 +2405,17 @@ function applySettings(settings) {
     }
 
     // IndexTTS settings
+    const indexEmotion = document.getElementById('index-tts-emotion-enabled');
+    if (indexEmotion) indexEmotion.checked = settings.index_tts_emotion_enabled !== false;
+    const indexStrength = document.getElementById('index-tts-emotion-strength');
+    if (indexStrength) indexStrength.value = settings.index_tts_emotion_strength ?? 0.6;
+    const indexLanguage = document.getElementById('index-tts-language');
+    if (indexLanguage) indexLanguage.value = settings.index_tts_language || 'EN';
+    const indexBf16 = document.getElementById('index-tts-use-bf16');
+    if (indexBf16) indexBf16.checked = settings.index_tts_use_bf16 !== false;
     const indexModelVersion = document.getElementById('index-tts-model-version');
     if (indexModelVersion) {
-        indexModelVersion.value = settings.index_tts_model_version || 'IndexTTS-2';
+        indexModelVersion.value = settings.index_tts_model_version || 'IndexTTS-2.5';
     }
     const indexChunkSize = document.getElementById('index-tts-chunk-size');
     if (indexChunkSize) {
@@ -2443,7 +2451,7 @@ function applySettings(settings) {
     }
     const indexDiffusionSteps = document.getElementById('index-tts-diffusion-steps');
     if (indexDiffusionSteps) {
-        indexDiffusionSteps.value = settings.index_tts_diffusion_steps ?? 25;
+        indexDiffusionSteps.value = 25;
     }
     const indexTemperature = document.getElementById('index-tts-temperature');
     if (indexTemperature) {
@@ -2820,7 +2828,11 @@ async function saveSettings() {
         kitten_tts_model_id: document.getElementById('kitten-tts-model-id')?.value || 'KittenML/kitten-tts-mini-0.8',
         kitten_tts_default_voice: document.getElementById('kitten-tts-default-voice')?.value || 'Jasper',
         kitten_tts_chunk_size: parseInt(document.getElementById('kitten-tts-chunk-size')?.value, 10) || 300,
-        index_tts_model_version: document.getElementById('index-tts-model-version')?.value || 'IndexTTS-2',
+        index_tts_model_version: document.getElementById('index-tts-model-version')?.value || 'IndexTTS-2.5',
+        index_tts_emotion_enabled: document.getElementById('index-tts-emotion-enabled')?.checked ?? true,
+        index_tts_emotion_strength: Number(document.getElementById('index-tts-emotion-strength')?.value ?? 0.6),
+        index_tts_language: document.getElementById('index-tts-language')?.value || 'EN',
+        index_tts_use_bf16: document.getElementById('index-tts-use-bf16')?.checked ?? true,
         index_tts_chunk_size: parseInt(document.getElementById('index-tts-chunk-size')?.value, 10) || 400,
         index_tts_device: document.getElementById('index-tts-device')?.value || 'auto',
         index_tts_default_prompt: document.getElementById('index-tts-default-prompt')?.value || '',
@@ -2829,7 +2841,7 @@ async function saveSettings() {
         index_tts_use_torch_compile: document.getElementById('index-tts-use-torch-compile')?.checked ?? false,
         index_tts_use_accel: document.getElementById('index-tts-use-accel')?.checked ?? false,
         index_tts_num_beams: parseInt(document.getElementById('index-tts-num-beams')?.value, 10) || 1,
-        index_tts_diffusion_steps: parseInt(document.getElementById('index-tts-diffusion-steps')?.value, 10) || 25,
+        index_tts_diffusion_steps: 25,
         index_tts_temperature: parseFloat(document.getElementById('index-tts-temperature')?.value) || 0.8,
         index_tts_top_p: parseFloat(document.getElementById('index-tts-top-p')?.value) || 0.8,
         index_tts_top_k: parseInt(document.getElementById('index-tts-top-k')?.value, 10) || 30,

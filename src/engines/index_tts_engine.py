@@ -5,7 +5,7 @@ dependency conflicts with the main project (torch version, numpy, etc.).
 This adapter communicates with the IndexTTS worker via subprocess.
 
 Setup:
-    1. Run setup.bat (clones repo + runs uv sync automatically)
+    1. Install or reinstall IndexTTS from Settings > TTS Engines.
     Model weights are downloaded automatically on first use via huggingface_hub.
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ from ..audio_effects import AudioPostProcessor, VoiceFXSettings
 logger = logging.getLogger(__name__)
 
 INDEX_TTS_SAMPLE_RATE = 22050
-INDEX_TTS_DEFAULT_MODEL_VERSION = "IndexTTS-2"
+INDEX_TTS_DEFAULT_MODEL_VERSION = "IndexTTS-2.5"
 
 _ENGINE_ROOT = Path(__file__).resolve().parent.parent.parent / "engines" / "index-tts"
 
@@ -49,13 +49,13 @@ def _find_venv_python(engine_root: Path) -> Optional[Path]:
 def _check_index_tts_available(engine_root: Path) -> tuple[bool, str]:
     """Return (available, reason) for the IndexTTS isolated environment."""
     if not engine_root.exists():
-        return False, f"IndexTTS directory not found: {engine_root}. Run setup.bat to install."
+        return False, f"IndexTTS directory not found: {engine_root}. Install IndexTTS in Settings > TTS Engines."
     worker = engine_root / "tts_worker.py"
     if not worker.is_file():
-        return False, f"IndexTTS worker not found: {worker}. Run setup.bat to repair the IndexTTS install."
+        return False, f"IndexTTS worker not found: {worker}. Reinstall IndexTTS in Settings > TTS Engines."
     python = _find_venv_python(engine_root)
     if python is None:
-        return False, f"IndexTTS venv not found under {engine_root}. Run setup.bat to install."
+        return False, f"IndexTTS venv not found under {engine_root}. Install IndexTTS in Settings > TTS Engines."
     return True, ""
 
 
@@ -68,8 +68,8 @@ class IndexTTSEngine(TtsEngineBase):
     name = "index_tts"
     capabilities = EngineCapabilities(
         supports_voice_cloning=True,
-        supports_emotion_tags=False,
-        supported_languages=["en", "zh"],
+        supports_emotion_tags=True,
+        supported_languages=["en", "zh", "ja", "es", "ar"],
     )
 
     def __init__(
@@ -78,6 +78,10 @@ class IndexTTSEngine(TtsEngineBase):
         engine_root: Optional[str] = None,
         model_version: str = INDEX_TTS_DEFAULT_MODEL_VERSION,
         use_fp16: bool = False,
+        use_bf16: bool = True,
+        emotion_enabled: bool = True,
+        emotion_strength: float = 0.6,
+        language: str = "EN",
         use_deepspeed: bool = False,
         use_torch_compile: bool = False,
         use_accel: bool = False,
@@ -100,8 +104,20 @@ class IndexTTSEngine(TtsEngineBase):
 
         self._python = _find_venv_python(self._engine_root)
         self._worker = self._engine_root / "tts_worker.py"
-        self._model_dir = str(self._engine_root / "checkpoints")
-        self._cfg_path = str(self._engine_root / "checkpoints" / "config.yaml")
+        if model_version not in {"IndexTTS-2.5", "IndexTTS-2"}:
+            raise ValueError("Select IndexTTS 2.5 or 2 in Settings; legacy 1.x is not supported by this adapter.")
+        model_path = self._engine_root / "checkpoints" / model_version
+        legacy = self._engine_root / "checkpoints"
+        if model_version == "IndexTTS-2" and (legacy / "gpt.pth").is_file():
+            model_path = legacy
+        self._model_dir = str(model_path)
+        self._cfg_path = str(model_path / "config.yaml")
+        self._use_bf16 = bool(use_bf16)
+        self._emotion_enabled = bool(emotion_enabled)
+        self._emotion_strength = max(0.0, min(1.0, float(emotion_strength)))
+        self._language = str(language).upper()
+        if self._language not in {"EN", "ZH", "JA", "ES", "AR"}:
+            raise ValueError("Unsupported IndexTTS language")
         self._model_version = model_version
         self._use_fp16 = use_fp16
         self._use_deepspeed = use_deepspeed
@@ -124,6 +140,31 @@ class IndexTTSEngine(TtsEngineBase):
             model_version, use_fp16, use_deepspeed, use_torch_compile, use_accel,
             self._num_beams, self._diffusion_steps, device or "auto",
         )
+
+    def _finish_chunk_audio(self, path: str, assignment: VoiceAssignment) -> None:
+        # Review callbacks can move the file. Apply effects before handing it off.
+        fx = VoiceFXSettings.from_payload(assignment.fx_payload)
+        if fx and not fx.is_identity():
+            audio, sr = sf.read(path, dtype="float32")
+            audio = self.post_processor.apply_post_pipeline(audio, sr, fx)
+            sf.write(path, audio, sr)
+
+    def _worker_options(self) -> Dict:
+        """One contract for full jobs, chapter batches and previews."""
+        return {
+            "model_dir": self._model_dir, "cfg_path": self._cfg_path,
+            "model_version": self._model_version, "device": self._device,
+            "use_fp16": self._use_fp16, "use_bf16": self._use_bf16,
+            "use_deepspeed": self._use_deepspeed, "use_accel": self._use_accel,
+            "use_torch_compile": self._use_torch_compile,
+            "emotion_enabled": self._emotion_enabled,
+            "emotion_strength": self._emotion_strength, "language": self._language,
+            "num_beams": self._num_beams, "temperature": self._temperature,
+            "top_p": self._top_p, "top_k": self._top_k,
+            "repetition_penalty": self._repetition_penalty,
+            "max_mel_tokens": self._max_mel_tokens,
+            "max_text_tokens_per_segment": self._max_text_tokens_per_segment,
+        }
 
     @property
     def sample_rate(self) -> int:
@@ -161,12 +202,15 @@ class IndexTTSEngine(TtsEngineBase):
                 output_path = output_dir / f"chunk_{chunk_index:04d}.wav"
                 worker_chunks.append({
                     "text": chunk_text,
+                    "delivery_instruction": segment.get("delivery_instruction", segment.get("emotion", "")),
                     "spk_audio_prompt": spk_prompt,
                     "output_path": str(output_path),
                     "_order_index": chunk_index,
                 })
                 chunk_meta.append({
                     "speaker": speaker,
+                    "delivery_instruction": segment.get("delivery_instruction", segment.get("emotion", "")),
+                    "emotion": segment.get("emotion"),
                     "text": chunk_text,
                     "segment_index": seg_idx,
                     "chunk_index": local_idx,
@@ -205,22 +249,7 @@ class IndexTTSEngine(TtsEngineBase):
 
         # Write job file and call worker
         job = {
-            "model_dir": self._model_dir,
-            "cfg_path": self._cfg_path,
-            "model_version": self._model_version,
-            "use_fp16": self._use_fp16,
-            "use_deepspeed": self._use_deepspeed,
-            "use_torch_compile": self._use_torch_compile,
-            "use_accel": self._use_accel,
-            "num_beams": self._num_beams,
-            "diffusion_steps": self._diffusion_steps,
-            "temperature": self._temperature,
-            "top_p": self._top_p,
-            "top_k": self._top_k,
-            "repetition_penalty": self._repetition_penalty,
-            "max_mel_tokens": self._max_mel_tokens,
-            "max_text_tokens_per_segment": self._max_text_tokens_per_segment,
-            "device": self._device,
+            **self._worker_options(),
             "chunks": worker_chunks,
         }
 
@@ -264,6 +293,10 @@ class IndexTTSEngine(TtsEngineBase):
                         idx = len(completed_paths) - 1
                         if idx < len(chunk_meta):
                             meta = chunk_meta[idx]
+                            try:
+                                self._finish_chunk_audio(done_path, meta["assignment"])
+                            except Exception as exc:
+                                logger.warning("IndexTTS FX failed for %s: %s", done_path, exc)
                             if callable(cancel_cb) and cancel_cb():
                                 cancelled_early.set()
                                 proc.terminate()
@@ -285,6 +318,8 @@ class IndexTTSEngine(TtsEngineBase):
                                     meta["chunk_index"],
                                     {
                                         "speaker": meta["speaker"],
+                                        "delivery_instruction": meta.get("delivery_instruction", ""),
+                                        "emotion": meta.get("emotion"),
                                         "text": meta["text"],
                                         "segment_index": meta["segment_index"],
                                         "chunk_index": meta["chunk_index"],
@@ -317,8 +352,8 @@ class IndexTTSEngine(TtsEngineBase):
             poll_thread.start()
 
             proc.wait()
-            stderr_thread.join(timeout=5)
-            stdout_thread.join(timeout=5)
+            stderr_thread.join()
+            stdout_thread.join()
             returncode = proc.returncode
             stdout_data = "".join(stdout_chunks)
 
@@ -353,7 +388,7 @@ class IndexTTSEngine(TtsEngineBase):
         if paused_early.is_set():
             return [p for p in files if Path(p).exists()]
 
-        # Apply FX post-processing only — callbacks were already fired per-chunk
+        # Fallback FX for workers without live callbacks; reported chunks already have FX.
         # in real-time by _stream_stderr as each [CHUNK_DONE] marker arrived.
         processed_files: List[str] = []
         already_reported = set(completed_paths)
@@ -362,7 +397,7 @@ class IndexTTSEngine(TtsEngineBase):
             assignment: VoiceAssignment = meta["assignment"]
             fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
 
-            if fx_settings and not fx_settings.is_identity():
+            if file_path not in already_reported and fx_settings and not fx_settings.is_identity():
                 try:
                     audio, sr = sf.read(file_path, dtype="float32")
                     audio = self.post_processor.apply_post_pipeline(audio, sr, fx_settings)
@@ -388,6 +423,8 @@ class IndexTTSEngine(TtsEngineBase):
                         meta["chunk_index"],
                         {
                             "speaker": meta["speaker"],
+                            "delivery_instruction": meta.get("delivery_instruction", ""),
+                            "emotion": meta.get("emotion"),
                             "text": meta["text"],
                             "segment_index": meta["segment_index"],
                             "chunk_index": meta["chunk_index"],
@@ -441,16 +478,7 @@ class IndexTTSEngine(TtsEngineBase):
             chunk_meta = grouped_meta
 
         job = {
-            "model_dir": self._model_dir,
-            "cfg_path": self._cfg_path,
-            "model_version": self._model_version,
-            "use_fp16": self._use_fp16,
-            "use_deepspeed": self._use_deepspeed,
-            "use_torch_compile": self._use_torch_compile,
-            "use_accel": self._use_accel,
-            "num_beams": self._num_beams,
-            "diffusion_steps": self._diffusion_steps,
-            "device": self._device,
+            **self._worker_options(),
             "chunks": [{k: v for k, v in c.items() if not k.startswith("_")} for c in worker_chunks],
         }
 
@@ -492,6 +520,10 @@ class IndexTTSEngine(TtsEngineBase):
                         idx = len(completed_paths) - 1
                         if idx < len(chunk_meta):
                             meta = chunk_meta[idx]
+                            try:
+                                self._finish_chunk_audio(done_path, meta["assignment"])
+                            except Exception as exc:
+                                logger.warning("IndexTTS FX failed for %s: %s", done_path, exc)
                             if callable(cancel_cb) and cancel_cb():
                                 cancelled_early.set()
                                 proc.terminate()
@@ -513,6 +545,8 @@ class IndexTTSEngine(TtsEngineBase):
                                     meta["chunk_index"],
                                     {
                                         "speaker": meta["speaker"],
+                                        "delivery_instruction": meta.get("delivery_instruction", ""),
+                                        "emotion": meta.get("emotion"),
                                         "text": meta["text"],
                                         "segment_index": meta["segment_index"],
                                         "chunk_index": meta["chunk_index"],
@@ -545,8 +579,8 @@ class IndexTTSEngine(TtsEngineBase):
             stdout_thread.start()
             poll_thread.start()
             proc.wait()
-            stderr_thread.join(timeout=5)
-            stdout_thread.join(timeout=5)
+            stderr_thread.join()
+            stdout_thread.join()
             stdout_data = "".join(stdout_chunks)
 
             if cancelled_early.is_set():
@@ -579,7 +613,7 @@ class IndexTTSEngine(TtsEngineBase):
             meta = chunk_meta[i]
             assignment: VoiceAssignment = meta["assignment"]
             fx_settings = VoiceFXSettings.from_payload(assignment.fx_payload)
-            if fx_settings and not fx_settings.is_identity():
+            if file_path not in already_reported and fx_settings and not fx_settings.is_identity():
                 try:
                     audio, sr = sf.read(file_path, dtype="float32")
                     audio = self.post_processor.apply_post_pipeline(audio, sr, fx_settings)
@@ -602,6 +636,8 @@ class IndexTTSEngine(TtsEngineBase):
                         meta["chunk_index"],
                         {
                             "speaker": meta["speaker"],
+                            "delivery_instruction": meta.get("delivery_instruction", ""),
+                            "emotion": meta.get("emotion"),
                             "text": meta["text"],
                             "segment_index": meta["segment_index"],
                             "chunk_index": meta["chunk_index"],
@@ -622,23 +658,19 @@ class IndexTTSEngine(TtsEngineBase):
         sample_rate: Optional[int] = None,
         fx_settings: Optional[VoiceFXSettings] = None,
         spk_audio_prompt: Optional[str] = None,
+        delivery_instruction: str = "",
     ) -> np.ndarray:
         """Generate audio for a single text string (used for previews)."""
-        prompt = spk_audio_prompt or self._default_prompt
-        if not prompt:
-            raise ValueError("IndexTTS requires a reference audio prompt for voice cloning.")
+        prompt = self._resolve_prompt(VoiceAssignment(audio_prompt_path=spk_audio_prompt))
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
             output_path = tf.name
 
         job = {
-            "model_dir": self._model_dir,
-            "cfg_path": self._cfg_path,
-            "model_version": self._model_version,
-            "use_fp16": self._use_fp16,
-            "use_deepspeed": self._use_deepspeed,
-            "device": self._device,
-            "chunks": [{"text": text, "spk_audio_prompt": prompt, "output_path": output_path}],
+            **self._worker_options(),
+            "language": (str(lang_code).upper() if str(lang_code).upper() in {"EN", "ZH", "JA", "ES", "AR"} else self._language),
+            "chunks": [{"text": text, "spk_audio_prompt": prompt, "output_path": output_path,
+                        "delivery_instruction": delivery_instruction}],
         }
 
         with tempfile.NamedTemporaryFile(

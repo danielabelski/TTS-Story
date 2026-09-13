@@ -280,7 +280,10 @@ def test_generate_route_snapshots_without_remote_calls_and_resume_keeps_context(
     remote = Mock(side_effect=AssertionError('No paid calls during job submission'))
     monkeypatch.setattr(application, 'get_tts_engine', remote)
     body = {'text': '[alice]Hello.[/alice]', 'tts_engine': 'breeze_api', 'voice_assignments': assignments,
-            'production_title': 'Test production'}
+            'production_title': 'Test production',
+            'speaker_profiles': {'alice': {'description': 'An inquisitive traveler.',
+                                          'voice': 'Bright, light, clear.',
+                                          'voice_design_prompt': 'ADULT FEMALE VOICE. Bright, clear.'}}}
     with application.app.test_client() as client:
         assert client.post('/api/generate', json=body).status_code == 400
         body['breeze_upload_consent'] = True
@@ -289,6 +292,7 @@ def test_generate_route_snapshots_without_remote_calls_and_resume_keeps_context(
         job_id = response.json['job_id']
         queued = application.job_queue.get_nowait()
         saved = queued['voice_assignments']['alice']
+        assert saved['extra']['speaker_profile'] == body['speaker_profiles']['alice']
         assert saved['extra']['breeze_production_id'] == job_id
         assert Path(saved['audio_prompt_path']).read_bytes() == original.read_bytes()
         assert queued['voice_assignments']['default'] == saved

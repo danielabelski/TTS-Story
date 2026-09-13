@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TTS-Story - Multi-Voice TTS</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%2326324a'/%3E%3Cpath d='M18 22h6v20h-6zM28 22h6v20h-6zM38 22h6v20h-6z' fill='%23a78bfa'/%3E%3Ccircle cx='32' cy='16' r='4' fill='%23fcd34d'/%3E%3Ccircle cx='32' cy='48' r='4' fill='%23fcd34d'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="/static/css/style.css?v=41">
+    <link rel="stylesheet" href="/static/css/style.css?v=43">
     <link rel="stylesheet" href="/static/css/help.css?v=3">
 </head>
 <body>
@@ -1619,11 +1619,25 @@
                                 <div class="form-group">
                                     <label for="index-tts-model-version">Model Version</label>
                                     <select id="index-tts-model-version">
-                                        <option value="IndexTTS-2">IndexTTS-2 (recommended cloning model)</option>
-                                        <option value="IndexTTS-1.5">IndexTTS-1.5 (stable, English-improved)</option>
-                                        <option value="IndexTTS">IndexTTS-1.0 (legacy)</option>
+                                        <option value="IndexTTS-2.5">IndexTTS-2.5 (recommended, multilingual)</option>
+                                        <option value="IndexTTS-2">IndexTTS-2 (previous version)</option>
                                     </select>
-                                    <small>Model weights must be downloaded to <code>engines/index-tts/checkpoints/</code>.</small>
+                                    <small>Models download automatically into version-specific folders under <code>engines/index-tts/checkpoints/</code>. Install/reinstall this engine to update its isolated runtime.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="index-tts-language">Language (2.5)</label>
+                                    <select id="index-tts-language">
+                                        <option value="EN">English</option><option value="ZH">Chinese</option>
+                                        <option value="JA">Japanese</option><option value="ES">Spanish</option>
+                                        <option value="AR">Arabic</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="checkbox-label"><input type="checkbox" id="index-tts-emotion-enabled" checked> Use passage directions for emotion</label>
+                                    <small>Interprets [direction] text as emotional guidance, not spoken words. Reference audio supplies the voice identity. Edit a chunk's Voice Direction in Library to change its delivery.</small>
+                                    <label for="index-tts-emotion-strength">Emotion strength</label>
+                                    <input type="number" id="index-tts-emotion-strength" min="0" max="1" step="0.05" value="0.6">
+                                    <small>Start at 0.6 or lower. Zero disables guidance. This is emotion control, not Breeze's unrestricted performance direction.</small>
                                 </div>
                                 <div class="form-group">
                                     <label for="index-tts-chunk-size">Chunk Size (chars)</label>
@@ -1647,8 +1661,8 @@
                                 </div>
                                 <div class="form-group">
                                     <label for="index-tts-diffusion-steps">Diffusion Steps</label>
-                                    <input type="number" id="index-tts-diffusion-steps" min="5" max="50" step="5" value="12">
-                                    <small><strong>10&ndash;15 = fast</strong>, good quality. 25 = default. 50 = max quality. Affects the s2mel stage (biggest bottleneck).</small>
+                                    <input type="number" id="index-tts-diffusion-steps" value="25" disabled>
+                                    <small>Fixed at 25 by the upstream inference implementation; not a configurable speed control.</small>
                                 </div>
                                 <div class="form-group">
                                     <label for="index-tts-temperature">Temperature</label>
@@ -1683,19 +1697,23 @@
                                 <div class="form-group">
                                     <label>Options</label>
                                     <label class="checkbox-label">
-                                        <input type="checkbox" id="index-tts-use-fp16" checked>
-                                        Use FP16 (half-precision) &mdash; faster, less VRAM, tiny quality loss
+                                        <input type="checkbox" id="index-tts-use-bf16" checked>
+                                        Use BF16 for IndexTTS 2.5 (supported GPUs only)
+                                    </label>
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="index-tts-use-fp16">
+                                        Use FP16 for IndexTTS 2 only
                                     </label>
                                     <label class="checkbox-label">
                                         <input type="checkbox" id="index-tts-use-deepspeed">
                                         Use DeepSpeed (optional speedup, may be slower on some systems)
                                     </label>
                                     <label class="checkbox-label">
-                                        <input type="checkbox" id="index-tts-use-torch-compile" checked>
+                                        <input type="checkbox" id="index-tts-use-torch-compile">
                                         Use torch.compile &mdash; JIT-compiles s2mel diffusion model. <strong>First run slow</strong>, subsequent runs faster.
                                     </label>
                                     <label class="checkbox-label">
-                                        <input type="checkbox" id="index-tts-use-accel" checked>
+                                        <input type="checkbox" id="index-tts-use-accel">
                                         Use Accel &mdash; acceleration engine for GPT stage
                                     </label>
                                 </div>
@@ -2861,11 +2879,11 @@
     </div>
 
     <script src="/static/js/help.js?v=3"></script>
-    <script src="/static/js/main.js?v=71"></script>
+    <script src="/static/js/main.js?v=72"></script>
     <script src="/static/js/breeze-api.js?v=4"></script>
     <script src="/static/js/queue.js?v=8"></script>
-<script src="/static/js/library.js?v=48"></script>
+<script src="/static/js/library.js?v=51"></script>
     <script src="/static/js/voice-manager.js?v=18"></script>
-<script src="/static/js/settings.js?v=33"></script>
+<script src="/static/js/settings.js?v=34"></script>
 </body>
 </html>

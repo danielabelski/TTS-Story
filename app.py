@@ -43,6 +43,8 @@ from werkzeug.utils import secure_filename
 import soundfile as sf
 
 from src.audio_effects import VoiceFXSettings
+from src.voice_directions import attach_speaker_profiles, clean_speaker_profile
+from src.directed_prompt_presets import with_directed_presets
 from src.audio_merger import AudioMerger
 from src.custom_voice_store import (
     CUSTOM_CODE_PREFIX,
@@ -470,13 +472,17 @@ DEFAULT_CONFIG = {
     "kitten_tts_model_id": "KittenML/kitten-tts-mini-0.8",
     "kitten_tts_default_voice": "Jasper",
     "kitten_tts_chunk_size": 300,
-    "index_tts_model_version": "IndexTTS-2",
+    "index_tts_model_version": "IndexTTS-2.5",
+    "index_tts_use_bf16": True,
+    "index_tts_emotion_enabled": True,
+    "index_tts_emotion_strength": 0.6,
+    "index_tts_language": "EN",
     "index_tts_use_fp16": False,
     "index_tts_use_deepspeed": False,
     "index_tts_use_torch_compile": False,
     "index_tts_use_accel": False,
     "index_tts_num_beams": 1,
-    "index_tts_diffusion_steps": 12,
+    "index_tts_diffusion_steps": 25,
     "index_tts_temperature": 0.8,
     "index_tts_top_p": 0.8,
     "index_tts_top_k": 30,
@@ -1020,8 +1026,15 @@ def _normalize_index_tts_options(options: Dict[str, Any]) -> Dict[str, Any]:
             continue
         key = str(raw_key).strip().lower()
         if key == "index_tts_model_version":
-            v = (value or "IndexTTS-2").strip()
-            result[key] = v if v in {"IndexTTS-2", "IndexTTS-1.5", "IndexTTS"} else "IndexTTS-2"
+            v = (value or "IndexTTS-2.5").strip()
+            result[key] = v if v in {"IndexTTS-2.5", "IndexTTS-2"} else "IndexTTS-2.5"
+        elif key in {"index_tts_use_bf16", "index_tts_emotion_enabled"}:
+            result[key] = _coerce_bool(value)
+        elif key == "index_tts_emotion_strength":
+            result[key] = _coerce_float(value, minimum=0.0, maximum=1.0, fallback=0.6)
+        elif key == "index_tts_language":
+            v = str(value or "EN").upper()
+            result[key] = v if v in {"EN", "ZH", "JA", "ES", "AR"} else "EN"
         elif key == "index_tts_use_fp16":
             result[key] = _coerce_bool(value)
         elif key == "index_tts_use_deepspeed":
@@ -1033,7 +1046,7 @@ def _normalize_index_tts_options(options: Dict[str, Any]) -> Dict[str, Any]:
         elif key == "index_tts_num_beams":
             result[key] = max(1, int(value or 1))
         elif key == "index_tts_diffusion_steps":
-            result[key] = max(1, int(value or 25))
+            result[key] = 25  # Upstream IndexTTS fixes the decoder at 25.
         elif key == "index_tts_temperature":
             result[key] = max(0.01, float(value or 0.8))
         elif key == "index_tts_top_p":
@@ -1738,12 +1751,20 @@ def _update_regen_status(job_id: str, chunk_id: str, **fields):
         task_state.update(fields)
 
 
+def _chunk_delivery_instruction(chunk: Dict[str, Any]) -> str:
+    """Read legacy emotion cues without reviving an explicitly cleared cue."""
+    value = chunk.get("delivery_instruction")
+    return (value if value is not None else chunk.get("emotion")) or ""
+
+
 def _perform_chunk_regeneration(
     job_id: str,
     chunk_id: str,
     text_to_render: str,
     voice_override: Optional[Dict[str, Any]] = None,
     engine_override: Optional[str] = None,
+    delivery_instruction: Optional[str] = None,
+    emotion_strength: Optional[float] = None,
 ):
     with queue_lock:
         job_entry = jobs.get(job_id)
@@ -1752,7 +1773,7 @@ def _perform_chunk_regeneration(
         idx, chunk = _find_chunk_record(job_entry, chunk_id)
         if chunk is None:
             raise ValueError("Chunk not found.")
-        config_snapshot = _hydrate_config_secrets(job_entry.get("config_snapshot") or load_config())
+        config_snapshot = copy.deepcopy(_hydrate_config_secrets(job_entry.get("config_snapshot") or load_config()))
         job_voice_assignments = copy.deepcopy(job_entry.get("voice_assignments") or {})
         job_dir = _job_dir_from_entry(job_id, job_entry)
         speaker = chunk.get("speaker") or "default"
@@ -1770,7 +1791,20 @@ def _perform_chunk_regeneration(
     )
     effective_assignment = chunk_voice_assignment or default_assignment
     if normalized_override:
+        previous_extra = copy.deepcopy((effective_assignment or {}).get("extra") or {})
         effective_assignment = {**(effective_assignment or {}), **normalized_override}
+        effective_assignment["extra"] = {**previous_extra, **(normalized_override.get("extra") or {})}
+        if "speaker_profile" in previous_extra:
+            effective_assignment["extra"]["speaker_profile"] = previous_extra["speaker_profile"]
+
+    # None means an older caller omitted the field; an empty string explicitly
+    # clears the passage cue. Keep this separate from the spoken manuscript.
+    direction = (delivery_instruction if delivery_instruction is not None else
+                 _chunk_delivery_instruction(chunk))
+    if delivery_instruction is not None and effective_assignment:
+        extra = copy.deepcopy(effective_assignment.get("extra") or {})
+        extra.pop("delivery_instruction", None)
+        effective_assignment["extra"] = extra
 
     voice_config = copy.deepcopy(job_voice_assignments) if job_voice_assignments else {}
     if effective_assignment:
@@ -1796,10 +1830,17 @@ def _perform_chunk_regeneration(
             "speaker": speaker,
             "text": " ".join(spoken_parts),
             "chunks": spoken_parts,
-            "emotion": chunk.get("emotion"),
-            "delivery_instruction": chunk.get("delivery_instruction") or chunk.get("emotion"),
+            "emotion": direction or None,
+            "delivery_instruction": direction,
         }] if spoken_parts else []
         engine_name = _normalize_engine_name(config_snapshot.get("tts_engine"))
+        if engine_name == "index_tts":
+            effective_strength = emotion_strength if emotion_strength is not None else chunk.get("index_tts_emotion_strength")
+            if effective_strength is not None:
+                config_snapshot["index_tts_emotion_strength"] = _validate_review_emotion_strength(effective_strength)
+                config_snapshot["index_tts_emotion_enabled"] = True
+            logger.info("IndexTTS chunk %s regeneration emotion strength=%s", chunk_id,
+                        config_snapshot.get("index_tts_emotion_strength", 0.6))
 
         if engine_name == 'breeze_api':
             # Keep review regeneration bound to its production snapshot.
@@ -1891,8 +1932,13 @@ def _perform_chunk_regeneration(
         _, chunk = _find_chunk_record(job_entry, chunk_id)
         if chunk:
             chunk["text"] = chunk_text
+            chunk["delivery_instruction"] = direction
+            if delivery_instruction is not None:
+                chunk["emotion"] = direction or None
             chunk["regenerated_at"] = datetime.now().isoformat()
             chunk["engine"] = engine_name
+            if engine_name == "index_tts":
+                chunk["index_tts_emotion_strength"] = config_snapshot.get("index_tts_emotion_strength", 0.6)
             if effective_assignment:
                 chunk["voice_assignment"] = copy.deepcopy(effective_assignment)
                 voice_label = _voice_label_from_assignment(effective_assignment)
@@ -1932,6 +1978,7 @@ def _persist_chunks_metadata(job_id: str, job_dir: Path):
             "created_at": existing_meta.get("created_at", datetime.now().isoformat()),
             "updated_at": datetime.now().isoformat(),
             "chunks": job_chunks,
+            "index_tts_emotion_strength": config_snapshot.get("index_tts_emotion_strength", 0.6),
         }
         if existing_meta.get("timing_metrics"):
             chunks_meta["timing_metrics"] = existing_meta["timing_metrics"]
@@ -1967,6 +2014,8 @@ def _schedule_chunk_regeneration(
     text_to_render: str,
     voice_payload: Optional[Dict[str, Any]] = None,
     engine_override: Optional[str] = None,
+    delivery_instruction: Optional[str] = None,
+    emotion_strength: Optional[float] = None,
 ):
     requested_at = datetime.now().isoformat()
     normalized_voice = _normalize_voice_payload(voice_payload)
@@ -1982,12 +2031,15 @@ def _schedule_chunk_regeneration(
             "error": None,
             "voice": normalized_voice,
             "engine": normalized_engine,
+            "delivery_instruction": delivery_instruction,
         }
 
     def task():
         try:
             _update_regen_status(job_id, chunk_id, status="running", started_at=datetime.now().isoformat(), error=None)
-            _perform_chunk_regeneration(job_id, chunk_id, text_to_render, voice_override=normalized_voice, engine_override=normalized_engine)
+            _perform_chunk_regeneration(job_id, chunk_id, text_to_render, voice_override=normalized_voice,
+                                       engine_override=normalized_engine, delivery_instruction=delivery_instruction,
+                                       emotion_strength=emotion_strength)
             _update_regen_status(job_id, chunk_id, status="completed", completed_at=datetime.now().isoformat())
         except Exception as exc:  # noqa: BLE001
             logger.error("Chunk regeneration failed for job %s chunk %s: %s", job_id, chunk_id, exc, exc_info=True)
@@ -3057,13 +3109,17 @@ def _create_engine(engine_name: str, config: Dict) -> TtsEngineBase:
         device = None if device_raw in ("auto", "") else device_raw
         return get_engine(
             "index_tts",
-            model_version=(config.get("index_tts_model_version") or "IndexTTS-2").strip(),
+            model_version=(config.get("index_tts_model_version") or "IndexTTS-2.5").strip(),
+            use_bf16=bool(config.get("index_tts_use_bf16", True)),
+            emotion_enabled=bool(config.get("index_tts_emotion_enabled", True)),
+            emotion_strength=float(config.get("index_tts_emotion_strength", 0.6)),
+            language=config.get("index_tts_language", "EN"),
             use_fp16=bool(config.get("index_tts_use_fp16", False)),
             use_deepspeed=bool(config.get("index_tts_use_deepspeed", False)),
             use_torch_compile=bool(config.get("index_tts_use_torch_compile", False)),
             use_accel=bool(config.get("index_tts_use_accel", False)),
             num_beams=int(config.get("index_tts_num_beams", 1)),
-            diffusion_steps=int(config.get("index_tts_diffusion_steps", 12)),
+            diffusion_steps=25,
             temperature=float(config.get("index_tts_temperature", 0.8)),
             top_p=float(config.get("index_tts_top_p", 0.8)),
             top_k=int(config.get("index_tts_top_k", 30)),
@@ -4271,8 +4327,16 @@ def compose_gemini_speaker_profile_prompt(prompt_prefix: str, speakers: List[str
         "columns: Character Name | Full Description | Voice Type | Voice Design Prompt. "
         "Preserve each speaker ID exactly as supplied. Keep Full Description limited to "
         "the narrative character profile: role, personality, dramatic purpose, and "
-        "emotional range. Voice Type must be a concise casting label describing the sound "
-        "of the voice. Voice Design Prompt must be a synthesis-ready positive instruction "
+        "emotional range. Voice Type must describe the stable audible identity: pitch/register, "
+        "timbre/texture, and characteristic vocal manner. Example: 'High-pitched, squeaky, "
+        "comically pompous.' Keep it concise, positive, and consistent across the story. "
+        "Do not include gender labels, age, character names, biography, or temporary emotions "
+        "in Voice Type. Infer it from explicit source descriptions and recurring traits, not "
+        "from one momentary whisper, frightened squeak, or delivery cue. Use a level, natural "
+        "baseline for the narrator. Passage directions supply changing emotion, pace and emphasis; "
+        "Voice Type is prepended to those cues at synthesis. Keep gender and age in the "
+        "separate description/design fields. Voice Design Prompt must incorporate that same "
+        "stable Voice Type while adding gender/age and be a synthesis-ready positive instruction "
         "in this order: [explicit gender], [age/range], [timbre], "
         "[pace using a rate term such as slow, measured, lively, or brisk], [accent], "
         "[emotional delivery]. Begin with an age-aware, all-capitals label: 'FEMALE CHILD "
@@ -5693,6 +5757,9 @@ def _process_audio_job(job_data):
             from src.engines.index_tts_engine import IndexTTSEngine  # noqa: F401
             if not isinstance(engine, (IndexTTSEngine, DotsTTSEngine)):
                 return
+            if isinstance(engine, IndexTTSEngine) and int(job_data.get("resume_from_chunk_index") or 0):
+                # Use the normal resume path, which preserves section offsets and existing audio.
+                return
             if any(pause_seconds_for_text(line) is not None for line in (text or "").splitlines()):
                 logger.info(
                     "Job %s: using per-section rendering so universal pause markers "
@@ -5786,6 +5853,7 @@ def _process_audio_job(job_data):
                             all_worker_chunks.append({
                                 "text": chunk_text,
                                 "spk_audio_prompt": spk_prompt,
+                                "delivery_instruction": segment.get("delivery_instruction", segment.get("emotion", "")),
                                 "output_path": str(out_path),
                                 "_order_index": global_order,
                             })
@@ -5795,6 +5863,8 @@ def _process_audio_job(job_data):
                             "segment_index": seg_idx,
                             "chunk_index": local_idx,
                             "chapter_index": ch_idx,
+                            **({"delivery_instruction": segment.get("delivery_instruction", segment.get("emotion", "")),
+                                "emotion": segment.get("emotion")} if isinstance(engine, IndexTTSEngine) else {}),
                             "output_path": str(out_path),
                             "assignment": assignment,
                             "_order_index": global_order,
@@ -6672,6 +6742,7 @@ def load_config():
                 config.update({k: v for k, v in data.items() if k in DEFAULT_CONFIG})
         except Exception as exc:
             logger.warning(f"Failed to load config.json, using defaults: {exc}")
+    config['gemini_prompt_presets'] = with_directed_presets(config.get('gemini_prompt_presets'))
     return config
 
 
@@ -8686,6 +8757,10 @@ def _serialize_chunk_for_response(job_id: str, chunk: Dict[str, Any]) -> Dict[st
         "chunk_index": chunk.get("chunk_index"),
         "speaker": chunk.get("speaker"),
         "text": chunk.get("text"),
+        "delivery_instruction": _chunk_delivery_instruction(chunk),
+        "emotion": chunk.get("emotion"),
+        "index_tts_emotion_strength": chunk.get("index_tts_emotion_strength", (jobs.get(job_id, {}).get("config_snapshot") or {}).get("index_tts_emotion_strength", 0.6)),
+        "engine": chunk.get("engine"),
         "relative_file": chunk.get("relative_file"),
         "file_url": _chunk_file_url(job_id, chunk.get("relative_file")),
         "duration_seconds": chunk.get("duration_seconds"),
@@ -8731,6 +8806,69 @@ def get_job_chunks(job_id: str):
         return jsonify({"success": False, "error": "Failed to load job chunks"}), 500
 
 
+@app.route('/api/jobs/<job_id>/review/speaker-profile', methods=['POST'])
+def save_review_speaker_profile(job_id: str):
+    """Save production-local character properties, without regenerating audio."""
+    data = request.get_json(silent=True) or {}
+    speaker = data.get('speaker')
+    raw = data.get('profile')
+    if not isinstance(speaker, str) or not isinstance(raw, dict):
+        return jsonify(success=False, error='Speaker and profile are required'), 400
+    for key in ('description', 'voice', 'voice_design_prompt'):
+        if not isinstance(raw.get(key, ''), str) or len(raw.get(key, '')) > 8000:
+            return jsonify(success=False, error='Speaker properties must be text (maximum 8000 characters each)'), 400
+    profile = clean_speaker_profile({key: raw.get(key, '') for key in
+                                     ('description', 'voice', 'voice_design_prompt')})
+    if re.search(r'\[/?(?:direction|emotion)\]', profile['voice'], re.IGNORECASE):
+        return jsonify(success=False, error='Enter Voice Type without direction tags'), 400
+    try:
+        # Same lock order as chunk metadata persistence. Commit to disk before
+        # replacing in-memory state, so a failed save leaves the prior profile intact.
+        with _chunks_metadata_locks[job_id]:
+            with queue_lock:
+                entry = jobs.get(job_id)
+                if not entry:
+                    return jsonify(success=False, error='Job not found'), 404
+                _ensure_review_ready(entry)
+                if entry.get('status') in {'queued', 'processing', 'running', 'pausing', 'finalizing'} or any(
+                    task.get('status') in {'queued', 'running'}
+                    for task in (entry.get('regen_tasks') or {}).values()
+                ):
+                    return jsonify(success=False, error='Wait for generation to finish before editing speaker properties'), 409
+                chunks = copy.deepcopy(entry.get('chunks') or [])
+                matching = [c for c in chunks if (c.get('speaker') or 'default') == speaker]
+                if not matching:
+                    return jsonify(success=False, error='Speaker not found in this production'), 404
+                assignments = copy.deepcopy(entry.get('voice_assignments') or {})
+                for chunk in matching:
+                    assignment = chunk.get('voice_assignment') or assignments.get(speaker) or {}
+                    chunk['voice_assignment'] = attach_speaker_profiles({speaker: assignment}, {speaker: profile})[speaker]
+                assignments[speaker] = attach_speaker_profiles(
+                    {speaker: assignments.get(speaker) or matching[0]['voice_assignment']}, {speaker: profile})[speaker]
+                path = _job_dir_from_entry(job_id, entry) / 'chunks_metadata.json'
+                metadata = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+                metadata.update(chunks=chunks, updated_at=datetime.now().isoformat())
+                metadata.setdefault('engine', (entry.get('config_snapshot') or {}).get('tts_engine'))
+                write_json_atomic(path, metadata)
+                entry['chunks'] = chunks
+                entry['voice_assignments'] = assignments
+                if isinstance(entry.get('job_payload'), dict):
+                    entry['job_payload']['voice_assignments'] = copy.deepcopy(assignments)
+        _persist_job_state(job_id, force=True)
+        return jsonify(success=True, profile=profile)
+    except ValueError as exc:
+        return jsonify(success=False, error=str(exc)), 400
+    except Exception:
+        logger.exception('Failed to save speaker properties for %s', job_id)
+        return jsonify(success=False, error='Unable to save speaker properties'), 500
+
+
+def _validate_review_emotion_strength(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+        raise ValueError("Emotion strength must be a number between 0 and 1.")
+    return float(value)
+
+
 @app.route('/api/jobs/<job_id>/review/regen', methods=['POST'])
 def request_chunk_regeneration(job_id: str):
     """Schedule a chunk regeneration request."""
@@ -8739,6 +8877,13 @@ def request_chunk_regeneration(job_id: str):
     updated_text = (data.get("text") or "").strip()
     voice_payload = data.get("voice") or {}
     engine_override = (data.get("engine") or "").strip() or None
+    delivery_instruction = None
+    if "delivery_instruction" in data:
+        if not isinstance(data["delivery_instruction"], str):
+            return jsonify({"success": False, "error": "Voice direction must be text"}), 400
+        delivery_instruction = data["delivery_instruction"].strip()
+        if re.search(r"\[/?(?:direction|emotion)\]", delivery_instruction, re.IGNORECASE):
+            return jsonify({"success": False, "error": "Enter voice direction without [direction] tags"}), 400
 
     if not chunk_id:
         return jsonify({"success": False, "error": "chunk_id is required"}), 400
@@ -8746,6 +8891,8 @@ def request_chunk_regeneration(job_id: str):
         return jsonify({"success": False, "error": "Updated text cannot be empty"}), 400
 
     try:
+        emotion_strength = (_validate_review_emotion_strength(data["emotion_strength"])
+                            if "emotion_strength" in data else None)
         with queue_lock:
             job_entry = jobs.get(job_id)
             if not job_entry:
@@ -8754,12 +8901,17 @@ def request_chunk_regeneration(job_id: str):
             _, chunk = _find_chunk_record(job_entry, chunk_id)
             if chunk is None:
                 return jsonify({"success": False, "error": "Chunk not found"}), 404
+            effective_engine = _normalize_engine_name(engine_override or (job_entry.get("config_snapshot") or {}).get("tts_engine") or chunk.get("engine"))
+            if emotion_strength is not None and effective_engine != "index_tts":
+                raise ValueError("Emotion strength override is supported only by IndexTTS.")
             regen_tasks = job_entry.setdefault("regen_tasks", {})
             task_state = regen_tasks.get(chunk_id)
             if task_state and task_state.get("status") in {"queued", "running"}:
                 return jsonify({"success": False, "error": "Chunk regeneration already in progress"}), 409
 
-        _schedule_chunk_regeneration(job_id, chunk_id, updated_text, voice_payload, engine_override=engine_override)
+        _schedule_chunk_regeneration(job_id, chunk_id, updated_text, voice_payload,
+                                     engine_override=engine_override, delivery_instruction=delivery_instruction,
+                                     emotion_strength=emotion_strength)
         return jsonify({"success": True})
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
@@ -10687,6 +10839,7 @@ def generate_audio():
         )
         
         # Create job
+        voice_assignments = attach_speaker_profiles(voice_assignments, data.get('speaker_profiles'))
         job_id = str(uuid.uuid4())
         if active_engine == 'breeze_api':
             voice_assignments = BREEZE_PRODUCTIONS.bind(
@@ -11615,7 +11768,13 @@ def restore_library_item_to_review(job_id):
 
         # Prefer chunks from chunks_metadata.json if available (has text/voice data)
         chunks = chunks_meta.get("chunks") or []
+        if "index_tts_emotion_strength" in chunks_meta:
+            config_snapshot["index_tts_emotion_strength"] = chunks_meta["index_tts_emotion_strength"]
         chunks.sort(key=lambda c: c.get("order_index") if c.get("order_index") is not None else float('inf'))
+        saved_strength = (jobs.get(job_id, {}).get("config_snapshot") or {}).get(
+            "index_tts_emotion_strength", chunks_meta.get("index_tts_emotion_strength", 0.6))
+        for chunk in chunks:
+            chunk.setdefault("index_tts_emotion_strength", saved_strength)
 
         # If no chunks in metadata, build from manifest
         if not chunks and manifest:
@@ -11708,6 +11867,9 @@ def get_library_item_chunks(job_id):
         chunks = chunks_meta.get("chunks") or []
         chunks.sort(key=lambda c: c.get("order_index") if c.get("order_index") is not None else float('inf'))
         for chunk in chunks:
+            saved_strength = (jobs.get(job_id, {}).get("config_snapshot") or {}).get(
+                "index_tts_emotion_strength", chunks_meta.get("index_tts_emotion_strength", 0.6))
+            chunk.setdefault("index_tts_emotion_strength", saved_strength)
             rel_file = chunk.get("relative_file")
             if rel_file:
                 chunk["file_url"] = f"/static/audio/{job_id}/{rel_file}"
@@ -11984,7 +12146,7 @@ def _rebuild_review_manifest_from_chunks(job_id: str, job_dir: Path, force_rebui
                     "relative_file": rel_file,
                 }
                 # Carry over text/speaker/voice data from original if present
-                for field in ("speaker", "text", "engine", "emotion", "delivery_instruction", "voice_assignment", "voice_label",
+                for field in ("speaker", "text", "engine", "emotion", "delivery_instruction", "index_tts_emotion_strength", "voice_assignment", "voice_label",
                               "duration_seconds", "regenerated_at", "regen_status", "file_path"):
                     if field in orig:
                         record[field] = orig[field]

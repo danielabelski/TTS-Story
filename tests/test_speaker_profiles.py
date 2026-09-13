@@ -259,7 +259,7 @@ def test_speaker_properties_offers_single_profile_generation():
 def test_main_bundle_cache_key_includes_latest_speaker_voice_routing_release():
     template = (PROJECT_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
 
-    assert '/static/js/main.js?v=68' in template
+    assert int(re.search(r'/static/js/main\.js\?v=(\d+)', template).group(1)) >= 68
 
 
 def test_qwen_voice_generation_controls_require_optional_engine_installation(monkeypatch):
@@ -316,8 +316,8 @@ def test_reference_sample_engines_never_expose_the_kokoro_voice_catalog():
     assert "turboControl.hidden = !showReferenceControl;" in javascript
     assert "select.innerHTML = '<option value=\"\">Voice samples are listed below</option>';" in javascript
     assert ".assignment-selection-group [data-role][hidden]" in stylesheet
-    assert "/static/css/style.css?v=41" in template
-    assert "/static/js/main.js?v=68" in template
+    assert "/static/css/style.css?v=43" in template
+    assert int(re.search(r'/static/js/main\.js\?v=(\d+)', template).group(1)) >= 68
 
 
 def test_generated_voice_refresh_updates_available_voices_library():

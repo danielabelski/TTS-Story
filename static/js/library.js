@@ -1730,6 +1730,8 @@ function renderChunkReviewModal(data) {
     // Build speaker section HTML - accordion layout
     const speakerRows = Array.from(speakerMap.entries()).map(([speaker, info]) => {
         const speakerInstruction = speakerInstructionMap.get(speaker) || '';
+        const profile = chunks.find(chunk => (chunk.speaker || 'default') === speaker
+            && chunk.voice_assignment?.extra?.speaker_profile)?.voice_assignment.extra.speaker_profile || {};
         return `
         <div class="bulk-speaker-card" data-speaker="${escapeHtml(speaker)}">
             <div class="bulk-speaker-summary" data-speaker="${escapeHtml(speaker)}">
@@ -1740,6 +1742,22 @@ function renderChunkReviewModal(data) {
                 <span class="bulk-speaker-voice">${escapeHtml(info.voiceLabel)}</span>
             </div>
             <div class="bulk-speaker-details collapsed" data-speaker="${escapeHtml(speaker)}">
+                <div class="library-speaker-profile">
+                    <h4>Speaker Properties</h4>
+                    <label>Character Profile
+                        <textarea class="speaker-profile-description" rows="3">${escapeHtml(profile.description || '')}</textarea>
+                    </label>
+                    <label>Voice Type — stable vocal identity
+                        <textarea class="speaker-profile-voice" rows="2" placeholder="High-pitched, squeaky, comically pompous.">${escapeHtml(profile.voice || '')}</textarea>
+                    </label>
+                    <label>Voice Design Prompt
+                        <textarea class="speaker-profile-design" rows="2">${escapeHtml(profile.voice_design_prompt || '')}</textarea>
+                    </label>
+                    <p>On Breeze generation, Voice Type is placed before each chunk's delivery direction. Profile and Voice Design Prompt are not passage instructions. Older productions may not have saved these properties.</p>
+                    <button class="btn btn-sm btn-primary save-library-speaker-profile" data-speaker="${escapeHtml(speaker)}">Save Speaker Properties</button>
+                    <span class="speaker-profile-save-status" role="status"></span>
+                    <p>Saved for this production only. Save first, then regenerate affected chunks to hear changes; existing audio and the source project are not changed automatically.</p>
+                </div>
                 <div class="bulk-speaker-controls">
                     <div class="bulk-fx-section">
                         <div class="bulk-fx-title">Audio Effects</div>
@@ -2217,6 +2235,16 @@ function renderLibraryChunkRow(jobId, chunk, engine, idx) {
                 <div class="chunk-detail-section">
                     <div class="chunk-detail-label">Voice: <span class="library-chunk-voice-label">${escapeHtml(voiceLabel)}</span></div>
                     <div class="chunk-text-section">
+                        <label for="chunk-direction-${escapeHtml(chunkId)}">Voice Direction:</label>
+                        <textarea id="chunk-direction-${escapeHtml(chunkId)}" class="library-chunk-direction" data-chunk-id="${chunkId}" rows="2" placeholder="e.g. Quietly controlled, with restrained tension.">${escapeHtml(getChunkDirection(chunk))}</textarea>
+                        <small>Delivery guidance, not spoken text. Used by Breeze and other direction-capable engines. Enter instructions without tags; clear to remove the chunk direction. Saved when Regenerate succeeds.</small>
+                        <div class="chunk-index-emotion-control" ${(chunk.engine || engine) === 'index_tts' ? '' : 'hidden'}>
+                            <label for="chunk-emotion-strength-${escapeHtml(chunkId)}">IndexTTS emotion strength:</label>
+                            <input id="chunk-emotion-strength-${escapeHtml(chunkId)}" class="chunk-index-emotion-strength" type="number" min="0" max="1" step="0.05" value="${Number(chunk.index_tts_emotion_strength ?? 0.6)}">
+                            <small>0 disables emotional guidance; 1 gives stronger emotion. Saved for this chunk when regeneration succeeds. Does not change global settings.</small>
+                        </div>
+                    </div>
+                    <div class="chunk-text-section">
                         <label>Text:</label>
                         <textarea class="library-chunk-textarea" data-chunk-id="${chunkId}" rows="3">${escapeHtml(text)}</textarea>
                     </div>
@@ -2296,6 +2324,11 @@ function renderLibraryChunkRow(jobId, chunk, engine, idx) {
             </div>
         </div>
     `;
+}
+
+function getChunkDirection(chunk) {
+    if (!chunk || typeof chunk !== 'object') return '';
+    return chunk.delivery_instruction ?? chunk.emotion ?? '';
 }
 
 function getChunkInstruction(chunk) {
@@ -2595,7 +2628,7 @@ function wireChunkReviewEvents(jobId, chunks, engine) {
                 || normalizedEngine.includes('pockettts')
                 || (normalizedEngine.includes('qwen3') && normalizedEngine.includes('clone'))
                 || (normalizedEngine.includes('omnivoice') && normalizedEngine.includes('clone'))
-                || normalizedEngine.includes('dotstts')
+                || (normalizedEngine.includes('dotstts') || normalizedEngine.includes('indextts'))
             ) {
                 libraryChunkVoiceOverrides[chunkId] = { audio_prompt_path: value };
             } else {
@@ -2609,6 +2642,40 @@ function wireChunkReviewEvents(jobId, chunks, engine) {
                         ? { extra: { locale: voiceData?.langCode || '' } }
                         : {}),
                 };
+            }
+        });
+    });
+
+    body.querySelectorAll('.save-library-speaker-profile').forEach(button => {
+        button.addEventListener('click', async () => {
+            const panel = button.closest('.library-speaker-profile');
+            const status = panel.querySelector('.speaker-profile-save-status');
+            const speaker = button.dataset.speaker;
+            const profile = {
+                description: panel.querySelector('.speaker-profile-description').value.trim(),
+                voice: panel.querySelector('.speaker-profile-voice').value.trim(),
+                voice_design_prompt: panel.querySelector('.speaker-profile-design').value.trim(),
+            };
+            button.disabled = true;
+            status.textContent = 'Saving…';
+            try {
+                await requestLibraryReviewRestore(jobId);
+                const response = await fetch(`/api/jobs/${jobId}/review/speaker-profile`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ speaker, profile }),
+                });
+                const result = await response.json();
+                if (!response.ok || !result.success) throw new Error(result.error || 'Failed to save speaker properties');
+                (chunkReviewModalData?.chunks || []).forEach(chunk => {
+                    if ((chunk.speaker || 'default') !== speaker) return;
+                    chunk.voice_assignment = chunk.voice_assignment || {};
+                    chunk.voice_assignment.extra = { ...(chunk.voice_assignment.extra || {}), speaker_profile: result.profile };
+                });
+                status.textContent = 'Saved. Regenerate chunks to apply.';
+            } catch (error) {
+                status.textContent = error.message || 'Unable to save.';
+            } finally {
+                button.disabled = false;
             }
         });
     });
@@ -2759,7 +2826,7 @@ async function initLibraryVoiceFilters(engine) {
         || normalizedEngine.includes('voxcpm')
         || normalizedEngine.includes('pockettts')
         || (normalizedEngine.includes('qwen3') && normalizedEngine.includes('clone'))
-        || normalizedEngine.replace(/[_-]/g, '').includes('dotstts');
+        || (normalizedEngine.replace(/[_-]/g, '').includes('dotstts') || normalizedEngine.replace(/[_-]/g, '').includes('indextts'));
     if (!usesPrompts) return;
     
     const genderFilter = document.getElementById('library-voice-filter-gender');
@@ -2905,7 +2972,7 @@ async function populateLibraryVoiceSelects(engine) {
     const isQwen = normalizedEngine.includes('qwen3');
     const isQwenClone = normalizedEngine.includes('qwen3') && normalizedEngine.includes('clone');
     const isOmniClone = normalizedEngine.includes('omnivoice') && normalizedEngine.includes('clone');
-    const isDotsTts = normalizedEngine.includes('dotstts');
+    const isDotsTts = (normalizedEngine.includes('dotstts') || normalizedEngine.includes('indextts'));
     const isAzureSpeech = normalizedEngine.includes('azurespeech');
     const isEdgeTts = normalizedEngine.includes('edgetts');
     const isElevenLabs = normalizedEngine.includes('elevenlabs');
@@ -3192,7 +3259,7 @@ async function populateLibraryVoiceSelects(engine) {
             || (engineName.includes('qwen3') && engineName.includes('clone'))
             || (engineName.includes('omnivoice') && engineName.includes('clone'))
             || engineName.includes('indextts')
-            || engineName.includes('dotstts');
+            || (engineName.includes('dotstts') || engineName.includes('indextts'));
         const isQwenEngine = engineName.includes('qwen3');
         const isKittenTts = engineName.includes('kittentts');
         const isAzureSpeech = engineName.includes('azurespeech');
@@ -3350,7 +3417,7 @@ async function populateLibraryVoiceSelects(engine) {
             || (engineName.includes('qwen3') && engineName.includes('clone'))
             || (engineName.includes('omnivoice') && engineName.includes('clone'))
             || engineName.includes('indextts')
-            || engineName.includes('dotstts');
+            || (engineName.includes('dotstts') || engineName.includes('indextts'));
         const isQwenEngine = engineName.includes('qwen3');
         const isKittenTts = engineName.includes('kittentts');
         const isAzureSpeech = engineName.includes('azurespeech');
@@ -3500,6 +3567,12 @@ async function populateLibraryVoiceSelects(engine) {
         const currentEngineLabel = currentEngine ? `Current: ${formatEngineName(currentEngine)}` : '-- Same engine --';
         const normalizedCurrentEngine = (currentEngine || '').toLowerCase();
         select.dataset.currentEngine = currentEngine || '';
+        const emotionControl = select.closest('.library-chunk-card')?.querySelector('.chunk-index-emotion-control');
+        const updateEmotionControl = () => {
+            if (emotionControl) emotionControl.hidden = (select.value || currentEngine) !== 'index_tts';
+        };
+        select.addEventListener('change', updateEmotionControl);
+        updateEmotionControl();
         select.dataset.selectedEngine = '';
         select.innerHTML = `
             <option value="">${currentEngineLabel}</option>
@@ -3554,7 +3627,7 @@ async function populateLibraryVoiceSelects(engine) {
             || (normalizedEngineValue.includes('pockettts') && !normalizedEngineValue.includes('pocketttspreset'))
             || (normalizedEngineValue.includes('qwen3') && normalizedEngineValue.includes('clone'))
             || (normalizedEngineValue.includes('omnivoice') && normalizedEngineValue.includes('clone'))
-            || normalizedEngineValue.replace(/[_-]/g, '').includes('dotstts');
+            || (normalizedEngineValue.replace(/[_-]/g, '').includes('dotstts') || normalizedEngineValue.replace(/[_-]/g, '').includes('indextts'));
         if (promptFilters) {
             promptFilters.style.display = usesPrompts ? 'block' : 'none';
             if (usesPrompts) {
@@ -3624,7 +3697,7 @@ async function populateLibraryVoiceSelects(engine) {
                 || normalizedSelectedEngine.includes('voxcpm')
                 || (normalizedSelectedEngine.includes('pockettts') && !normalizedSelectedEngine.includes('pocketttspreset'))
                 || (normalizedSelectedEngine.includes('qwen3') && normalizedSelectedEngine.includes('clone'))
-                || normalizedSelectedEngine.replace(/[_-]/g, '').includes('dotstts');
+                || (normalizedSelectedEngine.replace(/[_-]/g, '').includes('dotstts') || normalizedSelectedEngine.replace(/[_-]/g, '').includes('indextts'));
             if (promptFilters) {
                 promptFilters.style.display = usesPrompts ? 'block' : 'none';
                 if (usesPrompts) {
@@ -3694,7 +3767,7 @@ async function populateLibraryVoiceSelects(engine) {
                 || normalizedSelectedEngine.includes('voxcpm')
                 || (normalizedSelectedEngine.includes('qwen3') && normalizedSelectedEngine.includes('clone'))
                 || (normalizedSelectedEngine.includes('omnivoice') && normalizedSelectedEngine.includes('clone'))
-                || normalizedSelectedEngine.replace(/[_-]/g, '').includes('dotstts');
+                || (normalizedSelectedEngine.replace(/[_-]/g, '').includes('dotstts') || normalizedSelectedEngine.replace(/[_-]/g, '').includes('indextts'));
             if (promptFilters) {
                 promptFilters.style.display = usesPrompts ? 'block' : 'none';
                 if (usesPrompts) {
@@ -3733,7 +3806,7 @@ async function populateLibraryVoiceSelects(engine) {
             || (normalizedEngine.includes('pockettts') && !normalizedEngine.includes('pocketttspreset'))
             || (normalizedEngine.includes('qwen3') && normalizedEngine.includes('clone'))
             || (normalizedEngine.includes('omnivoice') && normalizedEngine.includes('clone'))
-            || normalizedEngine.replace(/[_-]/g, '').includes('dotstts');
+            || (normalizedEngine.replace(/[_-]/g, '').includes('dotstts') || normalizedEngine.replace(/[_-]/g, '').includes('indextts'));
         if (promptFilters) {
             promptFilters.style.display = usesPrompts ? 'block' : 'none';
             if (usesPrompts) {
@@ -3829,7 +3902,7 @@ async function triggerBulkSpeakerRegen(
     const isQwenEngine = normalizedEngine.includes('qwen3');
     const isQwenClone = normalizedEngine.includes('qwen3') && normalizedEngine.includes('clone');
     const isOmniClone = normalizedEngine.includes('omnivoice') && normalizedEngine.includes('clone');
-    const isDotsTts = normalizedEngine.includes('dotstts');
+    const isDotsTts = (normalizedEngine.includes('dotstts') || normalizedEngine.includes('indextts'));
     const isAzureSpeech = normalizedEngine.includes('azurespeech');
     const usesVoicePrompts = isChatterbox || isVoxCPM || isQwenClone || isOmniClone || isDotsTts;
 
@@ -3969,6 +4042,7 @@ async function triggerLibraryChunkRegen(jobId, chunkId, button) {
     const card = button.closest('.library-chunk-card');
     const textarea = card ? card.querySelector('.library-chunk-textarea') : null;
     const text = textarea ? textarea.value.trim() : '';
+    const directionInput = card?.querySelector('.library-chunk-direction');
 
     if (!text) {
         alert('Chunk text cannot be empty.');
@@ -4011,7 +4085,7 @@ async function triggerLibraryChunkRegen(jobId, chunkId, button) {
     const isQwenEngine = normalizedEngine.includes('qwen3');
     const isQwenClone = normalizedEngine.includes('qwen3') && normalizedEngine.includes('clone');
     const isOmniClone = normalizedEngine.includes('omnivoice') && normalizedEngine.includes('clone');
-    const isDotsTts = normalizedEngine.includes('dotstts');
+    const isDotsTts = (normalizedEngine.includes('dotstts') || normalizedEngine.includes('indextts'));
     const isAzureSpeech = normalizedEngine.includes('azurespeech');
     const usesVoicePrompts = isChatterbox || isVoxCPM || isQwenClone || isOmniClone || isDotsTts;
     const voiceData = libraryVoiceMap.get(voiceValue);
@@ -4100,9 +4174,20 @@ async function triggerLibraryChunkRegen(jobId, chunkId, button) {
         const requestBody = {
             chunk_id: chunkId,
             text: text,
+            ...(directionInput ? { delivery_instruction: directionInput.value.trim() } : {}),
             voice: voicePayload,
             engine: resolvedEngine, // Always send resolved engine
         };
+        if (resolvedEngine === 'index_tts') {
+            const strengthInput = card?.querySelector('.chunk-index-emotion-strength');
+            if (strengthInput) {
+                const strength = Number(strengthInput.value);
+                if (!strengthInput.value.trim() || !Number.isFinite(strength) || strength < 0 || strength > 1) {
+                    throw new Error('Emotion strength must be between 0 and 1.');
+                }
+                requestBody.emotion_strength = strength;
+            }
+        }
 
         const response = await fetch(`/api/jobs/${jobId}/review/regen`, {
             method: 'POST',
@@ -5160,7 +5245,7 @@ async function _libAwrPopulateVoices(engineName) {
         || (norm.includes('qwen3') && norm.includes('clone'))
         || (norm.includes('omnivoice') && norm.includes('clone'))
         || norm.includes('indextts')
-        || norm.includes('dotstts');
+        || (norm.includes('dotstts') || norm.includes('indextts'));
     const isQwen = norm.includes('qwen3') && !norm.includes('clone');
     const isPocketPreset = norm.includes('pocketttspreset');
     const isKittenTts = norm.includes('kittentts');
