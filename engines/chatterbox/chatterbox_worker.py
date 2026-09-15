@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+import traceback
 from pathlib import Path
 
 import librosa
@@ -18,6 +19,24 @@ from huggingface_hub import snapshot_download
 
 MODEL_ID = "ResembleAI/chatterbox-turbo"
 SAMPLE_RATE = 24000
+
+
+def validate_watermarker():
+    """Expose Perth's swallowed import error before downloading/loading TTS weights."""
+    try:
+        import perth
+        from perth.perth_net.perth_net_implicit.perth_watermarker import PerthImplicitWatermarker
+
+        if not callable(perth.PerthImplicitWatermarker):
+            raise ImportError("PerthImplicitWatermarker is unavailable")
+        return PerthImplicitWatermarker
+    except ImportError as exc:
+        raise RuntimeError(
+            "Chatterbox's Perth watermarking dependency could not load. "
+            "Update TTS-Story and reinstall Chatterbox in Settings > TTS Engines "
+            "to repair its isolated environment (requires setuptools<81). "
+            f"Underlying error: {exc}"
+        ) from exc
 
 
 def emit(payload: dict) -> None:
@@ -113,6 +132,7 @@ def number(extra: dict, key: str, fallback: float) -> float:
 
 
 def run_job(job: dict) -> None:
+    validate_watermarker()
     patch_chatterbox_audio_types()
     device = resolve_device(job.get("device") or "auto")
     token = os.environ.get("HF_TOKEN") or False
@@ -166,16 +186,20 @@ def main() -> int:
     parser.add_argument("--job-file")
     parser.add_argument("--check-env", action="store_true")
     args = parser.parse_args()
-    if args.check_env:
-        print(f"Chatterbox isolated environment ready; torch={torch.__version__}")
-        return 0
-    if not args.job_file:
+    if not args.check_env and not args.job_file:
         parser.error("--job-file is required")
     try:
+        if args.check_env:
+            # Perth's small bundled model is checked on CPU, without downloading
+            # Chatterbox weights or allocating the narration model on the GPU.
+            validate_watermarker()(device="cpu")
+            print(f"Chatterbox isolated environment ready; torch={torch.__version__}; Perth watermarking verified")
+            return 0
         run_job(json.loads(Path(args.job_file).read_text(encoding="utf-8")))
         return 0
     except Exception as exc:
         print(f"CHATTERBOX_WORKER_ERROR: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
         return 1
 
 

@@ -1,4 +1,7 @@
 chatterbox-tts==0.1.6
+# Perth 1.0.1 imports pkg_resources, removed in setuptools 81.
+# Keep this compatibility dependency confined to Chatterbox's isolated venv.
+setuptools>=65,<81
 huggingface-hub
 soundfile
 librosa==0.11.0
