@@ -9484,6 +9484,12 @@ def preview_audio():
         engine_name = _normalize_engine_name(requested_engine)
     else:
         engine_name = _normalize_engine_name(config.get("tts_engine"))
+    if engine_name == "localai_tts":
+        # LocalAI accepts the model's language names/codes, not Kokoro's 'a'.
+        lang_code = str(data.get('lang_code') or '').strip()
+        config = dict(config)
+        options = data.get('engine_options')
+        config.update(_normalize_engine_options(engine_name, options if isinstance(options, dict) else {}))
     sample_rate = int(config.get('sample_rate', DEFAULT_SAMPLE_RATE))
     audio_bytes = None
 

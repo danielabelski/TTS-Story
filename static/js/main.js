@@ -2559,6 +2559,12 @@ function getFxPayload(speaker) {
     return Object.keys(payload).length ? payload : null;
 }
 
+function resolveLocalAILanguage(speaker) {
+    const row = Array.from(getAssignmentRows()).find(row => row.dataset.speaker === speaker);
+    return row?.querySelector('.localai-language-input')?.value?.trim()
+        || runtimeSettings?.localai_tts_default_language || '';
+}
+
 function createAssignment(voiceName, langCode, speakerKey) {
     const state = getFxState(speakerKey);
     const assignment = {
@@ -2787,7 +2793,9 @@ async function handleFxPreview(speaker, container) {
         }
         return;
     }
-    const langCode = isQwenEngine(engineName)
+    const langCode = isLocalAITtsEngine(engineName)
+        ? resolveLocalAILanguage(speaker)
+        : isQwenEngine(engineName)
         ? (document.getElementById('qwen3-default-language')?.value || 'Auto')
         : getLangCodeForVoice(voiceName);
     const state = getFxState(speaker);
@@ -7553,8 +7561,7 @@ function getVoiceAssignments() {
             const voice = row.querySelector('.localai-voice-input')?.value?.trim()
                 || row.querySelector('.voice-select')?.value
                 || runtimeSettings?.localai_tts_default_voice || '';
-            const language = row.querySelector('.localai-language-input')?.value?.trim()
-                || runtimeSettings?.localai_tts_default_language || '';
+            const language = resolveLocalAILanguage(speaker);
             const assignment = createAssignment(voice, language, speaker);
             assignment.voice = voice;
             assignment.lang_code = language;

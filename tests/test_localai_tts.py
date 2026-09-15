@@ -39,6 +39,29 @@ class FakeResponse:
         return self._payload
 
 
+@pytest.mark.parametrize('language', ['en', 'en-US', ''])
+def test_preview_preserves_localai_language_and_model(monkeypatch, language):
+    calls = []
+    engine = LocalAITTSEngine(
+        model_id='custom-model', default_language='fr',
+        request_func=lambda method, url, **kwargs: calls.append(kwargs['json']) or FakeResponse({}),
+        audio_converter=lambda payload, **kwargs: payload,
+    )
+    monkeypatch.setattr(app_module, 'load_config', lambda: {'tts_engine': 'kokoro'})
+    def get_engine(name, *, config):
+        assert name == 'localai_tts'
+        assert config['localai_tts_model'] == 'custom-model'
+        return engine
+    monkeypatch.setattr(app_module, 'get_tts_engine', get_engine)
+    with app_module.app.test_request_context('/api/preview', method='POST', json={
+        'tts_engine': 'localai_tts', 'voice': 'Ryan', 'lang_code': language,
+        'text': 'Hello.', 'engine_options': {'localai_tts_model': 'custom-model'},
+    }):
+        response = app_module.preview_audio()
+    assert response.get_json()['success']
+    assert calls[0]['language'] == (language or 'fr')
+
+
 def test_localai_engine_sends_voice_profile_uri_without_api_key():
     calls = []
     engine = LocalAITTSEngine(
