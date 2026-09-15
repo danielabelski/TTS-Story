@@ -1540,17 +1540,30 @@ async function loadOpenAITtsCatalog(force = false) {
 }
 
 async function loadLocalAITtsCatalog(force = false) {
-    if (localAITtsVoices.length && !force) return { voices: localAITtsVoices, models: localAITtsModels };
+    const requestedModel = window.localAIEngineChoice(document.getElementById('job-tts-engine')?.value).model || runtimeSettings?.localai_tts_model || '';
+    if (window.localAITtsCatalogStatus?.configured_model === requestedModel && !force) return window.localAITtsCatalogStatus;
     if (localAITtsCatalogPromise && !force) return localAITtsCatalogPromise;
     localAITtsCatalogPromise = (async () => {
-        const response = await fetch('/api/localai-tts/catalog');
+        const model = window.localAIEngineChoice(document.getElementById('job-tts-engine')?.value).model;
+        const response = await fetch('/api/localai-tts/catalog', model ? {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model })
+        } : {});
         const data = await response.json();
         if (!response.ok || !data.success) throw new Error(data.error || 'Unable to load LocalAI TTS voices.');
+        const currentModel = window.localAIEngineChoice(document.getElementById('job-tts-engine')?.value).model || runtimeSettings?.localai_tts_model || '';
+        if (requestedModel !== currentModel) return data;
+        window.localAITtsCatalogStatus = data;
         localAITtsVoices = Array.isArray(data.voices) ? data.voices : [];
         localAITtsModels = Array.isArray(data.models) ? data.models : [];
+        window.localAIModelCatalog = localAITtsModels;
+        window.appendLocalAIModelOptions(document.getElementById('job-tts-engine'));
+        document.querySelectorAll('.library-chunk-engine-select, .bulk-speaker-engine-select')
+            .forEach(select => window.appendLocalAIModelOptions(select));
         window.availableLocalAITtsVoices = localAITtsVoices;
         populateDefaultVoiceSelect();
         populateVoiceSelects();
+        updateAssignmentModes(getSelectedJobEngine() || runtimeSettings?.tts_engine);
         return data;
     })();
     try {
@@ -1816,7 +1829,7 @@ function updateAssignmentModes(engineName) {
         const localAIControl = row.querySelector('[data-role="localai-control"]');
         const kokoroPanel = row.querySelector('[data-role="kokoro-panel"]');
         if (kokoroControl) {
-            const showCatalogControl = engineName === 'breeze_api' || !(usesReferenceSamples || isCloneStyle || isLocalAITts);
+            const showCatalogControl = isLocalAITts || engineName === 'breeze_api' || !(usesReferenceSamples || isCloneStyle);
             kokoroControl.hidden = !showCatalogControl;
             kokoroControl.style.setProperty('display', showCatalogControl ? 'flex' : 'none', 'important');
             const label = kokoroControl.querySelector('label');
@@ -1844,6 +1857,17 @@ function updateAssignmentModes(engineName) {
         }
         if (localAIControl) {
             localAIControl.style.display = isLocalAITts ? 'flex' : 'none';
+        }
+        const localFilter = row.querySelector('.localai-sample-filter');
+        if (localFilter) localFilter.hidden = !isLocalAITts;
+        const sampleInfo = row.querySelector('.localai-sample-info');
+        if (sampleInfo) {
+            sampleInfo.hidden = !isLocalAITts;
+            const status = window.localAITtsCatalogStatus;
+            sampleInfo.textContent = !status ? 'Checking LocalAI voice-sample support…'
+                : status.selected_model_voice_cloning === true && status.voice_profiles_supported
+                    ? 'Voice cloning supported. Local samples with transcripts are listed alongside server voices. Select one to fill the Voice / Speaker ID below.'
+                    : 'Local sample cloning is not confirmed for this model/connection. Use a server voice or enter its ID below.';
         }
         if (kokoroPanel) {
             kokoroPanel.style.display = 'flex';
@@ -2184,7 +2208,7 @@ window.refreshGlobalChatterboxPreviewButton = refreshGlobalChatterboxPreviewButt
 function getSelectedJobEngine() {
     const select = document.getElementById('job-tts-engine');
     if (!select) return null;
-    const value = (select.value || '').trim().toLowerCase();
+    const value = window.localAIEngineChoice(select.value).engine.trim().toLowerCase();
     return value || null;
 }
 
@@ -2200,6 +2224,10 @@ function getGlobalReferenceSelection() {
 function collectEngineOverrides(engineName) {
     if (!engineName) return null;
     switch (engineName) {
+        case 'localai_tts': {
+            const model = window.localAIEngineChoice(document.getElementById('job-tts-engine')?.value).model;
+            return model ? { localai_tts_model: model } : null;
+        }
         case 'chatterbox':
             return collectChatterboxOverrides();
         case 'chatterbox_turbo_local':
@@ -2674,6 +2702,12 @@ function renderFxPanel(container, speaker, options = {}) {
 }
 
 function resolveVoiceSelection(speaker) {
+    if (isLocalAITtsEngine(getSelectedJobEngine())) {
+        const row = getAssignmentRows().find(item => item.dataset.speaker === speaker);
+        return row?.querySelector('.localai-voice-input')?.value?.trim()
+            || row?.querySelector('.voice-select')?.value
+            || runtimeSettings?.localai_tts_default_voice || '';
+    }
     const engineName = getSelectedJobEngine() || runtimeSettings?.tts_engine || 'kokoro';
     if (isQwenEngine(engineName)) {
         if (speaker === 'default' || !speaker) {
@@ -4586,7 +4620,8 @@ function setupEventListeners() {
             // Preserve any assigned cloning sample before engine-specific controls
             // are repopulated or Analyze Text rebuilds the speaker rows.
             captureCompatibleVoiceSamples();
-            const engineName = (event.target.value || '').toLowerCase();
+            const engineName = window.localAIEngineChoice(event.target.value).engine.toLowerCase();
+            if (engineName === 'localai_tts') loadLocalAITtsCatalog(true);
             updateEngineUI(engineName);
             updateModeIndicator(engineName);
             // Refresh voice prompt dropdowns to apply engine-specific duration filtering
@@ -5868,8 +5903,10 @@ async function applyProjectState(project) {
     }
     const engineSelect = document.getElementById('job-tts-engine');
     if (engineSelect && project.engine) {
+        const choice = window.localAIEngineChoice(project.engine);
+        if (choice.model) window.appendLocalAIModelOptions(engineSelect, [{model_id: choice.model}]);
         engineSelect.value = project.engine;
-        updateEngineUI(project.engine);
+        updateEngineUI(choice.engine);
         if (isAzureSpeechEngine(project.engine)) {
             await loadAzureSpeechVoices();
         }
@@ -6186,9 +6223,11 @@ function displayInlineVoiceAssignments(speakers, speakerEmotions = {}) {
                 <div class="assignment-selection-group">
                     <div class="assignment-select voice-select-inline" data-role="kokoro-control">
                         <label>${speaker}</label>
+                        <input type="search" class="localai-sample-filter" placeholder="Filter LocalAI voices and TTS-Story samples…" hidden />
                         <select class="voice-select" data-speaker="${speaker}">
                             <option value="">Select Voice...</option>
                         </select>
+                        <small class="help-text localai-sample-info" hidden></small>
                     </div>
                     <div class="assignment-select turbo-inline-control" data-role="turbo-control">
                         <label>Voice Sample</label>
@@ -6218,14 +6257,14 @@ function displayInlineVoiceAssignments(speakers, speakerEmotions = {}) {
                                    placeholder="e.g., Speak with excitement" />
                         </div>
                     </div>
+                </div>
                     <div class="assignment-select localai-inline-control" data-role="localai-control" style="display: none;">
                         <label>LocalAI Voice / Speaker ID</label>
-                        <input type="text" class="localai-voice-input" data-speaker="${speaker}" list="localai-tts-voice-options" placeholder="Model default, discovered profile, or custom ID" />
+                        <input type="text" class="localai-voice-input" data-speaker="${speaker}" list="localai-tts-voice-options" placeholder="Type a voice name or ID here (e.g. Ryan)" />
                         <label>Language (optional)</label>
                         <input type="text" class="localai-language-input" data-speaker="${speaker}" placeholder="e.g. en, en-US, French" />
-                        <small class="help-text">Values are passed directly to the selected LocalAI model.</small>
+                        <small class="help-text">Type this speaker's exact voice name or ID, even if no voices were discovered (for example Ryan, Dylan, or Vivian). Suggestions are optional. Voice and language are passed directly to the selected LocalAI model; blank fields use Settings defaults.</small>
                     </div>
-                </div>
                 <div class="azure-speech-inline-options" data-role="azure-speech-control" style="display: none;">
                     <div class="qwen3-options-row">
                         <div class="assignment-select">
@@ -6276,12 +6315,23 @@ function displayInlineVoiceAssignments(speakers, speakerEmotions = {}) {
         }
         row.querySelector('.voice-select')?.addEventListener('change', event => {
             const selectedVoice = event.currentTarget?.value?.trim() || '';
+            if (isLocalAITtsEngine(getSelectedJobEngine())) {
+                const input = row.querySelector('.localai-voice-input');
+                if (input) input.value = selectedVoice;
+            }
             if (selectedVoice.startsWith(TTS_STORY_VOICE_REFERENCE_PREFIX)) {
                 rememberCompatibleVoiceSample(speaker, selectedVoice);
             }
             if (isAzureSpeechEngine(getSelectedJobEngine() || runtimeSettings?.tts_engine)) {
                 updateAzureVoiceControls(row, {});
             }
+        });
+        row.querySelector('.localai-sample-filter')?.addEventListener('input', () => populateVoiceSelects());
+        row.querySelector('.localai-voice-input')?.addEventListener('input', event => {
+            const select = row.querySelector('.voice-select');
+            const value = event.target.value.trim();
+            if (select) select.value = Array.from(select.options).some(option => option.value === value && !option.disabled) ? value : '';
+            if (value.startsWith(TTS_STORY_VOICE_REFERENCE_PREFIX)) rememberCompatibleVoiceSample(speaker, value);
         });
         row.querySelectorAll('.azure-style-select, .azure-role-select, .azure-style-degree, .azure-volume').forEach(control => {
             control.addEventListener('change', () => rememberAzureVoiceOptions(row));
@@ -6491,7 +6541,10 @@ function populateVoiceSelects() {
         } else if (isOpenAITts) {
             appendProviderVoiceOptions(select, openAITtsVoices, 'OpenAI TTS voices');
         } else if (isLocalAITts) {
-            appendProviderVoiceOptions(select, localAITtsVoices, 'LocalAI voice profiles');
+            const query = select.closest('.voice-assignment-row')?.querySelector('.localai-sample-filter')?.value?.trim().toLowerCase() || '';
+            appendProviderVoiceOptions(select, localAITtsVoices.filter(voice => !query
+                || (voice.voice_id || voice.short_name) === previousValue
+                || `${voice.display_name || ''} ${voice.voice_id || voice.short_name || ''}`.toLowerCase().includes(query)), 'LocalAI voice profiles');
         } else {
             appendVoiceOptions(select);
         }
@@ -6521,8 +6574,8 @@ function populateVoiceSelects() {
         getAssignmentRows().forEach(row => {
             const input = row.querySelector('.localai-voice-input');
             if (!input) return;
-            const currentValue = input.value;
-            input.value = currentValue || runtimeSettings?.localai_tts_default_voice || '';
+            // Leave manual entry blank until explicitly assigned. Generation
+            // resolves the selected sample or Settings default without filling it.
             const languageInput = row.querySelector('.localai-language-input');
             if (languageInput && !languageInput.value) {
                 languageInput.value = runtimeSettings?.localai_tts_default_language || '';
@@ -7498,6 +7551,7 @@ function getVoiceAssignments() {
             const speaker = row.dataset.speaker;
             if (!speaker) return;
             const voice = row.querySelector('.localai-voice-input')?.value?.trim()
+                || row.querySelector('.voice-select')?.value
                 || runtimeSettings?.localai_tts_default_voice || '';
             const language = row.querySelector('.localai-language-input')?.value?.trim()
                 || runtimeSettings?.localai_tts_default_language || '';

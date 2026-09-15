@@ -2890,32 +2890,37 @@ const libraryCloudCatalogCache = new Map();
 const libraryCloudCatalogRequests = new Map();
 
 async function getLibraryCloudCatalog(engineName) {
-    const normalized = (engineName || '').toLowerCase().replace(/[_-]/g, '');
+    const choice = window.localAIEngineChoice(engineName);
+    const normalized = choice.engine.toLowerCase().replace(/[_-]/g, '');
     const provider = normalized.includes('edgetts')
         ? 'edge_tts'
         : (normalized.includes('elevenlabs') ? 'elevenlabs'
             : (normalized.includes('openaitts') ? 'openai_tts'
                 : (normalized.includes('localaitts') ? 'localai_tts' : '')));
     if (!provider) return { success: false, voices: [] };
-    if (libraryCloudCatalogCache.has(provider)) return libraryCloudCatalogCache.get(provider);
-    if (!libraryCloudCatalogRequests.has(provider)) {
+    const cacheKey = provider + ':' + choice.model;
+    if (libraryCloudCatalogCache.has(cacheKey)) return libraryCloudCatalogCache.get(cacheKey);
+    if (!libraryCloudCatalogRequests.has(cacheKey)) {
         const endpoint = provider === 'edge_tts' ? '/api/edge-tts/voices'
             : (provider === 'elevenlabs' ? '/api/elevenlabs/catalog'
                 : (provider === 'localai_tts' ? '/api/localai-tts/catalog' : '/api/openai-tts/catalog'));
-        const request = fetch(endpoint)
+        const request = fetch(endpoint, choice.model ? {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({model: choice.model})
+        } : {})
             .then(response => response.json())
             .then(data => {
-                if (data.success) libraryCloudCatalogCache.set(provider, data);
-                libraryCloudCatalogRequests.delete(provider);
+                if (data.success) libraryCloudCatalogCache.set(cacheKey, data);
+                libraryCloudCatalogRequests.delete(cacheKey);
                 return data;
             })
             .catch(error => {
-                libraryCloudCatalogRequests.delete(provider);
+                libraryCloudCatalogRequests.delete(cacheKey);
                 throw error;
             });
-        libraryCloudCatalogRequests.set(provider, request);
+        libraryCloudCatalogRequests.set(cacheKey, request);
     }
-    return libraryCloudCatalogRequests.get(provider);
+    return libraryCloudCatalogRequests.get(cacheKey);
 }
 
 function mapLibraryCloudVoices(data, provider) {
@@ -2943,7 +2948,38 @@ function appendLocalAIFreeformOption(select) {
     select.appendChild(option);
 }
 
+function updateLocalAIManualFields(select, enabled) {
+    if (!select) return;
+    if (!select._localAIFields && enabled) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'library-localai-wrapper';
+        select.before(wrapper);
+        wrapper.appendChild(select);
+        const fields = document.createElement('div');
+        fields.className = 'library-localai-fields';
+        fields.innerHTML = '<label>LocalAI Voice / Speaker ID<input type="text" class="library-localai-voice-id" placeholder="Type an exact ID, e.g. Ryan"></label><label>Language (optional)<input type="text" class="library-localai-language" placeholder="e.g. en, en-US, French"></label><small>Enter a server voice ID above or choose a discovered voice. A typed ID takes priority.</small>';
+        wrapper.appendChild(fields);
+        select._localAIFields = fields;
+        fields.querySelector('input').addEventListener('input', () => {
+            if (fields.querySelector('input').value.trim()) {
+                appendLocalAIFreeformOption(select);
+                select.value = '__localai_custom__';
+            } else if (select.value === '__localai_custom__') {
+                select.value = '';
+            }
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+    }
+    if (select._localAIFields) select._localAIFields.hidden = !enabled;
+}
+
 function resolveLocalAIFreeformSelection(select) {
+    const fields = select?._localAIFields;
+    const typedVoice = fields && !fields.hidden ? fields.querySelector('.library-localai-voice-id').value.trim() : '';
+    if (typedVoice) {
+        const language = fields.querySelector('.library-localai-language').value.trim();
+        return { cancelled: false, voice: typedVoice, language };
+    }
     if (!select || select.value !== '__localai_custom__') return null;
     const voice = window.prompt('Enter the voice name or speaker ID accepted by this LocalAI model:', '')?.trim();
     if (!voice) {
@@ -3251,7 +3287,10 @@ async function populateLibraryVoiceSelects(engine) {
     }
 
     async function populateChunkVoiceSelect(select, chunkId, engineName, filters = null, currentLabel = '', selectedValue = '') {
+        const catalogEngine = engineName;
+        engineName = window.localAIEngineChoice(engineName).engine;
         engineName = (engineName || '').toLowerCase().replace(/[_-]/g, '');
+        updateLocalAIManualFields(select, engineName.includes('localaitts'));
         const isPocketPreset = engineName.includes('pocketttspreset');
         const usesPrompts = engineName.includes('chatterbox')
             || engineName.includes('voxcpm')
@@ -3318,7 +3357,7 @@ async function populateLibraryVoiceSelects(engine) {
                     }));
                 }
             } else if (isEdgeTts || isElevenLabs || isOpenAITts || isLocalAITts) {
-                const data = await getLibraryCloudCatalog(engineName);
+                const data = await getLibraryCloudCatalog(catalogEngine);
                 if (data.success) {
                     chunkVoices = mapLibraryCloudVoices(data, isEdgeTts ? 'edge_tts'
                         : (isElevenLabs ? 'elevenlabs' : (isLocalAITts ? 'localai_tts' : 'openai_tts')));
@@ -3409,7 +3448,10 @@ async function populateLibraryVoiceSelects(engine) {
 
     // Helper to populate bulk speaker voice select based on engine
     async function populateBulkVoiceSelect(select, speaker, engineName, filters = null) {
+        const catalogEngine = engineName;
+        engineName = window.localAIEngineChoice(engineName).engine;
         engineName = (engineName || '').toLowerCase().replace(/[_-]/g, '');
+        updateLocalAIManualFields(select, engineName.includes('localaitts'));
         const isPocketPreset = engineName.includes('pocketttspreset');
         const usesPrompts = engineName.includes('chatterbox')
             || engineName.includes('voxcpm')
@@ -3476,7 +3518,7 @@ async function populateLibraryVoiceSelects(engine) {
                     }));
                 }
             } else if (isEdgeTts || isElevenLabs || isOpenAITts || isLocalAITts) {
-                const data = await getLibraryCloudCatalog(engineName);
+                const data = await getLibraryCloudCatalog(catalogEngine);
                 if (data.success) {
                     bulkVoices = mapLibraryCloudVoices(data, isEdgeTts ? 'edge_tts'
                         : (isElevenLabs ? 'elevenlabs' : (isLocalAITts ? 'localai_tts' : 'openai_tts')));
@@ -3597,6 +3639,7 @@ async function populateLibraryVoiceSelects(engine) {
             <option value="openai_tts">OpenAI-compatible TTS</option>
             <option value="localai_tts">LocalAI TTS</option>
         `;
+        window.appendLocalAIModelOptions(select);
         if (normalizedCurrentEngine) {
             Array.from(select.options).forEach(option => {
                 if (option.value && normalizedCurrentEngine.includes(option.value.replace(/[_-]/g, ''))) {
@@ -3690,7 +3733,7 @@ async function populateLibraryVoiceSelects(engine) {
             }
             
             // Show/hide Qwen3 options based on engine
-            const normalizedSelectedEngine = selectedEngine.toLowerCase();
+            const normalizedSelectedEngine = window.localAIEngineChoice(selectedEngine).engine.toLowerCase();
             const isQwen = normalizedSelectedEngine.includes('qwen3')
                 && !normalizedSelectedEngine.includes('clone');
             const usesPrompts = normalizedSelectedEngine.includes('chatterbox')
@@ -3744,6 +3787,7 @@ async function populateLibraryVoiceSelects(engine) {
             <option value="localai_tts">LocalAI TTS</option>
         `;
         
+        window.appendLocalAIModelOptions(select);
         // When engine changes, repopulate the voice dropdown for this speaker and show/hide Qwen3 options
         select.addEventListener('change', async () => {
             const selectedEngine = select.value || engine;
@@ -3760,7 +3804,7 @@ async function populateLibraryVoiceSelects(engine) {
             }
             
             // Show/hide Qwen3 options based on engine
-            const normalizedSelectedEngine = selectedEngine.toLowerCase();
+            const normalizedSelectedEngine = window.localAIEngineChoice(selectedEngine).engine.toLowerCase();
             const isQwen = normalizedSelectedEngine.includes('qwen3')
                 && !normalizedSelectedEngine.includes('clone');
             const usesPrompts = normalizedSelectedEngine.includes('chatterbox')
@@ -3800,7 +3844,7 @@ async function populateLibraryVoiceSelects(engine) {
         const languageFilter = card.querySelector('.bulk-voice-filter-language');
         if (!engineSelect || !voiceSelect) return;
         const selectedEngine = engineSelect.value || engine;
-        const normalizedEngine = selectedEngine.toLowerCase();
+        const normalizedEngine = window.localAIEngineChoice(selectedEngine).engine.toLowerCase();
         const usesPrompts = normalizedEngine.includes('chatterbox')
             || normalizedEngine.includes('voxcpm')
             || (normalizedEngine.includes('pockettts') && !normalizedEngine.includes('pocketttspreset'))
@@ -3879,7 +3923,7 @@ async function triggerBulkSpeakerRegen(
     const body = document.getElementById('chunk-review-modal-body');
     const card = button.closest('.bulk-speaker-card');
     const select = card?.querySelector('.bulk-speaker-voice-select');
-    const normalizedEngine = (engine || '').toLowerCase().replace(/[_-]/g, '');
+    const normalizedEngine = window.localAIEngineChoice(engine).engine.toLowerCase().replace(/[_-]/g, '');
     const isLocalAI = normalizedEngine.includes('localaitts');
     const freeform = isLocalAI ? resolveLocalAIFreeformSelection(select) : null;
     if (freeform?.cancelled) return;
@@ -3999,6 +4043,7 @@ async function triggerBulkSpeakerRegen(
             if (engine) {
                 requestBody.engine = engine;
             }
+            window.applyLocalAIModelToRegenRequest(requestBody);
 
             const response = await fetch(`/api/jobs/${jobId}/review/regen`, {
                 method: 'POST',
@@ -4069,7 +4114,7 @@ async function triggerLibraryChunkRegen(jobId, chunkId, button) {
     // Build voice payload based on engine type
     let voicePayload = libraryChunkVoiceOverrides[chunkId] || {};
     const originalChunk = (chunkReviewModalData?.chunks || []).find(chunk => chunk.id === chunkId);
-    const normalizedEngine = (resolvedEngine || originalChunk?.engine || chunkReviewModalData?.engine || '')
+    const normalizedEngine = window.localAIEngineChoice(resolvedEngine || originalChunk?.engine || chunkReviewModalData?.engine || '').engine
         .toLowerCase()
         .replace(/[_-]/g, '');
     const isLocalAI = normalizedEngine.includes('localaitts');
@@ -4178,6 +4223,7 @@ async function triggerLibraryChunkRegen(jobId, chunkId, button) {
             voice: voicePayload,
             engine: resolvedEngine, // Always send resolved engine
         };
+        window.applyLocalAIModelToRegenRequest(requestBody);
         if (resolvedEngine === 'index_tts') {
             const strengthInput = card?.querySelector('.chunk-index-emotion-strength');
             if (strengthInput) {

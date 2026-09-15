@@ -833,6 +833,9 @@ def _coerce_float(
 
 
 def _normalize_engine_options(engine_name: str, options: Dict[str, Any]) -> Dict[str, Any]:
+    if engine_name == "localai_tts":
+        model = options.get("localai_tts_model")
+        return {"localai_tts_model": model.strip()} if isinstance(model, str) and model.strip() else {}
     if engine_name == "chatterbox_turbo_local":
         return _normalize_chatterbox_turbo_local_options(options)
     if engine_name == "chatterbox_turbo_replicate":
@@ -1796,6 +1799,11 @@ def _perform_chunk_regeneration(
         effective_assignment["extra"] = {**previous_extra, **(normalized_override.get("extra") or {})}
         if "speaker_profile" in previous_extra:
             effective_assignment["extra"]["speaker_profile"] = previous_extra["speaker_profile"]
+
+    if _normalize_engine_name(config_snapshot.get("tts_engine")) == "localai_tts":
+        model = ((effective_assignment or {}).get("extra") or {}).get("localai_tts_model")
+        if isinstance(model, str) and model.strip():
+            config_snapshot["localai_tts_model"] = model.strip()
 
     # None means an older caller omitted the field; an empty string explicitly
     # clears the passage cue. Keep this separate from the spoken manuscript.

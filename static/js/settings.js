@@ -63,6 +63,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         startEngineInstall('breeze_tts_2', status, event.currentTarget, 'q8');
     });
     await loadEngineSetupStatus();
+    if (readyEngineIds().has('localai_tts')) loadLocalAITtsCatalog();
     await initializeFirstRunWelcome();
 });
 
@@ -77,13 +78,14 @@ function filterEngineSelectors() {
         if (!select) return;
         Array.from(select.options).forEach(option => {
             if (!option.value) return;
-            const managed = engineSetupCatalog.some(engine => engine.id === option.value);
+            const optionEngine = window.localAIEngineChoice(option.value).engine;
+            const managed = engineSetupCatalog.some(engine => engine.id === optionEngine);
             if (!managed) return;
-            const available = ready.has(option.value);
+            const available = ready.has(optionEngine);
             option.hidden = !available;
             option.disabled = !available;
         });
-        if (!ready.has(select.value)) {
+        if (!ready.has(window.localAIEngineChoice(select.value).engine)) {
             const fallback = Array.from(select.options).find(option => option.value && !option.disabled);
             if (fallback) {
                 select.value = fallback.value;
