@@ -262,7 +262,7 @@ Apache 2.0.
 
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by hexgrad
 - [Chatterbox](https://github.com/resemble-ai/chatterbox) by Resemble AI
-- [VoxCPM](https://github.com/openvpi/VoxCPM) by OpenVPI
+- [VoxCPM](https://github.com/OpenBMB/VoxCPM) by OpenBMB
 - [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) by the Qwen team
 - [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) by Kyutai
 - [KittenTTS](https://github.com/KittenML/KittenTTS) by KittenML
